@@ -7,7 +7,7 @@ Unit tests for the browser automation module.
 import unittest
 from unittest.mock import patch, call
 
-from automation.browser import search, open_url, BrowserOperationError
+from automation.browser import search, open_url, BrowserOperationError, new_tab, close_current_tab, close_all_tabs, next_tab, previous_tab, duplicate_tab, reopen_closed_tab, refresh_page
 
 
 class TestBrowserAutomation(unittest.TestCase):
@@ -80,6 +80,77 @@ class TestBrowserAutomation(unittest.TestCase):
         mock_open.assert_called_once_with(
             "https://www.python.org", new=2, autoraise=True
         )
+    
+    @patch("automation.browser.pyautogui")
+    def test_new_tab(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify new_tab sends Ctrl+T."""
+        new_tab()
+        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "t")
+
+    @patch("automation.browser.pyautogui")
+    def test_close_current_tab(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify close_current_tab sends Ctrl+W."""
+        close_current_tab()
+        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "w")
+
+    @patch("automation.browser.pyautogui")
+    def test_close_all_tabs(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify close_all_tabs sends Ctrl+Shift+W."""
+        close_all_tabs()
+        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "w")
+
+    @patch("automation.browser.pyautogui")
+    def test_next_tab(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify next_tab sends Ctrl+Tab."""
+        next_tab()
+        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "tab")
+
+    @patch("automation.browser.pyautogui")
+    def test_previous_tab(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify previous_tab sends Ctrl+Shift+Tab."""
+        previous_tab()
+        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "tab")
+
+    @patch("automation.browser.pyautogui")
+    def test_duplicate_tab(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify duplicate_tab sends Alt+D, then Alt+Enter."""
+        duplicate_tab()
+        mock_pyautogui.hotkey.assert_has_calls([
+            call("alt", "d"),
+            call("alt", "enter"),
+        ])
+
+    @patch("automation.browser.pyautogui")
+    def test_reopen_closed_tab(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify reopen_closed_tab sends Ctrl+Shift+T."""
+        reopen_closed_tab()
+        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "t")
+
+    @patch("automation.browser.pyautogui")
+    def test_refresh_page(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify refresh_page sends F5."""
+        refresh_page()
+        mock_pyautogui.press.assert_called_once_with("f5")
+
+    @patch("automation.browser.pyautogui")
+    def test_hard_refresh_page(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify hard refresh sends Ctrl+Shift+R."""
+        refresh_page(hard=True)
+        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "r")
+
+    @patch("automation.browser.pyautogui", new_callable=unittest.mock.MagicMock)
+    def test_functions_raise_browser_operation_error_on_failure(self, mock_pyautogui: unittest.mock.MagicMock) -> None:
+        """Verify automation functions raise BrowserOperationError on exception."""
+        mock_pyautogui.hotkey.side_effect = Exception("test error")
+        mock_pyautogui.press.side_effect = Exception("test error")
+
+        functions_to_test = [
+            new_tab, close_current_tab, close_all_tabs, next_tab, previous_tab,
+            duplicate_tab, reopen_closed_tab, refresh_page
+        ]
+        for func in functions_to_test:
+            with self.assertRaises(BrowserOperationError, msg=f"{func.__name__} did not raise"):
+                func()
 
 if __name__ == "__main__":
     unittest.main()
