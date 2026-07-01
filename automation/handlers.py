@@ -69,7 +69,19 @@ class AppsHandler:
 class BrowserHandler:
     """Adapter for default-browser navigation actions."""
 
-    _SUPPORTED_ACTIONS = {"navigate"}
+    _SUPPORTED_ACTIONS = {
+        "navigate",
+        "browser_search",
+        "new_tab",
+        "close_current_tab",
+        "close_all_tabs",
+        "next_tab",
+        "previous_tab",
+        "duplicate_tab",
+        "reopen_closed_tab",
+        "refresh_page",
+        "hard_refresh",
+    }
 
     def run(self, step: Step) -> Any:
         if step.action == "navigate":
@@ -80,6 +92,30 @@ class BrowserHandler:
                     "or target."
                 )
             return browser.open_url(url)
+
+        if step.action == "browser_search":
+            provider = _require_parameter(step, "provider")
+            query = _require_parameter(step, "query")
+            return browser.search(provider, query)
+        
+        if step.action == "new_tab":
+            return browser.new_tab()
+        if step.action == "close_current_tab":
+            return browser.close_current_tab()
+        if step.action == "close_all_tabs":
+            return browser.close_all_tabs()
+        if step.action == "next_tab":
+            return browser.next_tab()
+        if step.action == "previous_tab":
+            return browser.previous_tab()
+        if step.action == "duplicate_tab":
+            return browser.duplicate_tab()
+        if step.action == "reopen_closed_tab":
+            return browser.reopen_closed_tab()
+        if step.action == "refresh_page":
+            return browser.refresh_page(hard=False)
+        if step.action == "hard_refresh":
+            return browser.refresh_page(hard=True)
 
         raise UnsupportedActionError(
             handler_name="BrowserHandler",

@@ -60,7 +60,20 @@ class Registry:
         for action in ("open_app", "close_app", "is_running"):
             self.register(action, apps_handler)
 
-        self.register("navigate", browser_handler)
+        for action in (
+            "navigate",
+            "browser_search",
+            "new_tab",
+            "close_current_tab",
+            "close_all_tabs",
+            "next_tab",
+            "previous_tab",
+            "duplicate_tab",
+            "reopen_closed_tab",
+            "refresh_page",
+            "hard_refresh",
+        ):
+            self.register(action, browser_handler)
 
         for action in (
             "move",
