@@ -9,7 +9,6 @@ Brain.process(). It does not bypass Brain or call lower pipeline layers.
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
 from dataclasses import is_dataclass
 from typing import Any
 
@@ -51,13 +50,9 @@ Browser Tab Management:
 def _display_response(response: Any) -> None:
     """Prints a friendly, human-readable response."""
     if response is None:
-        print("<no response>")
         print("✗ An unexpected error occurred: no response from Brain.")
         return
 
-    if is_dataclass(response) and not isinstance(response, type):
-        for key, value in asdict(response).items():
-            print(f"{key}: {value}")
     # Handle special case for unknown commands
     if (
         hasattr(response, "message")
@@ -67,7 +62,6 @@ def _display_response(response: Any) -> None:
         print('Type "help" for available commands.')
         return
 
-    print(response)
     if not is_dataclass(response) or not hasattr(response, "success"):
         print(f"~ Unstructured response: {response}")
         return
