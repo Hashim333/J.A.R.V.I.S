@@ -35,6 +35,12 @@ class Settings:
     # --- General ---
     debug: bool
 
+    # --- Voice ---
+    voice_provider: str
+    voice_id: str
+    voice_model: str
+    elevenlabs_api_key: str
+
 
 def _bool_env(key: str, default: bool) -> bool:
     """Parse a boolean from an environment variable."""
@@ -51,6 +57,10 @@ def _load() -> Settings:
         model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
         timeout=int(os.getenv("OLLAMA_TIMEOUT", "30")),
         debug=_bool_env("DEBUG", default=False),
+        voice_provider=os.getenv("VOICE_PROVIDER", "system"),
+        voice_id=os.getenv("VOICE_ID", ""),
+        voice_model=os.getenv("VOICE_MODEL", "eleven_multilingual_v2"),
+        elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", ""),
     )
 
 
@@ -66,3 +76,7 @@ OLLAMA_BASE_URL: str  = settings.ollama_base_url
 OLLAMA_MODEL: str     = settings.model
 OLLAMA_TIMEOUT: int   = settings.timeout
 DEBUG: bool           = settings.debug
+VOICE_PROVIDER: str   = settings.voice_provider
+VOICE_ID: str         = settings.voice_id
+VOICE_MODEL: str      = settings.voice_model
+ELEVENLABS_API_KEY: str = settings.elevenlabs_api_key

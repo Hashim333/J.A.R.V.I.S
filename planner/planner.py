@@ -216,7 +216,6 @@ class Planner:
         "close_specific_tab": _build_browser_action,
         "close_all_tabs": _build_browser_action,
         "close_other_tabs": _build_browser_action,
-        "switch_tab": _build_browser_action,        
         "switch_tab": _build_browser_action,
         "active_window": _build_window_action,
         "list_windows": _build_window_action,
