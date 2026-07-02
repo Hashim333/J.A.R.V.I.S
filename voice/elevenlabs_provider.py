@@ -29,11 +29,29 @@ class ElevenLabsProvider(VoiceProvider):
         voice_id: str | None = None,
         model: str | None = None,
         *,
+        stability: float | None = None,
+        similarity_boost: float | None = None,
+        style: float | None = None,
+        speaker_boost: bool | None = None,
         timeout: int = 30,
     ) -> None:
         self._api_key = api_key if api_key is not None else settings.elevenlabs_api_key
         self._voice_id = voice_id if voice_id is not None else settings.voice_id
         self._model = model if model is not None else settings.voice_model
+        self._stability = (
+            stability if stability is not None else settings.voice_stability
+        )
+        self._similarity_boost = (
+            similarity_boost
+            if similarity_boost is not None
+            else settings.voice_similarity
+        )
+        self._style = style if style is not None else settings.voice_style
+        self._speaker_boost = (
+            speaker_boost
+            if speaker_boost is not None
+            else settings.voice_speaker_boost
+        )
         self._timeout = timeout
 
     def speak(self, text: str) -> bool:
@@ -67,6 +85,12 @@ class ElevenLabsProvider(VoiceProvider):
             {
                 "text": text,
                 "model_id": self._model,
+                "voice_settings": {
+                    "stability": self._stability,
+                    "similarity_boost": self._similarity_boost,
+                    "style": self._style,
+                    "use_speaker_boost": self._speaker_boost,
+                },
             }
         ).encode("utf-8")
 
