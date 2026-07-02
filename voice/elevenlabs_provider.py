@@ -14,7 +14,7 @@ import urllib.request
 from socket import timeout as SocketTimeout
 
 from config.settings import settings
-from voice.provider import VoiceProvider, VoiceProviderError
+from voice.provider import VoiceProvider
 
 
 ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
@@ -40,36 +40,27 @@ class ElevenLabsProvider(VoiceProvider):
         if not isinstance(text, str) or not text.strip():
             return False
         if not self._api_key:
-            raise VoiceProviderError("ElevenLabs API key is not configured.")
+            return False
         if not self._voice_id:
-            raise VoiceProviderError("ElevenLabs voice ID is not configured.")
+            return False
 
         request = self._build_request(text.strip())
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 audio = response.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code in {401, 403}:
-                raise VoiceProviderError(
-                    "ElevenLabs authentication failed. Check ELEVENLABS_API_KEY."
-                ) from exc
-            raise VoiceProviderError(
-                f"ElevenLabs request failed with HTTP {exc.code}."
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise VoiceProviderError(
-                "Could not reach ElevenLabs. Check your network connection."
-            ) from exc
-        except SocketTimeout as exc:
-            raise VoiceProviderError("ElevenLabs request timed out.") from exc
-        except TimeoutError as exc:
-            raise VoiceProviderError("ElevenLabs request timed out.") from exc
+        except (
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            SocketTimeout,
+            TimeoutError,
+            OSError,
+        ):
+            return False
 
         if not audio:
-            raise VoiceProviderError("ElevenLabs returned no audio.")
+            return False
 
-        self._play_audio(audio)
-        return True
+        return self._play_audio(audio)
 
     def _build_request(self, text: str) -> urllib.request.Request:
         body = json.dumps(
@@ -91,16 +82,13 @@ class ElevenLabsProvider(VoiceProvider):
         )
 
     @staticmethod
-    def _play_audio(audio: bytes) -> None:
+    def _play_audio(audio: bytes) -> bool:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
             tmp.write(audio)
             audio_path = tmp.name
 
         try:
             os.startfile(audio_path)  # type: ignore[attr-defined]
-        except AttributeError as exc:
-            raise VoiceProviderError(
-                "ElevenLabs audio playback requires Windows os.startfile support."
-            ) from exc
-        except OSError as exc:
-            raise VoiceProviderError("Could not play ElevenLabs audio.") from exc
+        except (AttributeError, OSError):
+            return False
+        return True
