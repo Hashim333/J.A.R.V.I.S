@@ -10,10 +10,9 @@ Brain.process(). It does not bypass Brain or call lower pipeline layers.
 from __future__ import annotations
 
 import os
-from dataclasses import is_dataclass
-from typing import Any
 
 from brain import Brain
+from response.manager import ResponseManager
 
 
 HEADER = """=================================================
@@ -55,55 +54,6 @@ Browser Tab Management:
 """
 
 
-def _display_response(response: Any) -> None:
-    """Print a friendly, human-readable response."""
-    if response is None:
-        print("An unexpected error occurred: no response from Brain.")
-        return
-
-    if (
-        hasattr(response, "message")
-        and response.message
-        in {"Execution plan had no steps.", "Execution plan had no steps to run."}
-    ):
-        print("I didn't understand that command.")
-        print('Type "help" for available commands.')
-        return
-
-    if not is_dataclass(response) or not hasattr(response, "success"):
-        print(f"Unstructured response: {response}")
-        return
-
-    if response.success:
-        print(_friendly_success_message(response))
-        return
-
-    message = response.message or "An unknown error occurred."
-    print(message)
-    if DEBUG and response.error:
-        print(f"Details: {response.error}")
-
-
-def _friendly_success_message(response: Any) -> str:
-    data = getattr(response, "data", {}) or {}
-    intent = data.get("intent")
-    results = data.get("results") or []
-    first_result = results[0].get("result") if results else None
-
-    if intent == "active_window":
-        return f"Active window: {first_result or 'None'}"
-
-    if intent == "list_windows":
-        if not first_result:
-            return "No open windows found."
-        return "Open windows:\n" + "\n".join(f"  {title}" for title in first_result)
-
-    if isinstance(first_result, bool) and first_result is False:
-        return "I could not complete that action."
-
-    return "Done."
-
-
 def _display_history(history: list[str]) -> None:
     if not history:
         print("No commands in history for this session.")
@@ -119,6 +69,7 @@ def main() -> None:
     print()
 
     brain = Brain()
+    response_manager = ResponseManager(debug=DEBUG)
 
     print("Brain Ready")
     print("Parser Ready")
@@ -167,7 +118,7 @@ def main() -> None:
         history.append(command)
 
         response = brain.process(command)
-        _display_response(response)
+        response_manager.present_console(response)
 
 
 if __name__ == "__main__":
