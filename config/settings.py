@@ -36,6 +36,7 @@ class Settings:
     debug: bool
 
     # --- Voice ---
+    voice_enabled: bool
     voice_provider: str
     voice_id: str
     voice_model: str
@@ -50,6 +51,11 @@ def _bool_env(key: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes"}
 
 
+def _str_env(key: str, default: str) -> str:
+    """Read and trim a string environment variable."""
+    return os.getenv(key, default).strip()
+
+
 def _load() -> Settings:
     """Construct Settings from environment variables with safe defaults."""
     return Settings(
@@ -57,10 +63,11 @@ def _load() -> Settings:
         model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
         timeout=int(os.getenv("OLLAMA_TIMEOUT", "30")),
         debug=_bool_env("DEBUG", default=False),
-        voice_provider=os.getenv("VOICE_PROVIDER", "system"),
-        voice_id=os.getenv("VOICE_ID", ""),
-        voice_model=os.getenv("VOICE_MODEL", "eleven_multilingual_v2"),
-        elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", ""),
+        voice_enabled=_bool_env("VOICE_ENABLED", default=False),
+        voice_provider=_str_env("VOICE_PROVIDER", "system"),
+        voice_id=_str_env("VOICE_ID", ""),
+        voice_model=_str_env("VOICE_MODEL", "eleven_multilingual_v2"),
+        elevenlabs_api_key=_str_env("ELEVENLABS_API_KEY", ""),
     )
 
 
@@ -76,6 +83,7 @@ OLLAMA_BASE_URL: str  = settings.ollama_base_url
 OLLAMA_MODEL: str     = settings.model
 OLLAMA_TIMEOUT: int   = settings.timeout
 DEBUG: bool           = settings.debug
+VOICE_ENABLED: bool   = settings.voice_enabled
 VOICE_PROVIDER: str   = settings.voice_provider
 VOICE_ID: str         = settings.voice_id
 VOICE_MODEL: str      = settings.voice_model

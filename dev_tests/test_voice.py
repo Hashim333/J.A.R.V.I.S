@@ -6,6 +6,7 @@ from abc import ABC
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from voice.elevenlabs_provider import ElevenLabsProvider
 from voice.manager import VoiceManager
 from voice.provider import SpeechProvider, VoiceProvider
 from voice.system_provider import SystemProvider
@@ -49,12 +50,33 @@ class VoiceFoundationTests(unittest.TestCase):
         self.assertEqual(reloaded.VOICE_PROVIDER, "system")
 
     def test_configuration_loads_system_provider_env(self) -> None:
-        with patch.dict("os.environ", {"VOICE_PROVIDER": "system"}):
+        with patch.dict("os.environ", {"VOICE_PROVIDER": " system "}):
             import config.settings as settings_module
 
             reloaded = importlib.reload(settings_module)
 
         self.assertEqual(reloaded.settings.voice_provider, "system")
+
+    def test_configuration_loads_all_voice_environment_values(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "VOICE_ENABLED": "true",
+                "VOICE_PROVIDER": "elevenlabs",
+                "VOICE_ID": "voice-123",
+                "VOICE_MODEL": "model-123",
+                "ELEVENLABS_API_KEY": "key-123",
+            },
+        ):
+            import config.settings as settings_module
+
+            reloaded = importlib.reload(settings_module)
+
+        self.assertTrue(reloaded.settings.voice_enabled)
+        self.assertEqual(reloaded.settings.voice_provider, "elevenlabs")
+        self.assertEqual(reloaded.settings.voice_id, "voice-123")
+        self.assertEqual(reloaded.settings.voice_model, "model-123")
+        self.assertEqual(reloaded.settings.elevenlabs_api_key, "key-123")
 
     def test_voice_manager_initializes_system_provider(self) -> None:
         config = SimpleNamespace(voice_provider="system", voice_id="")
@@ -76,6 +98,83 @@ class VoiceFoundationTests(unittest.TestCase):
         config = SimpleNamespace(voice_provider="unknown", voice_id="")
 
         manager = VoiceManager(config=config)
+
+        self.assertIsInstance(manager._provider, SystemProvider)
+        self.assertIn("Unsupported VOICE_PROVIDER", manager.diagnostics[0])
+
+    def test_voice_manager_selects_elevenlabs_provider(self) -> None:
+        config = SimpleNamespace(
+            voice_provider="elevenlabs",
+            voice_id="voice-123",
+            voice_model="model-123",
+            elevenlabs_api_key="key-123",
+        )
+
+        manager = VoiceManager(config=config)
+
+        self.assertIsInstance(manager._provider, ElevenLabsProvider)
+        self.assertEqual(manager.diagnostics, ())
+
+    def test_voice_manager_missing_api_key_falls_back_to_system(self) -> None:
+        config = SimpleNamespace(
+            voice_provider="elevenlabs",
+            voice_id="voice-123",
+            voice_model="model-123",
+            elevenlabs_api_key="",
+        )
+
+        manager = VoiceManager(config=config)
+
+        self.assertIsInstance(manager._provider, SystemProvider)
+        self.assertIn("ELEVENLABS_API_KEY is missing", manager.diagnostics[0])
+
+    def test_voice_manager_missing_voice_id_falls_back_to_system(self) -> None:
+        config = SimpleNamespace(
+            voice_provider="elevenlabs",
+            voice_id="",
+            voice_model="model-123",
+            elevenlabs_api_key="key-123",
+        )
+
+        manager = VoiceManager(config=config)
+
+        self.assertIsInstance(manager._provider, SystemProvider)
+        self.assertIn("VOICE_ID is missing", manager.diagnostics[0])
+
+    def test_voice_manager_elevenlabs_init_failure_falls_back_to_system(self) -> None:
+        config = SimpleNamespace(
+            voice_provider="elevenlabs",
+            voice_id="voice-123",
+            voice_model="model-123",
+            elevenlabs_api_key="key-123",
+        )
+
+        with patch("voice.manager.ElevenLabsProvider", side_effect=RuntimeError("boom")):
+            manager = VoiceManager(config=config)
+
+        self.assertIsInstance(manager._provider, SystemProvider)
+        self.assertIn("failed to initialize", manager.diagnostics[0])
+
+    def test_voice_manager_runtime_provider_failure_falls_back_to_system(self) -> None:
+        config = SimpleNamespace(
+            voice_provider="elevenlabs",
+            voice_id="voice-123",
+            voice_model="model-123",
+            elevenlabs_api_key="key-123",
+        )
+        manager = VoiceManager(config=config)
+
+        with (
+            patch.object(manager._provider, "speak", return_value=False),
+            patch.object(SystemProvider, "speak", return_value=True),
+        ):
+            self.assertTrue(manager.speak("Hello"))
+
+        self.assertIsInstance(manager._provider, SystemProvider)
+        self.assertIn("failed while speaking", manager.diagnostics[-1])
+
+    def test_voice_manager_missing_optional_settings_do_not_crash(self) -> None:
+        manager = VoiceManager(config=SimpleNamespace(voice_provider="system"))
 
         self.assertIsInstance(manager._provider, SystemProvider)
 
