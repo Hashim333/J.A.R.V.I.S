@@ -50,31 +50,41 @@ class Registry:
             BrowserHandler,
             KeyboardHandler,
             MouseHandler,
+            WindowHandler,
         )
 
         apps_handler = AppsHandler()
         browser_handler = BrowserHandler()
         mouse_handler = MouseHandler()
         keyboard_handler = KeyboardHandler()
+        window_handler = WindowHandler()
 
         for action in ("open_app", "close_app", "is_running"):
             self.register(action, apps_handler)
 
+        # Browser Handler
         for action in (
             "navigate",
             "browser_search",
             "new_tab",
             "close_current_tab",
+            "close_specific_tab",
             "close_all_tabs",
+            "close_other_tabs",
+            "switch_tab",
             "next_tab",
             "previous_tab",
             "duplicate_tab",
             "reopen_closed_tab",
             "refresh_page",
             "hard_refresh",
+            "reload",
+            "back",
+            "forward",
         ):
             self.register(action, browser_handler)
 
+        # Mouse Handler
         for action in (
             "move",
             "move_mouse",
@@ -90,6 +100,7 @@ class Registry:
         ):
             self.register(action, mouse_handler)
 
+        # Keyboard Handler
         for action in (
             "type_text",
             "press",
@@ -102,6 +113,17 @@ class Registry:
             "backspace",
         ):
             self.register(action, keyboard_handler)
+
+        # Window Handler
+        for action in (
+            "active_window",
+            "list_windows",
+            "focus_window",
+            "minimize_window",
+            "maximize_window",
+            "restore_window",
+        ):
+            self.register(action, window_handler)
 
     @staticmethod
     def _validate_action(action: str) -> None:

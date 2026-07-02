@@ -10,6 +10,7 @@ from typing import Any
 
 import automation.apps as apps
 import automation.browser as browser
+import automation.windows as windows
 from automation.keyboard import KeyboardController
 from automation.mouse import MouseController
 from models.execution_plan import Step
@@ -66,6 +67,33 @@ class AppsHandler:
         )
 
 
+class WindowHandler:
+    """Adapter for window management actions."""
+
+    _SUPPORTED_ACTIONS = {
+        "active_window",
+        "list_windows",
+        "focus_window",
+    }
+
+    def run(self, step: Step) -> Any:
+        if step.action == "active_window":
+            return windows.get_active_window()
+
+        if step.action == "list_windows":
+            return windows.list_windows()
+
+        if step.action == "focus_window":
+            title = _require_parameter(step, "title")
+            return windows.focus_window(title)
+
+        raise UnsupportedActionError(
+            handler_name="WindowHandler",
+            action=step.action,
+            supported=self._SUPPORTED_ACTIONS,
+        )
+
+
 class BrowserHandler:
     """Adapter for default-browser navigation actions."""
 
@@ -81,6 +109,7 @@ class BrowserHandler:
         "reopen_closed_tab",
         "refresh_page",
         "hard_refresh",
+        "reload",
     }
 
     def run(self, step: Step) -> Any:
@@ -116,6 +145,8 @@ class BrowserHandler:
             return browser.refresh_page(hard=False)
         if step.action == "hard_refresh":
             return browser.refresh_page(hard=True)
+        if step.action == "reload":
+            return browser.reload()
 
         raise UnsupportedActionError(
             handler_name="BrowserHandler",

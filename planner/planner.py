@@ -78,7 +78,7 @@ class Planner:
             "restore_app": "restore_window",
         }
         action = action_by_intent[parsed.intent]
-        return [self._step(action, app, description=f"{action.replace('_', ' ').title()} for {app}.")]
+        return [self._step(action, None, {"title": app}, f"{action.replace('_', ' ').title()} for {app}.")]
 
     # Browser: produce browser/navigation plans without implementing browser automation here.
     def _build_open_website(self, parsed: ParsedCommand) -> list[Step]:
@@ -86,18 +86,12 @@ class Planner:
         return [self._step("navigate", None, {"url": url}, f"Navigate to {url}.")]
 
     def _build_browser_search(self, parsed: ParsedCommand) -> list[Step]:
-        query = parsed.entities.get("query", "")
-        provider_url = {
-            "search_google": "https://www.google.com",
-            "search_youtube": "https://www.youtube.com",
-            "search_chatgpt": "https://chatgpt.com",
-            "search_github": "https://github.com",
-        }[parsed.intent]
+        provider = parsed.entities.get("provider")
+        query = parsed.entities.get("query")
         return [
-            self._step("open_app", "chrome", description="Open Chrome."),
-            self._step("navigate", None, {"url": provider_url}, f"Navigate to {provider_url}."),
-            self._step("type_text", None, {"text": query}, f"Type search query {query!r}."),
-            self._step("enter", None, description="Press Enter."),
+            self._step(
+                "browser_search", None, {"provider": provider, "query": query}, f"Search {provider} for {query!r}."
+            )
         ]
 
     def _build_browser_action(self, parsed: ParsedCommand) -> list[Step]:
@@ -107,6 +101,16 @@ class Planner:
                 None,
                 dict(parsed.entities),
                 f"Browser action: {parsed.intent.replace('_', ' ')}.",
+            )
+        ]
+
+    def _build_window_action(self, parsed: ParsedCommand) -> list[Step]:
+        return [
+            self._step(
+                parsed.intent,
+                None,
+                dict(parsed.entities),
+                f"Window action: {parsed.intent.replace('_', ' ')}.",
             )
         ]
 
@@ -206,16 +210,17 @@ class Planner:
         "restore_app": _build_app_window_action,
         "close_all_app_instances": _build_requires_confirmation,
         "open_website": _build_open_website,
-        "search_google": _build_browser_search,
-        "search_youtube": _build_browser_search,
-        "search_chatgpt": _build_browser_search,
-        "search_github": _build_browser_search,
+        "browser_search": _build_browser_search,
         "new_tab": _build_browser_action,
         "close_current_tab": _build_browser_action,
         "close_specific_tab": _build_browser_action,
         "close_all_tabs": _build_browser_action,
         "close_other_tabs": _build_browser_action,
+        "switch_tab": _build_browser_action,        
         "switch_tab": _build_browser_action,
+        "active_window": _build_window_action,
+        "list_windows": _build_window_action,
+        "focus_window": _build_app_window_action,
         "duplicate_tab": _build_browser_action,
         "reload": _build_browser_action,
         "back": _build_browser_action,

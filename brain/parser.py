@@ -64,6 +64,14 @@ class Parser:
         "gmail": "https://mail.google.com",
     }
 
+    _SEARCH_PROVIDERS: frozenset[str] = frozenset(
+        {"google", "youtube", "github", "stackoverflow", "wikipedia"}
+    )
+
+    _SEARCH_ALIASES: dict[str, str] = {
+        "stack overflow": "stackoverflow",
+    }
+
     # Application Management: all app-control phrases collapse into app intents.
     _APP_INTENTS: dict[str, tuple[str, ...]] = {
         "open_app": ("open", "launch", "run", "start", "boot"),
@@ -94,17 +102,18 @@ class Parser:
     # Browser: tab/navigation/search phrases map to browser intents.
     _BROWSER_INTENTS: dict[str, tuple[str, ...]] = {
         "open_website": ("open website", "open site", "go to", "navigate to"),
-        "search_google": ("search google for", "google", "look up"),
-        "search_youtube": ("search youtube for", "youtube search", "find on youtube"),
-        "search_chatgpt": ("search chatgpt for", "ask chatgpt", "chatgpt"),
-        "search_github": ("search github for", "github search", "find on github"),
+        "browser_search": ("search for", "search", "find", "look up"),
         "new_tab": ("new tab", "open new tab"),
         "close_current_tab": ("close tab", "close current tab"),
         "close_specific_tab": ("close tab number", "close specific tab"),
         "close_all_tabs": ("close all tabs",),
         "close_other_tabs": ("close other tabs",),
         "switch_tab": ("switch tab", "go to tab"),
+        "next_tab": ("next tab",),
+        "previous_tab": ("previous tab",),
         "duplicate_tab": ("duplicate tab",),
+        "reopen_closed_tab": ("reopen tab", "reopen closed tab"),
+        "hard_refresh": ("hard refresh",),
         "reload": ("reload", "refresh"),
         "back": ("back", "go back"),
         "forward": ("forward", "go forward"),
@@ -143,7 +152,9 @@ class Parser:
 
     # Windows: window-management phrases map to window intents.
     _WINDOW_INTENTS: dict[str, tuple[str, ...]] = {
-        "focus_window": ("focus window",),
+        "active_window": ("what is the active window", "what window is active", "active window"),
+        "list_windows": ("list all windows", "show all windows", "list windows"),
+        "focus_window": ("focus window", "focus"),
         "move_window": ("move window",),
         "resize_window": ("resize window",),
         "minimize_window": ("minimize window",),
@@ -252,6 +263,7 @@ class Parser:
             or self._parse_mouse(normalized, text)
             or self._parse_app(normalized, text)
             or self._parse_window(normalized, text)
+            or self._parse_window(normalized, text)
             or self._parse_files(normalized, text)
             or self._parse_system(normalized, text)
             or self._parse_media(normalized, text)
@@ -271,22 +283,27 @@ class Parser:
         return None
 
     def _parse_browser(self, normalized: str, raw_text: str) -> ParsedCommand | None:
-        search_intents = {
-            "search_google",
-            "search_youtube",
-            "search_chatgpt",
-            "search_github",
-        }
+        # Pattern: "search <query> on <provider>"
+        match_on = re.match(r"search\s+(.+)\s+on\s+([\w\s]+)", normalized, re.IGNORECASE)
+        if match_on:
+            query, provider_phrase = match_on.groups()
+            provider = self._resolve_search_provider(provider_phrase)
+            if provider:
+                return self._command(raw_text, "browser_search", {"provider": provider, "query": query.strip()})
+
+        # Pattern: "<provider> <query>"
+        for provider_phrase in sorted(list(self._SEARCH_PROVIDERS) + list(self._SEARCH_ALIASES.keys()), key=len, reverse=True):
+            if normalized.startswith(f"{provider_phrase} "):
+                provider = self._resolve_search_provider(provider_phrase)
+                query = normalized[len(provider_phrase):].strip()
+                if provider and query:
+                    return self._command(raw_text, "browser_search", {"provider": provider, "query": query})
+
         match = self._match_intent(normalized, self._BROWSER_INTENTS)
         if match is not None:
             intent, remainder = match
-
             remainder = self._clean_remainder(remainder)
-            if intent in search_intents:
-                if not remainder:
-                    return None
-                return self._command(raw_text, intent, {"query": remainder})
-
+            
             if intent == "open_website":
                 target = remainder or self._extract_known_website(normalized)
                 if not target:
@@ -363,6 +380,20 @@ class Parser:
                 amount = numbers[0] if numbers else 5
                 entities["amount"] = amount if intent == "scroll_up" else -amount
 
+            return self._command(raw_text, intent, entities)
+        return None
+
+    def _parse_window(self, normalized: str, raw_text: str) -> ParsedCommand | None:
+        match = self._match_intent(normalized, self._WINDOW_INTENTS)
+        if match:
+            intent, remainder = match
+            remainder = self._clean_remainder(remainder)
+            entities: dict[str, object] = {}
+            if intent == "focus_window":
+                app_name = self._extract_app(remainder)
+                if not app_name and not remainder:
+                    return None # 'focus' with no target
+                entities["title"] = app_name or remainder
             return self._command(raw_text, intent, entities)
         return None
 
@@ -491,6 +522,13 @@ class Parser:
     @staticmethod
     def _clean_remainder(text: str) -> str:
         return re.sub(r"^(the|a|an|to|for|if)\s+", "", text).strip()
+
+    def _resolve_search_provider(self, phrase: str) -> str | None:
+        """Normalize a search provider phrase."""
+        key = phrase.strip().casefold()
+        if key in self._SEARCH_PROVIDERS:
+            return key
+        return self._SEARCH_ALIASES.get(key)
 
     def _extract_app(self, text: str) -> str | None:
         for phrase, app in sorted(self._SUPPORTED_APPS.items(), key=lambda item: len(item[0]), reverse=True):
