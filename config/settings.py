@@ -41,6 +41,12 @@ class Settings:
     voice_id: str
     voice_model: str
     elevenlabs_api_key: str
+    voice_stability: float
+    voice_similarity: float
+    voice_style: float
+    voice_speaker_boost: bool
+    push_to_talk_enabled: bool
+    push_to_talk_key: str
 
 
 def _bool_env(key: str, default: bool) -> bool:
@@ -56,6 +62,17 @@ def _str_env(key: str, default: str) -> str:
     return os.getenv(key, default).strip()
 
 
+def _float_env(key: str, default: float) -> float:
+    """Parse a float environment variable with a safe default."""
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return default
+
+
 def _load() -> Settings:
     """Construct Settings from environment variables with safe defaults."""
     return Settings(
@@ -68,6 +85,12 @@ def _load() -> Settings:
         voice_id=_str_env("VOICE_ID", ""),
         voice_model=_str_env("VOICE_MODEL", "eleven_multilingual_v2"),
         elevenlabs_api_key=_str_env("ELEVENLABS_API_KEY", ""),
+        voice_stability=_float_env("VOICE_STABILITY", 0.5),
+        voice_similarity=_float_env("VOICE_SIMILARITY", 0.75),
+        voice_style=_float_env("VOICE_STYLE", 0.0),
+        voice_speaker_boost=_bool_env("VOICE_SPEAKER_BOOST", default=True),
+        push_to_talk_enabled=_bool_env("PUSH_TO_TALK_ENABLED", default=False),
+        push_to_talk_key=_str_env("PUSH_TO_TALK_KEY", "F9"),
     )
 
 
@@ -88,3 +111,9 @@ VOICE_PROVIDER: str   = settings.voice_provider
 VOICE_ID: str         = settings.voice_id
 VOICE_MODEL: str      = settings.voice_model
 ELEVENLABS_API_KEY: str = settings.elevenlabs_api_key
+VOICE_STABILITY: float = settings.voice_stability
+VOICE_SIMILARITY: float = settings.voice_similarity
+VOICE_STYLE: float = settings.voice_style
+VOICE_SPEAKER_BOOST: bool = settings.voice_speaker_boost
+PUSH_TO_TALK_ENABLED: bool = settings.push_to_talk_enabled
+PUSH_TO_TALK_KEY: str = settings.push_to_talk_key
