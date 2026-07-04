@@ -14,5 +14,6 @@ and never imports from it.
 
 from services.base_service import BaseService, ServiceStatus
 from services.service_manager import ServiceManager
+from services.wake_word_service import WakeWordService
 
-__all__ = ["BaseService", "ServiceStatus", "ServiceManager"]
+__all__ = ["BaseService", "ServiceStatus", "ServiceManager", "WakeWordService"]

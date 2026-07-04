@@ -13,6 +13,7 @@ import os
 
 from brain import Brain
 from response.manager import ResponseManager
+from services import ServiceManager, WakeWordService
 
 
 HEADER = """=================================================
@@ -62,6 +63,22 @@ def _display_history(history: list[str]) -> None:
         print(f"  {i}: {command}")
 
 
+def _report_service_results(action: str, results: dict[str, str]) -> None:
+    """
+    Print any non-"ok" results from a ServiceManager bulk operation.
+
+    With no services registered yet, results is always empty and this
+    prints nothing. Kept in place so it does the right thing the
+    moment the first real service is registered.
+    """
+    failures = {name: outcome for name, outcome in results.items() if outcome != "ok"}
+    if not failures:
+        return
+    print(f"Warning: issues while running {action} on services:")
+    for name, outcome in failures.items():
+        print(f"  {name}: {outcome}")
+
+
 def main() -> None:
     print(HEADER)
     print()
@@ -71,54 +88,63 @@ def main() -> None:
     brain = Brain()
     response_manager = ResponseManager(debug=DEBUG)
 
+    service_manager = ServiceManager()
+    service_manager.register("wake_word", WakeWordService())
+    _report_service_results("initialize", service_manager.initialize_all())
+    _report_service_results("start", service_manager.start_all())
+
     print("Brain Ready")
     print("Parser Ready")
     print("Planner Ready")
     print("Executor Ready")
+    print("Service Manager Ready")
     print()
     print("JARVIS Ready.")
     print()
 
     history: list[str] = []
 
-    while True:
-        try:
-            command = input("> ")
-        except KeyboardInterrupt:
-            print()
-            print("Shutting down JARVIS...")
-            print()
-            print("Goodbye.")
-            break
-        except EOFError:
-            print()
-            print("Shutting down JARVIS...")
-            print()
-            print("Goodbye.")
-            break
+    try:
+        while True:
+            try:
+                command = input("> ")
+            except KeyboardInterrupt:
+                print()
+                print("Shutting down JARVIS...")
+                print()
+                print("Goodbye.")
+                break
+            except EOFError:
+                print()
+                print("Shutting down JARVIS...")
+                print()
+                print("Goodbye.")
+                break
 
-        command = command.strip()
-        if not command:
-            continue
+            command = command.strip()
+            if not command:
+                continue
 
-        if command.casefold() in {"exit", "quit"}:
-            print("Shutting down JARVIS...")
-            print()
-            print("Goodbye.")
-            break
+            if command.casefold() in {"exit", "quit"}:
+                print("Shutting down JARVIS...")
+                print()
+                print("Goodbye.")
+                break
 
-        if command.casefold() == "help":
-            print(HELP_TEXT)
-            continue
+            if command.casefold() == "help":
+                print(HELP_TEXT)
+                continue
 
-        if command.casefold() == "history":
-            _display_history(history)
-            continue
+            if command.casefold() == "history":
+                _display_history(history)
+                continue
 
-        history.append(command)
+            history.append(command)
 
-        response = brain.process(command)
-        response_manager.present_console(response)
+            response = brain.process(command)
+            response_manager.present_console(response)
+    finally:
+        _report_service_results("shutdown", service_manager.shutdown_all())
 
 
 if __name__ == "__main__":
