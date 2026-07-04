@@ -283,13 +283,18 @@ class Parser:
         return None
 
     def _parse_browser(self, normalized: str, raw_text: str) -> ParsedCommand | None:
-        # Pattern: "search <query> on <provider>"
-        match_on = re.match(r"search\s+(.+)\s+on\s+([\w\s]+)", normalized, re.IGNORECASE)
-        if match_on:
-            query, provider_phrase = match_on.groups()
-            provider = self._resolve_search_provider(provider_phrase)
-            if provider:
-                return self._command(raw_text, "browser_search", {"provider": provider, "query": query.strip()})
+        # Pattern: "<search_synonym> <query> on <provider>"
+        search_synonyms = self._BROWSER_INTENTS.get("browser_search", ())
+        for synonym in sorted(search_synonyms, key=len, reverse=True):
+            if normalized.startswith(f"{synonym} ") and " on " in normalized:
+                parts = normalized.split(" on ", 1)
+                provider_phrase = parts[1]
+                query = parts[0][len(synonym):].strip()
+
+                provider = self._resolve_search_provider(provider_phrase)
+                if provider and query:
+                    return self._command(raw_text, "browser_search", {"provider": provider, "query": query})
+
 
         # Pattern: "<provider> <query>"
         for provider_phrase in sorted(list(self._SEARCH_PROVIDERS) + list(self._SEARCH_ALIASES.keys()), key=len, reverse=True):
