@@ -12,67 +12,42 @@ I/O or wake word detection.
 
 from __future__ import annotations
 
-import threading
-import time
-
 from services.base_service import BaseService
+from voice.microphone_stream import MicrophoneStream
 
 
 class WakeWordService(BaseService):
     """
-    A placeholder wake word service that runs a loop in a background
-    thread.
+    A wake word service that continuously captures audio from the microphone.
     """
 
     def __init__(self) -> None:
         super().__init__(name="wake_word")
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
+        self._microphone_stream: MicrophoneStream | None = None
 
     def initialize(self) -> None:
         """
-        One-time setup. For now, this is a no-op. Future versions
-        would load models here.
+        One-time setup. Initialize microphone resources.
         """
-        pass
+        self._microphone_stream = MicrophoneStream()
 
     def start(self) -> None:
         """
-        Start the background thread if it is not already running.
+        Start capturing audio from the microphone.
         """
-        with self._lock:
-            if self._thread is not None and self._thread.is_alive():
-                return  # Already running
-
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
+        if self._microphone_stream:
+            self._microphone_stream.start()
 
     def stop(self) -> None:
         """
         Signal the background thread to stop and wait for it to exit.
         """
-        with self._lock:
-            if self._thread is None:
-                return  # Already stopped
-
-            self._stop_event.set()
-            thread = self._thread
-
-        thread.join(timeout=5.0)
-        with self._lock:
-            self._thread = None
+        if self._microphone_stream:
+            self._microphone_stream.stop()
 
     def shutdown(self) -> None:
         """
         Ensure the service is stopped cleanly on application exit.
         """
-        self.stop()
-
-    def _run(self) -> None:
-        """
-        The main loop for the background thread.
-        """
-        while not self._stop_event.is_set():
-            time.sleep(0.1)
+        if self._microphone_stream:
+            self._microphone_stream.shutdown()
