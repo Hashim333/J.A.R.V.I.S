@@ -14,6 +14,13 @@ and never imports from it.
 
 from services.base_service import BaseService, ServiceStatus
 from services.service_manager import ServiceManager
+from services.listener_service import ListenerService
 from services.wake_word_service import WakeWordService
 
-__all__ = ["BaseService", "ServiceStatus", "ServiceManager", "WakeWordService"]
+__all__ = [
+    "BaseService",
+    "ServiceStatus",
+    "ServiceManager",
+    "ListenerService",
+    "WakeWordService",
+]
