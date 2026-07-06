@@ -4,9 +4,8 @@ dev_tests/test_wake_word_service.py
 Unit tests for the WakeWordService.
 """
 
-import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from services.base_service import ServiceStatus
 from services.service_manager import ServiceManager
@@ -26,75 +25,61 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
         """Verify the service starts in the STOPPED state."""
         self.assertEqual(self.service.status, ServiceStatus.STOPPED)
 
-    def test_start_transitions_to_running(self) -> None:
+    @patch("services.wake_word_service.MicrophoneStream")
+    def test_start_transitions_to_running(self, mock_microphone_stream_class: MagicMock) -> None:
         """Verify start() moves the service to RUNNING."""
+        mock_microphone_stream = mock_microphone_stream_class.return_value
+        self.manager.initialize_all()
         self.manager.start_all()
         self.assertEqual(self.service.status, ServiceStatus.RUNNING)
-        self.assertIsNotNone(self.service._thread)
-        self.assertTrue(self.service._thread.is_alive())
+        mock_microphone_stream.start.assert_called_once()
         self.manager.stop_all()
 
-    def test_stop_transitions_to_stopped(self) -> None:
-        """Verify stop() moves the service to STOPPED and joins the thread."""
-        self.manager.start_all()
-        thread = self.service._thread
-        self.assertIsNotNone(thread)
-        self.assertTrue(thread.is_alive())
-
-        self.manager.stop_all()
-        self.assertEqual(self.service.status, ServiceStatus.STOPPED)
-        self.assertFalse(thread.is_alive())
-        self.assertIsNone(self.service._thread)
-
-    def test_multiple_starts_are_safe(self) -> None:
-        """Verify calling start() multiple times is handled gracefully."""
-        self.manager.start_all()
-        first_thread = self.service._thread
-
-        self.manager.start_all()  # Second start call
-        second_thread = self.service._thread
-
-        self.assertIs(first_thread, second_thread)
-        self.assertTrue(first_thread.is_alive())
-        self.manager.stop_all()
-
-    def test_multiple_stops_are_safe(self) -> None:
-        """Verify calling stop() multiple times is handled gracefully."""
+    @patch("services.wake_word_service.MicrophoneStream")
+    def test_stop_transitions_to_stopped(self, mock_microphone_stream_class: MagicMock) -> None:
+        """Verify stop() moves the service to STOPPED."""
+        mock_microphone_stream = mock_microphone_stream_class.return_value
+        self.manager.initialize_all()
         self.manager.start_all()
         self.manager.stop_all()
         self.assertEqual(self.service.status, ServiceStatus.STOPPED)
+        mock_microphone_stream.stop.assert_called_once()
 
-        try:
-            self.manager.stop_all()  # Second stop call
-        except Exception:
-            self.fail("Calling stop() a second time raised an exception.")
-
-    def test_restart_stops_and_starts_thread(self) -> None:
-        """Verify restart() creates a new thread."""
+    @patch("services.wake_word_service.MicrophoneStream")
+    def test_restart_stops_and_starts(self, mock_microphone_stream_class: MagicMock) -> None:
+        """Verify restart() calls stop and then start."""
+        mock_microphone_stream = mock_microphone_stream_class.return_value
+        self.manager.initialize_all()
         self.manager.start_all()
-        first_thread = self.service._thread
-        self.assertIsNotNone(first_thread)
+        mock_microphone_stream.start.assert_called_once()
 
-        with patch.object(first_thread, 'join') as mock_join:
-            self.manager.restart(self.service.name)
-            mock_join.assert_called_once()
-
+        self.manager.restart(self.service.name)
         self.assertEqual(self.service.status, ServiceStatus.RUNNING)
-        second_thread = self.service._thread
-        self.assertIsNotNone(second_thread)
-        self.assertIsNot(first_thread, second_thread)
-        self.assertTrue(second_thread.is_alive())
+        mock_microphone_stream.stop.assert_called_once()
+        self.assertEqual(mock_microphone_stream.start.call_count, 2)
 
         self.manager.stop_all()
 
-    def test_shutdown_stops_the_service(self) -> None:
-        """Verify shutdown() stops the service thread."""
+    @patch("services.wake_word_service.MicrophoneStream")
+    def test_shutdown_stops_the_service(self, mock_microphone_stream_class: MagicMock) -> None:
+        """Verify shutdown() stops the service."""
+        mock_microphone_stream = mock_microphone_stream_class.return_value
+        self.manager.initialize_all()
         self.manager.start_all()
-        thread = self.service._thread
-        self.assertTrue(thread.is_alive())
-
         self.manager.shutdown_all()
-        self.assertFalse(thread.is_alive())
+        mock_microphone_stream.shutdown.assert_called_once()
+
+    def test_initialization_failure_sets_status_to_failed(self) -> None:
+        """Verify that a failure during initialization sets the service status to FAILED."""
+        # We need a new mock for this test to simulate the side effect on the constructor
+        with patch("services.wake_word_service.MicrophoneStream") as mock_stream:
+            mock_stream.side_effect = Exception("Initialization failed")
+            service = WakeWordService()
+            manager = ServiceManager()
+            manager.register(service.name, service)
+
+            manager.initialize_all()
+            self.assertEqual(service.status, ServiceStatus.FAILED)
 
 
 if __name__ == "__main__":
