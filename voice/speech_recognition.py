@@ -1,11 +1,11 @@
 """
 voice/speech_recognition.py
 
-Speech-to-text adapter for push-to-talk input.
+A stateless adapter for converting audio data to text using an underlying
+speech recognition engine.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -20,7 +20,10 @@ class SpeechRecognitionResult:
 
 
 class SpeechRecognition:
-    """Convert one captured audio sample into text."""
+    """
+    A stateless utility that converts a single audio sample into text.
+    It acts as an adapter, wrapping a speech recognition engine.
+    """
 
     def __init__(
         self,
@@ -28,6 +31,16 @@ class SpeechRecognition:
         recognizer_factory: Callable[[], Any] | None = None,
         language: str = "en-US",
     ) -> None:
+        """
+        Initializes the SpeechRecognition adapter.
+
+        Args:
+            recognizer_factory: A callable that returns a speech recognizer
+                instance. This allows for dependency injection, making the
+                class testable and adaptable to different engines. If None,
+                it defaults to `speech_recognition.Recognizer`.
+            language: The language code for speech recognition (e.g., "en-US").
+        """
         self._recognizer_factory = recognizer_factory
         self._language = language
 
@@ -40,7 +53,7 @@ class SpeechRecognition:
             )
 
         try:
-            recognizer, sr = self._build_runtime()
+            recognizer, sr_exceptions = self._get_runtime_dependencies()
         except Exception:
             return SpeechRecognitionResult(
                 success=False,
@@ -49,12 +62,12 @@ class SpeechRecognition:
 
         try:
             text = recognizer.recognize_google(audio, language=self._language)
-        except getattr(sr, "UnknownValueError", ValueError):
+        except getattr(sr_exceptions, "UnknownValueError", ValueError):
             return SpeechRecognitionResult(
                 success=False,
                 error="No speech could be recognized.",
             )
-        except getattr(sr, "RequestError", RuntimeError):
+        except getattr(sr_exceptions, "RequestError", RuntimeError):
             return SpeechRecognitionResult(
                 success=False,
                 error="Speech recognition service is unavailable.",
@@ -79,13 +92,13 @@ class SpeechRecognition:
 
         return SpeechRecognitionResult(success=True, text=text)
 
-    def _build_runtime(self) -> tuple[Any, Any]:
+    def _get_runtime_dependencies(self) -> tuple[Any, Any]:
         if self._recognizer_factory is not None:
             return self._recognizer_factory(), _FallbackSpeechRecognition()
 
         import speech_recognition as sr
 
-        return sr.Recognizer(), sr
+        return sr.Recognizer(), sr  # type: ignore[misc]
 
 
 class _FallbackSpeechRecognition:
