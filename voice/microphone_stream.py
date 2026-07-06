@@ -18,12 +18,15 @@ class MicrophoneStream:
         microphone_factory: Callable[[], Any] | None = None,
         chunk_size: int = 1024,
         sample_rate: int = 16000,
+        on_audio_chunk: Callable[[bytes], None] | None = None,
     ) -> None:
         self._microphone_factory = microphone_factory or sr.Microphone
         self._chunk_size = chunk_size
         self._sample_rate = sample_rate
+        self._on_audio_chunk = on_audio_chunk
         self._stream = None
         self._thread = None
+        self._microphone = None
         self._is_running = False
         self._lock = threading.Lock()
 
@@ -43,7 +46,6 @@ class MicrophoneStream:
                 self._thread.daemon = True
                 self._thread.start()
             except Exception:
-                self.shutdown()
                 raise
 
     def stop(self) -> None:
@@ -61,20 +63,18 @@ class MicrophoneStream:
         """Release all microphone resources."""
         self.stop()
         with self._lock:
-            if self._stream:
-                self._stream.close()
             if self._microphone:
                 self._microphone.__exit__(None, None, None)
             self._stream = None
             self._microphone = None
 
     def _capture_loop(self) -> None:
-        """Continuously read from the stream and discard the data."""
+        """Continuously read from the stream and process the data."""
         while self._is_running:
             try:
-                # Read audio data from the stream. This is a blocking call.
-                # The chunk size is determined by the microphone's chunk_size.
-                self._stream.read(self._chunk_size)
+                audio_chunk = self._stream.read(self._chunk_size)
+                if self._on_audio_chunk:
+                    self._on_audio_chunk(audio_chunk)
             except IOError:
                 # This can happen if the buffer is overflown.
                 # We will just ignore it and continue.
