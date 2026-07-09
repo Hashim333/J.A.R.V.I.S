@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import MagicMock, patch
+import threading
 
 from services.wake_word_service import WakeWordService
 from voice.vad import VAD
@@ -91,13 +92,14 @@ class TestWakeWordService(unittest.TestCase):
     """Tests WakeWordService behaviour."""
 
     def setUp(self):
-        self.service = WakeWordService()
+        self.wake_word_event = threading.Event()
+        self.service = WakeWordService(wake_word_detected_event=self.wake_word_event)
         self.service.initialize()
         self.assertIsNotNone(self.service._vad)
 
     def test_initial_state(self):
         """Speech event should initially be cleared."""
-        self.assertFalse(self.service.is_speech_detected.is_set())
+        self.assertFalse(self.wake_word_event.is_set())
 
     def test_speech_sets_event(self):
         """Speech detection should set the event."""
@@ -110,10 +112,10 @@ class TestWakeWordService(unittest.TestCase):
             for _ in range(needed):
                 self.service._vad.process_audio(FRAME)
 
-        self.assertTrue(self.service.is_speech_detected.is_set())
+        self.assertTrue(self.wake_word_event.is_set())
 
-    def test_silence_clears_event(self):
-        """Speech followed by silence should clear the event."""
+    def test_speech_then_silence_leaves_event_set(self):
+        """Speech followed by silence should leave the event set."""
         needed = self.service._vad._ring_buffer.maxlen
 
         with patch(
@@ -123,7 +125,7 @@ class TestWakeWordService(unittest.TestCase):
             for _ in range(needed):
                 self.service._vad.process_audio(FRAME)
 
-        self.assertTrue(self.service.is_speech_detected.is_set())
+        self.assertTrue(self.wake_word_event.is_set())
 
         with patch(
             "voice.vad.webrtcvad.Vad.is_speech",
@@ -132,7 +134,8 @@ class TestWakeWordService(unittest.TestCase):
             for _ in range(needed):
                 self.service._vad.process_audio(FRAME)
 
-        self.assertFalse(self.service.is_speech_detected.is_set())
+        # The service no longer clears the event; the consumer is responsible.
+        self.assertTrue(self.wake_word_event.is_set())
 
     def test_invalid_frame_size_is_ignored(self):
         """Frames with invalid length should be ignored."""
@@ -149,7 +152,9 @@ class TestWakeWordService(unittest.TestCase):
         """The service should correctly detect multiple speech periods."""
         needed = self.service._vad._ring_buffer.maxlen
 
-        for _ in range(2):
+        for i in range(2):
+            self.wake_word_event.clear()
+            self.assertFalse(self.wake_word_event.is_set())
 
             with patch(
                 "voice.vad.webrtcvad.Vad.is_speech",
@@ -159,7 +164,8 @@ class TestWakeWordService(unittest.TestCase):
                     self.service._vad.process_audio(FRAME)
 
             self.assertTrue(
-                self.service.is_speech_detected.is_set()
+                self.wake_word_event.is_set(),
+                f"Event not set on iteration {i}",
             )
 
             with patch(
@@ -169,8 +175,9 @@ class TestWakeWordService(unittest.TestCase):
                 for _ in range(needed):
                     self.service._vad.process_audio(FRAME)
 
-            self.assertFalse(
-                self.service.is_speech_detected.is_set()
+            self.assertTrue(
+                self.wake_word_event.is_set(),
+                f"Event was cleared on iteration {i}",
             )
 
 

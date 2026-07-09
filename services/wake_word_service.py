@@ -22,15 +22,15 @@ class WakeWordService(BaseService):
     A service that listens for a wake word in the background.
 
     This service manages a microphone stream and a VAD instance to detect
-    voice activity. It exposes events for speech start and end but does not
-    yet implement the full wake word detection logic.
+    voice activity. When speech is detected, it signals this by setting a
+    threading.Event object that is passed in during initialization.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, wake_word_detected_event: threading.Event) -> None:
         super().__init__(name="wake_word")
+        self._wake_word_detected_event = wake_word_detected_event
         self._vad: VAD | None = None  # Initialized in initialize()
         self._microphone_stream: MicrophoneStream | None = None  # Initialized in initialize()
-        self.is_speech_detected = threading.Event()
 
     def initialize(self) -> None:
         """
@@ -44,7 +44,7 @@ class WakeWordService(BaseService):
         try:
             self._vad = VAD(
                 on_speech_started=self._on_speech_started,
-                on_speech_ended=self._on_speech_ended,
+                on_speech_ended=lambda: None,  # No-op for speech end
             )
             self._microphone_stream = MicrophoneStream(
                 on_audio_chunk=self._vad.process_audio
@@ -59,11 +59,7 @@ class WakeWordService(BaseService):
 
     def _on_speech_started(self) -> None:
         """Callback for when speech is detected."""
-        self.is_speech_detected.set()
-
-    def _on_speech_ended(self) -> None:
-        """Callback for when speech ends."""
-        self.is_speech_detected.clear()
+        self._wake_word_detected_event.set()
 
     def start(self) -> None:
         """
