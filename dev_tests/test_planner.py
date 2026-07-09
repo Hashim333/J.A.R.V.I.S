@@ -6,7 +6,7 @@ Unit tests for the rule-based Planner.
 
 import unittest
 
-from brain.parsed_command import ParsedCommand
+from models.parsed_command import ParsedCommand
 from brain.planner import Planner
 
 
@@ -40,7 +40,7 @@ class TestPlanner(unittest.TestCase):
         command = ParsedCommand(
             raw_text="close chrome",
             intent="close_app",
-            entities={"app_name": "chrome"},
+            entities={"app": "chrome"},
             confidence=1.0,
         )
 
@@ -51,6 +51,7 @@ class TestPlanner(unittest.TestCase):
         step = plan.steps[0]
         self.assertEqual(step.action, "close_app")
         self.assertEqual(step.target, "chrome")
+        self.assertEqual(step.description, "Close chrome.")
 
     def test_plan_unknown_intent(self) -> None:
         """Verify an unknown intent results in an empty plan."""
@@ -63,7 +64,7 @@ class TestPlanner(unittest.TestCase):
         plan = self.planner.create_plan(command)
 
         self.assertEqual(plan.intent, "unknown")
-        self.assertEqual(plan.steps, [])
+        self.assertEqual(len(plan.steps), 0)
 
 
 if __name__ == "__main__":

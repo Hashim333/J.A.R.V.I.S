@@ -55,7 +55,7 @@ from typing import Any
 try:
     from brain import Brain  # type: ignore
     from brain.parser import Parser
-    from planner.planner import Planner
+    from brain.planner import Planner
     from executor.executor import Executor
     from automation.registry import Registry
     from automation.handlers import AppsHandler, MouseHandler, KeyboardHandler
