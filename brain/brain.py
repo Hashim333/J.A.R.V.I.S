@@ -21,7 +21,7 @@ back.
 from __future__ import annotations
 
 from brain.parser import Parser
-from planner.planner import Planner
+from brain.planner import Planner
 from executor.executor import Executor
 from models.response import Response
 

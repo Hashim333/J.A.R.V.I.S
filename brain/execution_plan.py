@@ -48,6 +48,7 @@ class ExecutionPlan:
     intent: str
     confidence: float
     steps: list[Step] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate field types and ranges at construction time."""

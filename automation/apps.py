@@ -198,8 +198,6 @@ def _resolve_launch_candidates(name: str) -> list[str]:
         path_match = shutil.which(candidate)
         if path_match:
             resolved.append(path_match)
-        else:
-            resolved.append(candidate)
 
     if resolved:
         return resolved

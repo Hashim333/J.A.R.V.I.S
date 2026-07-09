@@ -13,10 +13,10 @@ import os
 import queue
 import threading
 import time
-
+import sys
 from brain import Brain
 from brain.parser import Parser
-from planner.planner import Planner
+from brain.planner import Planner
 from executor.executor import Executor
 from automation.registry import Registry
 from automation.handlers import AppsHandler, MouseHandler, KeyboardHandler
@@ -137,7 +137,15 @@ def main() -> None:
     registry.register("type_text", keyboard_handler)
     registry.register("hotkey", keyboard_handler)
 
-    # --- 3. Create and Wire Services ---
+    # --- 3. Single command mode ---
+    if len(sys.argv) > 1:
+        command = " ".join(sys.argv[1:])
+        print(f"Executing single command: '{command}'")
+        response = brain.process(command)
+        response_manager.present_console(response)
+        return
+
+    # --- 4. Create and Wire Services ---
     command_queue = queue.Queue()
     wake_word_detected = threading.Event()
     listener_service = ListenerService()
@@ -147,7 +155,7 @@ def main() -> None:
     service_manager.register("listener", listener_service)
     service_manager.register("wake_word", wake_word_service)
 
-    # --- 4. Start Services ---
+    # --- 5. Start Services ---
     _report_service_results("initialize", service_manager.initialize_all())
     _report_service_results("start", service_manager.start_all())
 
@@ -161,13 +169,13 @@ def main() -> None:
     print("Say 'JARVIS' or type a command.")
     print()
 
-    # --- 5. Start Text Input Thread ---
+    # --- 6. Start Text Input Thread ---
     input_thread = threading.Thread(
         target=_text_input_loop, args=(command_queue,), daemon=True
     )
     input_thread.start()
 
-    # --- 6. Main Orchestration Loop ---
+    # --- 7. Main Orchestration Loop ---
     try:
         while True:
             # Check for a voice command
@@ -178,7 +186,17 @@ def main() -> None:
 
                 if result.success and result.text:
                     print(f"Heard: '{result.text}'")
-                    response = brain.process(result.text)
+                    # response = brain.process(result.text)
+                    # response_manager.present_console(response)
+                    response = brain.process(...)
+
+                    print("\n========== DEBUG ==========")
+                    print("Success :", response.success)
+                    print("Message :", response.message)
+                    print("Error   :", response.error)
+                    print("Data    :", response.data)
+                    print("===========================\n")
+
                     response_manager.present_console(response)
                 else:
                     print(f"Could not understand command. Error: {result.error}")
@@ -207,6 +225,7 @@ def main() -> None:
         print("Goodbye.")
     finally:
         _report_service_results("shutdown", service_manager.shutdown_all())
+
 
 
 if __name__ == "__main__":
