@@ -3,17 +3,25 @@ run.py
 
 Interactive runtime entry point for JARVIS.
 
-This file creates one Brain instance and sends user text through
-Brain.process(). It does not bypass Brain or call lower pipeline layers.
+This file creates all the core components, wires them together, and
+runs the main event loop. It supports both text and voice commands.
 """
 
 from __future__ import annotations
 
 import os
+import queue
+import threading
+import time
 
 from brain import Brain
+from brain.parser import Parser
+from planner.planner import Planner
+from executor.executor import Executor
+from automation.registry import Registry
+from automation.handlers import AppsHandler, MouseHandler, KeyboardHandler
 from response.manager import ResponseManager
-from services import ServiceManager, WakeWordService
+from services import ServiceManager, WakeWordService, ListenerService
 
 
 HEADER = """=================================================
@@ -66,10 +74,6 @@ def _display_history(history: list[str]) -> None:
 def _report_service_results(action: str, results: dict[str, str]) -> None:
     """
     Print any non-"ok" results from a ServiceManager bulk operation.
-
-    With no services registered yet, results is always empty and this
-    prints nothing. Kept in place so it does the right thing the
-    moment the first real service is registered.
     """
     failures = {name: outcome for name, outcome in results.items() if outcome != "ok"}
     if not failures:
@@ -79,17 +83,71 @@ def _report_service_results(action: str, results: dict[str, str]) -> None:
         print(f"  {name}: {outcome}")
 
 
+def _text_input_loop(command_queue: queue.Queue[str]) -> None:
+    """
+    A loop that runs in a separate thread to handle text-based input
+    without blocking the main voice loop.
+    """
+    history: list[str] = []
+    while True:
+        try:
+            command = input("> ")
+        except (KeyboardInterrupt, EOFError):
+            # Signal the main thread to exit
+            command_queue.put("exit")
+            break
+
+        command = command.strip()
+        if not command:
+            continue
+
+        if command.casefold() == "history":
+            _display_history(history)
+            continue
+
+        history.append(command)
+        command_queue.put(command)
+
+
 def main() -> None:
     print(HEADER)
     print()
     print("Initializing...")
     print()
 
-    brain = Brain()
+    # --- 1. Create Core Components ---
+    parser = Parser()
+    planner = Planner()
+    registry = Registry()
+    executor = Executor(registry)
+    brain = Brain(parser, planner, executor)
     response_manager = ResponseManager(debug=DEBUG)
 
+    # --- 2. Register Automation Handlers ---
+    apps_handler = AppsHandler()
+    mouse_handler = MouseHandler()
+    keyboard_handler = KeyboardHandler()
+    registry.register("open_app", apps_handler)
+    registry.register("close_app", apps_handler)
+    registry.register("move_mouse", mouse_handler)
+    registry.register("left_click", mouse_handler)
+    registry.register("right_click", mouse_handler)
+    registry.register("double_click", mouse_handler)
+    registry.register("scroll", mouse_handler)
+    registry.register("type_text", keyboard_handler)
+    registry.register("hotkey", keyboard_handler)
+
+    # --- 3. Create and Wire Services ---
+    command_queue = queue.Queue()
+    wake_word_detected = threading.Event()
+    listener_service = ListenerService()
+    wake_word_service = WakeWordService(wake_word_detected_event=wake_word_detected)
+
     service_manager = ServiceManager()
-    service_manager.register("wake_word", WakeWordService())
+    service_manager.register("listener", listener_service)
+    service_manager.register("wake_word", wake_word_service)
+
+    # --- 4. Start Services ---
     _report_service_results("initialize", service_manager.initialize_all())
     _report_service_results("start", service_manager.start_all())
 
@@ -99,50 +157,54 @@ def main() -> None:
     print("Executor Ready")
     print("Service Manager Ready")
     print()
-    print("JARVIS Ready.")
+    print("JARVIS is running in dual mode (voice and text).")
+    print("Say 'JARVIS' or type a command.")
     print()
 
-    history: list[str] = []
+    # --- 5. Start Text Input Thread ---
+    input_thread = threading.Thread(
+        target=_text_input_loop, args=(command_queue,), daemon=True
+    )
+    input_thread.start()
 
+    # --- 6. Main Orchestration Loop ---
     try:
         while True:
+            # Check for a voice command
+            if wake_word_detected.is_set():
+                print("Wake word detected. Listening for command...")
+                wake_word_detected.clear()
+                result = listener_service.listen_for_command()
+
+                if result.success and result.text:
+                    print(f"Heard: '{result.text}'")
+                    response = brain.process(result.text)
+                    response_manager.present_console(response)
+                else:
+                    print(f"Could not understand command. Error: {result.error}")
+                print("\nListening for wake word or text command...")
+
+            # Check for a text command
             try:
-                command = input("> ")
-            except KeyboardInterrupt:
-                print()
-                print("Shutting down JARVIS...")
-                print()
-                print("Goodbye.")
-                break
-            except EOFError:
-                print()
-                print("Shutting down JARVIS...")
-                print()
-                print("Goodbye.")
-                break
+                command = command_queue.get_nowait()
+                if command.casefold() in {"exit", "quit"}:
+                    print("Shutting down JARVIS...")
+                    print("Goodbye.")
+                    break
+                if command.casefold() == "help":
+                    print(HELP_TEXT)
+                    continue
 
-            command = command.strip()
-            if not command:
-                continue
+                response = brain.process(command)
+                response_manager.present_console(response)
+            except queue.Empty:
+                pass  # No text command, continue loop
 
-            if command.casefold() in {"exit", "quit"}:
-                print("Shutting down JARVIS...")
-                print()
-                print("Goodbye.")
-                break
+            time.sleep(0.1)
 
-            if command.casefold() == "help":
-                print(HELP_TEXT)
-                continue
-
-            if command.casefold() == "history":
-                _display_history(history)
-                continue
-
-            history.append(command)
-
-            response = brain.process(command)
-            response_manager.present_console(response)
+    except KeyboardInterrupt:
+        print("\nShutting down JARVIS...")
+        print("Goodbye.")
     finally:
         _report_service_results("shutdown", service_manager.shutdown_all())
 

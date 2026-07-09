@@ -46,20 +46,25 @@ from dataclasses import is_dataclass, fields as dataclass_fields
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# The ONLY JARVIS import allowed in this file.
+# The ONLY JARVIS import allowed in this file is Brain.
+# We also import its dependencies to construct it.
 # Adjust this single line if your Brain class lives at a different path
 # (e.g. `from brain.brain import Brain`). Everything else in this script
 # is intentionally pipeline-agnostic.
 # ---------------------------------------------------------------------------
 try:
     from brain import Brain  # type: ignore
+    from brain.parser import Parser
+    from planner.planner import Planner
+    from executor.executor import Executor
+    from automation.registry import Registry
+    from automation.handlers import AppsHandler, MouseHandler, KeyboardHandler
 except ImportError as import_error:
     print("=" * 70)
-    print("FATAL: Could not import Brain from 'brain'.")
+    print("FATAL: Could not import Brain and its dependencies.")
     print("This test ONLY talks to Brain.process() -- it cannot proceed")
-    print("without it. Check that brain.py / brain/__init__.py exposes a")
-    print("'Brain' class, and that you are running this script from the")
-    print("project root (so 'brain' is importable).")
+    print("without it. Check that all components are available and that")
+    print("you are running this script from the project root.")
     print("-" * 70)
     print(f"Import error: {import_error}")
     print("=" * 70)
@@ -162,11 +167,32 @@ def prompt_custom_command() -> str | None:
 
 
 def main() -> None:
-    print("Initializing Brain...")
+    print("Initializing Brain and its dependencies...")
     try:
-        brain = Brain()
+        # --- Create and wire components ---
+        parser = Parser()
+        planner = Planner()
+        registry = Registry()
+
+        apps_handler = AppsHandler()
+        mouse_handler = MouseHandler()
+        keyboard_handler = KeyboardHandler()
+
+        registry.register("open_app", apps_handler)
+        registry.register("close_app", apps_handler)
+        registry.register("move_mouse", mouse_handler)
+        registry.register("left_click", mouse_handler)
+        registry.register("right_click", mouse_handler)
+        registry.register("double_click", mouse_handler)
+        registry.register("scroll", mouse_handler)
+        registry.register("type_text", keyboard_handler)
+        registry.register("hotkey", keyboard_handler)
+
+        executor = Executor(registry)
+        brain = Brain(parser=parser, planner=planner, executor=executor)
+
     except Exception as exc:  # noqa: BLE001
-        print("FATAL: Could not construct Brain().")
+        print("FATAL: Could not construct Brain or its dependencies.")
         print(f"  {type(exc).__name__}: {exc}")
         traceback.print_exc(file=sys.stdout)
         sys.exit(1)

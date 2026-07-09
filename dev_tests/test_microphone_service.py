@@ -7,6 +7,7 @@ the microphone stream and its lifecycle management.
 
 import unittest
 from unittest.mock import MagicMock, patch
+import threading
 
 from services.base_service import ServiceStatus
 from services.wake_word_service import WakeWordService
@@ -17,7 +18,7 @@ class TestMicrophoneService(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up each test with a new service instance."""
-        self.service = WakeWordService()
+        self.service = WakeWordService(wake_word_detected_event=threading.Event())
 
     @patch("services.wake_word_service.MicrophoneStream")
     def test_initialize(self, mock_microphone_stream_class: MagicMock) -> None:

@@ -6,6 +6,7 @@ Unit tests for the WakeWordService.
 
 import unittest
 from unittest.mock import MagicMock, patch
+import threading
 
 from services.base_service import ServiceStatus
 from services.service_manager import ServiceManager
@@ -17,7 +18,8 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up the test case."""
-        self.service = WakeWordService()
+        self.wake_word_event = threading.Event()
+        self.service = WakeWordService(wake_word_detected_event=self.wake_word_event)
         self.manager = ServiceManager()
         self.manager.register(self.service.name, self.service)
 
@@ -74,7 +76,7 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
         # We need a new mock for this test to simulate the side effect on the constructor
         with patch("services.wake_word_service.MicrophoneStream") as mock_stream:
             mock_stream.side_effect = Exception("Initialization failed")
-            service = WakeWordService()
+            service = WakeWordService(wake_word_detected_event=threading.Event())
             manager = ServiceManager()
             manager.register(service.name, service)
 
