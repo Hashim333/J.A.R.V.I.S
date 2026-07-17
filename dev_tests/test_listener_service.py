@@ -63,15 +63,16 @@ class TestListenerService(unittest.TestCase):
         # Act: Run the command listener
         result = self.service.listen_for_command()
 
-        # Assert: Verify the early exit and correct error propagation
-        self.mock_microphone_manager.capture_once.assert_called_once()
+        # Assert: Verify retries (max_retries=2 → 3 attempts), then failure
+        self.assertEqual(self.mock_microphone_manager.capture_once.call_count, 3)
         self.mock_speech_recognition.recognize.assert_not_called()
         self.assertFalse(result.success)
         self.assertEqual(result.error, "Microphone not found.")
 
     def test_speech_recognition_failure(self) -> None:
         """
-        Verify the service handles a failure from the SpeechRecognition component.
+        Verify the service handles a failure from the SpeechRecognition component
+        and returns the last failed result after exhausting retries.
         """
         # Arrange: Simulate successful capture but failed recognition
         self.mock_microphone_manager.capture_once.return_value = MicrophoneCapture(
@@ -84,7 +85,9 @@ class TestListenerService(unittest.TestCase):
         # Act: Run the command listener
         result = self.service.listen_for_command()
 
-        # Assert: Verify the result reflects the recognition failure
+        # Assert: Verify captures (one per attempt) and recognize calls (one per attempt)
+        self.assertEqual(self.mock_microphone_manager.capture_once.call_count, 3)
+        self.assertEqual(self.mock_speech_recognition.recognize.call_count, 3)
         self.assertFalse(result.success)
         self.assertEqual(result.error, "No speech could be recognized.")
 

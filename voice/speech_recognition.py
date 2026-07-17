@@ -6,8 +6,11 @@ speech recognition engine.
 """
 
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,7 @@ class SpeechRecognition:
     def recognize(self, audio: Any) -> SpeechRecognitionResult:
         """Recognize text from audio without raising runtime errors."""
         if audio is None:
+            logger.warning("recognize() called with None audio")
             return SpeechRecognitionResult(
                 success=False,
                 error="No audio was captured.",
@@ -54,30 +58,37 @@ class SpeechRecognition:
 
         try:
             recognizer, sr_exceptions = self._get_runtime_dependencies()
-        except Exception:
+        except Exception as exc:
+            logger.error("Speech recognition deps failed: %s", exc)
             return SpeechRecognitionResult(
                 success=False,
                 error="Speech recognition support is not available.",
             )
 
+        logger.debug("Google STT starting")
         try:
             text = recognizer.recognize_google(audio, language=self._language)
+            logger.debug("Google STT succeeded: '%s'", text)
         except getattr(sr_exceptions, "UnknownValueError", ValueError):
+            logger.info("Google STT: no speech recognized")
             return SpeechRecognitionResult(
                 success=False,
                 error="No speech could be recognized.",
             )
-        except getattr(sr_exceptions, "RequestError", RuntimeError):
+        except getattr(sr_exceptions, "RequestError", RuntimeError) as exc:
+            logger.warning("Google STT request error: %s", exc)
             return SpeechRecognitionResult(
                 success=False,
                 error="Speech recognition service is unavailable.",
             )
         except TimeoutError:
+            logger.warning("Google STT timed out")
             return SpeechRecognitionResult(
                 success=False,
                 error="Speech recognition timed out.",
             )
-        except Exception:
+        except Exception as exc:
+            logger.error("Google STT failed: %s", exc)
             return SpeechRecognitionResult(
                 success=False,
                 error="Speech recognition failed.",
@@ -85,6 +96,7 @@ class SpeechRecognition:
 
         text = str(text).strip()
         if not text:
+            logger.info("Google STT returned empty text")
             return SpeechRecognitionResult(
                 success=False,
                 error="No speech could be recognized.",

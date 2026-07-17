@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from typing import Any
+
 from brain.parsed_command import ParsedCommand
 
 
@@ -41,6 +43,7 @@ class Parser:
             "a",
             "the",
             "an",
+            "jarvis",
         }
     )
 
@@ -71,13 +74,26 @@ class Parser:
                 # Match commands like "open notepad" or "close chrome"
                 match = re.match(rf"^{re.escape(synonym)}\s+(.+)", normalized)
                 if match:
-                    app_phrase = match.group(1).strip()
+                    app_part = match.group(1).strip()
+
+                    # Extract profile from patterns like "chrome with profile work"
+                    profile = None
+                    profile_match = re.match(r"(\S+)\s+with\s+profile\s+(.+)", app_part)
+                    if profile_match:
+                        app_phrase = profile_match.group(1)
+                        profile = profile_match.group(2)
+                    else:
+                        app_phrase = app_part
+
                     app_name = self._APP_SYNONYMS.get(app_phrase)
                     if app_name:
+                        entities: dict[str, Any] = {"app_name": app_name}
+                        if profile:
+                            entities["profile"] = profile
                         return ParsedCommand(
                             raw_text=raw_text,
                             intent=intent,
-                            entities={"app_name": app_name},
+                            entities=entities,
                         )
         return None
 
@@ -102,6 +118,14 @@ class Parser:
 
         # Collapse repeated whitespace
         normalized = " ".join(normalized.split())
+
+        # Deduplicate consecutively repeated phrases ("open chrome open chrome" → "open chrome")
+        tokens = normalized.split()
+        if len(tokens) > 1 and len(tokens) % 2 == 0:
+            mid = len(tokens) // 2
+            if tokens[:mid] == tokens[mid:]:
+                tokens = tokens[:mid]
+                normalized = " ".join(tokens)
 
         return normalized
 

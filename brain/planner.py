@@ -52,7 +52,10 @@ class Planner:
     # Application Management: use existing app automation where available.
     def _build_open_app(self, parsed: ParsedCommand) -> list[Step]:
         app_name = parsed.entities.get("app_name")
-        return [self._step("open_app", app_name, description=f"Open {app_name}.")]
+        params: dict[str, Any] = {}
+        if "profile" in parsed.entities:
+            params["profile"] = parsed.entities["profile"]
+        return [self._step("open_app", app_name, params, description=f"Open {app_name}.")]
 
     def _build_close_app(self, parsed: ParsedCommand) -> list[Step]:
         app = parsed.entities.get("app")

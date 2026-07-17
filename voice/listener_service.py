@@ -1,7 +1,8 @@
 """
-services/listener_service.py
+DEPRECATED — This file is a stale copy of services/listener_service.py.
 
-A service responsible for capturing and transcribing a single spoken command.
+It is NOT imported anywhere. It lacks the transcribe() method that
+services/listener_service.py has. Do not use; use services/listener_service instead.
 """
 
 from __future__ import annotations

@@ -9,8 +9,10 @@ runs the main event loop. It supports both text and voice commands.
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
+import re
 import threading
 import time
 import sys
@@ -23,12 +25,29 @@ from automation.handlers import AppsHandler, MouseHandler, KeyboardHandler
 from response.manager import ResponseManager
 from services import ServiceManager, WakeWordService, ListenerService
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("run")
+
 
 HEADER = """=================================================
 JARVIS
-================================================="""
+================================================"""
 
 DEBUG = os.environ.get("DEBUG", "").casefold() in {"1", "true", "yes", "on"}
+
+_WAKE_PHRASE = "jarvis"
+_WAKE_PATTERN = re.compile(rf'\b{re.escape(_WAKE_PHRASE)}\b', re.IGNORECASE)
+
+
+def _strip_wake_word(text: str) -> str | None:
+    """Remove the wake phrase from text, return remaining command or None if only wake word."""
+    stripped = _WAKE_PATTERN.sub("", text)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped if stripped else None
 
 
 HELP_TEXT = """
@@ -93,7 +112,6 @@ def _text_input_loop(command_queue: queue.Queue[str]) -> None:
         try:
             command = input("> ")
         except (KeyboardInterrupt, EOFError):
-            # Signal the main thread to exit
             command_queue.put("exit")
             break
 
@@ -119,11 +137,29 @@ def main() -> None:
     parser = Parser()
     planner = Planner()
     registry = Registry()
-    executor = Executor(registry)
-    brain = Brain(parser, planner, executor)
     response_manager = ResponseManager(debug=DEBUG)
 
-    # --- 2. Register Automation Handlers ---
+    # --- 2. Single command mode ---
+    if len(sys.argv) > 1:
+        executor = Executor(registry)
+        brain = Brain(parser, planner, executor)
+        command = " ".join(sys.argv[1:])
+        print(f"Executing single command: '{command}'")
+        response = brain.process(command)
+        response_manager.present_console(response)
+        return
+
+    # --- 3. Create and Wire Services ---
+    command_queue = queue.Queue()
+    wake_word_detected = threading.Event()
+    listener_service = ListenerService()
+    wake_word_service = WakeWordService(wake_word_detected_event=wake_word_detected)
+
+    # --- 4. Register Automation Handlers ---
+    def _voice_input() -> str | None:
+        result = listener_service.listen_for_command()
+        return result.text if result.success else None
+
     apps_handler = AppsHandler()
     mouse_handler = MouseHandler()
     keyboard_handler = KeyboardHandler()
@@ -137,19 +173,8 @@ def main() -> None:
     registry.register("type_text", keyboard_handler)
     registry.register("hotkey", keyboard_handler)
 
-    # --- 3. Single command mode ---
-    if len(sys.argv) > 1:
-        command = " ".join(sys.argv[1:])
-        print(f"Executing single command: '{command}'")
-        response = brain.process(command)
-        response_manager.present_console(response)
-        return
-
-    # --- 4. Create and Wire Services ---
-    command_queue = queue.Queue()
-    wake_word_detected = threading.Event()
-    listener_service = ListenerService()
-    wake_word_service = WakeWordService(wake_word_detected_event=wake_word_detected)
+    executor = Executor(registry, voice_input=_voice_input)
+    brain = Brain(parser, planner, executor)
 
     service_manager = ServiceManager()
     service_manager.register("listener", listener_service)
@@ -176,30 +201,55 @@ def main() -> None:
     input_thread.start()
 
     # --- 7. Main Orchestration Loop ---
+    logger.info("Entering main loop — wake word and text input active")
     try:
         while True:
             # Check for a voice command
             if wake_word_detected.is_set():
-                print("Wake word detected. Listening for command...")
                 wake_word_detected.clear()
-                result = listener_service.listen_for_command()
+                command_audio = wake_word_service.get_command_audio()
+
+                # Stop the wake mic so ListenerService can use it.
+                logger.info("Wake word detected, pausing wake service")
+                wake_word_service.stop()
+
+                # Transcribe the captured command audio.
+                result = listener_service.transcribe(command_audio)
+                logger.info("Wake transcription result: success=%s, text=%r",
+                           result.success, result.text)
 
                 if result.success and result.text:
-                    print(f"Heard: '{result.text}'")
-                    # response = brain.process(result.text)
-                    # response_manager.present_console(response)
-                    response = brain.process(...)
+                    command = _strip_wake_word(result.text)
 
-                    print("\n========== DEBUG ==========")
-                    print("Success :", response.success)
-                    print("Message :", response.message)
-                    print("Error   :", response.error)
-                    print("Data    :", response.data)
-                    print("===========================\n")
+                    if command:
+                        print(f"Command from wake word: '{command}'")
+                        logger.info("Processing voice command: '%s'", command)
+                        response = brain.process(command)
+                        response_manager.present_console(response)
+                    else:
+                        print("Wake word detected. Listening for command...")
+                        logger.info("Only wake word detected, listening for follow-up command")
+                        result2 = listener_service.listen_for_command()
 
-                    response_manager.present_console(response)
+                        if result2.success and result2.text:
+                            print(f"Heard: '{result2.text}'")
+                            logger.info("Processing follow-up command: '%s'", result2.text)
+                            response = brain.process(result2.text)
+                            response_manager.present_console(response)
+                        else:
+                            print(f"Could not understand command. Error: {result2.error}")
+                            logger.warning("Follow-up command failed: %s", result2.error)
+                            import time as _time
+                            _time.sleep(1.5)
                 else:
                     print(f"Could not understand command. Error: {result.error}")
+                    logger.warning("Wake transcription failed: %s", result.error)
+                    import time as _time
+                    _time.sleep(1.5)
+
+                # Re-arm wake word detection for the next cycle.
+                logger.info("Re-arming wake word detection")
+                wake_word_service.reset_for_wake()
                 print("\nListening for wake word or text command...")
 
             # Check for a text command
@@ -213,10 +263,11 @@ def main() -> None:
                     print(HELP_TEXT)
                     continue
 
+                logger.info("Processing text command: '%s'", command)
                 response = brain.process(command)
                 response_manager.present_console(response)
             except queue.Empty:
-                pass  # No text command, continue loop
+                pass
 
             time.sleep(0.1)
 
@@ -224,6 +275,14 @@ def main() -> None:
         print("\nShutting down JARVIS...")
         print("Goodbye.")
     finally:
+        # Close stdin so the daemon _text_input_loop thread gets EOFError
+        # and exits cleanly instead of holding the stdin buffer lock at
+        # interpreter shutdown (which would cause a fatal error).
+        try:
+            sys.__stdin__.close()
+        except Exception:
+            pass
+        logger.info("Shutting down all services")
         _report_service_results("shutdown", service_manager.shutdown_all())
 
 

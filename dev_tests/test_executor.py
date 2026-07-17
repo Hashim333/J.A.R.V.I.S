@@ -5,6 +5,7 @@ Unit tests for the Executor and Registry.
 """
 
 import unittest
+from typing import Any
 from unittest.mock import MagicMock
 
 from brain.execution_plan import ExecutionPlan, Step
@@ -20,7 +21,7 @@ class MockHandler:
         self.return_value = return_value
         self.called_with_step = None
 
-    def run(self, step: Step) -> str:
+    def run(self, step: Step, **kwargs: Any) -> str:
         self.called_with_step = step
         if self.should_raise:
             raise RuntimeError("Handler failed as requested.")

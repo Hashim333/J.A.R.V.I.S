@@ -17,6 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import psutil
 
@@ -234,7 +235,9 @@ def _chrome_user_data_dir() -> Path:
 
 
 def _chrome_profiles() -> list[_ChromeProfile]:
-    local_state_path = _chrome_user_data_dir() / "Local State"
+    user_data_dir = _chrome_user_data_dir()
+
+    local_state_path = user_data_dir / "Local State"
     if not local_state_path.exists():
         raise AppOperationError(
             f"Could not find Chrome Local State file at {local_state_path}."
@@ -279,45 +282,122 @@ def _chrome_profiles() -> list[_ChromeProfile]:
     return profiles
 
 
-def _select_chrome_profile(profiles: list[_ChromeProfile]) -> _ChromeProfile:
+_MAX_VOICE_ATTEMPTS = 5
+
+
+def _build_chrome_aliases(profiles: list[_ChromeProfile]) -> dict[str, int]:
+    aliases: dict[str, int] = {}
+    if profiles:
+        for phrase in ("my profile", "mine", "default"):
+            aliases[phrase] = 0
+    return aliases
+
+
+def _select_chrome_profile(
+    profiles: list[_ChromeProfile],
+    voice_input: Callable[[], str | None] | None = None,
+) -> _ChromeProfile:
+    from brain.profile_selection_parser import ProfileSelectionParser
+
     if len(profiles) == 1:
         return profiles[0]
 
-    print("Which Chrome profile would you like to open?")
-    for index, profile in enumerate(profiles, start=1):
-        print(f"{index}. {profile.display_name}")
-
-    profile_names: dict[str, _ChromeProfile] = {}
+    seen: set[str] = set()
+    unique: list[_ChromeProfile] = []
     for profile in profiles:
-        profile_names.setdefault(profile.display_name.casefold(), profile)
+        key = profile.display_name.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(profile)
 
+    if len(unique) == 1:
+        return unique[0]
+
+    names = [p.display_name for p in unique]
+    parser = ProfileSelectionParser(
+        candidates=names,
+        aliases=_build_chrome_aliases(unique),
+    )
+    names_str = ", ".join(names)
+
+    print("Which Chrome profile would you like to open?")
+    for i, profile in enumerate(unique, start=1):
+        print(f"{i}. {profile.display_name}")
+
+    def _prompt() -> None:
+        print(f"You can say the profile name ({names_str}) or the profile number.")
+
+    attempts = 0
     while True:
-        choice = input("Chrome profile: ").strip()
-        if choice.isdigit():
-            profile_number = int(choice)
-            if 1 <= profile_number <= len(profiles):
-                return profiles[profile_number - 1]
+        if voice_input is not None:
+            print("Listening for your choice...")
+            raw = voice_input()
+            if raw is None:
+                attempts += 1
+                if attempts >= _MAX_VOICE_ATTEMPTS:
+                    raise AppOperationError(
+                        "Could not recognise speech after multiple attempts."
+                    )
+                print("I didn't catch that.")
+                _prompt()
+                continue
+            utterance = raw.strip()
+        else:
+            sys.stdout.write("Chrome profile: ")
+            sys.stdout.flush()
+            utterance = (sys.__stdin__.readline() or "").strip()
 
-        selected_profile = profile_names.get(choice.casefold())
-        if selected_profile is not None:
-            return selected_profile
+        if utterance.casefold() == "cancel":
+            raise AppOperationError("Chrome profile selection cancelled.")
 
-        print("Invalid Chrome profile. Enter a profile number or display name.")
+        result = parser.parse(utterance)
+
+        if result.low_confidence:
+            print("I didn't catch that.")
+            _prompt()
+            if voice_input is not None:
+                attempts += 1
+                if attempts >= _MAX_VOICE_ATTEMPTS:
+                    raise AppOperationError(
+                        "Could not understand your choice after multiple attempts."
+                    )
+                continue
+            continue
+
+        return unique[result.index]
 
 
 def _popen(command: list[str]) -> None:
-    subprocess.Popen(
-        command,
-        shell=False,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-    )
+    import traceback as _tb
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=False,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    except FileNotFoundError as exc:
+        _tb.print_exc()
+        raise
+    except OSError as exc:
+        _tb.print_exc()
+        raise
+    except Exception as exc:
+        _tb.print_exc()
+        raise
 
 
 def _launch(name: str, extra_args: list[str] | None = None) -> bool:
+    import traceback as _tb
     errors: list[str] = []
     extra_args = extra_args or []
 
-    for executable in _resolve_launch_candidates(name):
+    try:
+        candidates = _resolve_launch_candidates(name)
+    except Exception as exc:
+        _tb.print_exc()
+        raise
+
+    for executable in candidates:
         command = [executable, *extra_args]
         try:
             _popen(command)
@@ -325,7 +405,10 @@ def _launch(name: str, extra_args: list[str] | None = None) -> bool:
             errors.append(f"{executable!r}: not found ({exc})")
             continue
         except OSError as exc:
-            errors.append(f"{executable!r}: {exc}")
+            errors.append(f"{executable!r}: OSError {exc.errno} ({exc})")
+            continue
+        except Exception as exc:
+            errors.append(f"{executable!r}: {type(exc).__name__} ({exc})")
             continue
 
         time.sleep(0.5)
@@ -336,9 +419,42 @@ def _launch(name: str, extra_args: list[str] | None = None) -> bool:
     )
 
 
-def _open_chrome() -> bool:
-    profile = _select_chrome_profile(_chrome_profiles())
-    return _launch("chrome", [f"--profile-directory={profile.directory}"])
+def _open_chrome(
+    voice_input: Callable[[], str | None] | None = None,
+    profile: str | None = None,
+) -> bool:
+    import traceback as _tb
+
+    if profile:
+        profile_str = profile.strip()
+        if profile_str:
+            # Try to map display name or directory name
+            try:
+                known_profiles = _chrome_profiles()
+                profile_lower = profile_str.casefold()
+                for p in known_profiles:
+                    if p.display_name.casefold() == profile_lower:
+                        return _launch("chrome", [f"--profile-directory={p.directory}"])
+                for p in known_profiles:
+                    if p.directory.casefold() == profile_lower:
+                        return _launch("chrome", [f"--profile-directory={p.directory}"])
+            except Exception:
+                pass
+            return _launch("chrome", [f"--profile-directory={profile_str}"])
+
+    try:
+        known_profiles = _chrome_profiles()
+    except Exception as exc:
+        _tb.print_exc()
+        raise
+
+    try:
+        selected = _select_chrome_profile(known_profiles, voice_input)
+    except Exception as exc:
+        _tb.print_exc()
+        raise
+
+    return _launch("chrome", [f"--profile-directory={selected.directory}"])
 
 
 def _process_name_for(name: str) -> str:
@@ -365,13 +481,17 @@ def is_running(name: str) -> bool:
         raise AppOperationError(f"Failed to query running processes: {exc}") from exc
 
 
-def open_app(name: str) -> bool:
+def open_app(
+    name: str,
+    voice_input: Callable[[], str | None] | None = None,
+    profile: str | None = None,
+) -> bool:
     """Launch a supported Windows desktop application."""
     if sys.platform != "win32":
         raise AppOperationError(_WINDOWS_ONLY_MESSAGE)
 
     if _normalize_name(name) == "chrome":
-        return _open_chrome()
+        return _open_chrome(voice_input, profile)
 
     return _launch(name)
 

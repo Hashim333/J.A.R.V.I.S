@@ -7,6 +7,7 @@ provided by a Registry.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,8 +30,13 @@ class Executor:
     Runs an ExecutionPlan step by step via a handler registry.
     """
 
-    def __init__(self, registry: Registry) -> None:
+    def __init__(
+        self,
+        registry: Registry,
+        voice_input: Callable[[], str | None] | None = None,
+    ) -> None:
         self._registry = registry
+        self._voice_input = voice_input
 
     def execute(self, plan: ExecutionPlan) -> Response:
         """
@@ -50,7 +56,7 @@ class Executor:
         for index, step in enumerate(plan.steps):
             try:
                 handler = self._registry.get_handler(step.action)
-                result = handler.run(step)
+                result = handler.run(step, voice_input=self._voice_input)
 
                 results.append(
                     {

@@ -6,6 +6,7 @@ Adapter layer between Executor and the automation modules.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import automation.apps as apps
@@ -50,9 +51,14 @@ class AppsHandler:
 
     _SUPPORTED_ACTIONS = {"open_app", "close_app", "is_running"}
 
-    def run(self, step: Step) -> Any:
+    def run(self, step: Step, voice_input: Callable[[], str | None] | None = None) -> Any:
         if step.action == "open_app":
-            return apps.open_app(_require_target(step))
+            profile = step.parameters.get("profile")
+            return apps.open_app(
+                _require_target(step),
+                voice_input=voice_input,
+                profile=profile,
+            )
 
         if step.action == "close_app":
             return apps.close_app(_require_target(step))
@@ -76,7 +82,7 @@ class WindowHandler:
         "focus_window",
     }
 
-    def run(self, step: Step) -> Any:
+    def run(self, step: Step, **kwargs: Any) -> Any:
         if step.action == "active_window":
             return windows.get_active_window()
 
@@ -112,7 +118,7 @@ class BrowserHandler:
         "reload",
     }
 
-    def run(self, step: Step) -> Any:
+    def run(self, step: Step, **kwargs: Any) -> Any:
         if step.action == "navigate":
             url = step.parameters.get("url") or step.target
             if not isinstance(url, str) or not url.strip():
@@ -175,7 +181,7 @@ class MouseHandler:
     def __init__(self) -> None:
         self._controller = MouseController()
 
-    def run(self, step: Step) -> Any:
+    def run(self, step: Step, **kwargs: Any) -> Any:
         if step.action in {"move", "move_mouse"}:
             return self._controller.move_to(
                 _require_parameter(step, "x"),
@@ -257,7 +263,7 @@ class KeyboardHandler:
     def __init__(self) -> None:
         self._controller = KeyboardController()
 
-    def run(self, step: Step) -> Any:
+    def run(self, step: Step, **kwargs: Any) -> Any:
         if step.action == "type_text":
             return self._controller.type_text(_require_parameter(step, "text"))
 
