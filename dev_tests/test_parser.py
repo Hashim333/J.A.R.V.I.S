@@ -70,6 +70,43 @@ class TestParser(unittest.TestCase):
         parsed = self.parser.parse("   \t   ")
         self.assertEqual(parsed.intent, "unknown")
 
+    # --- Profile extraction ---
+
+    def test_parse_open_chrome_with_profile(self) -> None:
+        """Verify extraction of profile from 'open chrome with profile <name>'."""
+        parsed = self.parser.parse("open chrome with profile work")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertEqual(parsed.entities.get("app_name"), "chrome")
+        self.assertEqual(parsed.entities.get("profile"), "work")
+
+    def test_parse_open_chrome_with_profile_and_filler(self) -> None:
+        """Profile extraction works with filler words."""
+        parsed = self.parser.parse("please open chrome with profile gaming")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertEqual(parsed.entities.get("app_name"), "chrome")
+        self.assertEqual(parsed.entities.get("profile"), "gaming")
+
+    def test_parse_non_chrome_app_with_profile(self) -> None:
+        """Parser extracts profile for any app (it is up to downstream to use it)."""
+        parsed = self.parser.parse("open notepad with profile work")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertEqual(parsed.entities.get("app_name"), "notepad")
+        self.assertEqual(parsed.entities.get("profile"), "work")
+
+    def test_parse_open_chrome_no_profile(self) -> None:
+        """Opening chrome without a profile should not set a profile entity."""
+        parsed = self.parser.parse("open chrome")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertEqual(parsed.entities.get("app_name"), "chrome")
+        self.assertNotIn("profile", parsed.entities)
+
+    def test_parse_profile_with_numbers(self) -> None:
+        """Profile names that include numbers should be captured."""
+        parsed = self.parser.parse("open chrome with profile profile 2")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertEqual(parsed.entities.get("app_name"), "chrome")
+        self.assertEqual(parsed.entities.get("profile"), "profile 2")
+
 
 if __name__ == "__main__":
     unittest.main()

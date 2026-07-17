@@ -53,6 +53,25 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(step.target, "chrome")
         self.assertEqual(step.description, "Close chrome.")
 
+    def test_plan_open_app_with_profile(self) -> None:
+        """Verify a plan to open chrome with a profile passes the profile param."""
+        command = ParsedCommand(
+            raw_text="open chrome with profile work",
+            intent="open_app",
+            entities={"app_name": "chrome", "profile": "work"},
+            confidence=1.0,
+        )
+
+        plan = self.planner.create_plan(command)
+
+        self.assertEqual(plan.intent, "open_app")
+        self.assertEqual(len(plan.steps), 1)
+        step = plan.steps[0]
+        self.assertEqual(step.action, "open_app")
+        self.assertEqual(step.target, "chrome")
+        self.assertEqual(step.parameters.get("profile"), "work")
+        self.assertEqual(step.description, "Open chrome.")
+
     def test_plan_unknown_intent(self) -> None:
         """Verify an unknown intent results in an empty plan."""
         command = ParsedCommand(
