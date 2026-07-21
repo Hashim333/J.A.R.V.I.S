@@ -2,8 +2,21 @@
 voice/microphone_stream.py
 
 A non-blocking, continuous microphone stream.
+
+The microphone is opened ONCE in start() and kept open until
+shutdown().  Between those two calls, the capture thread runs
+continuously.  Consumers (callbacks) can be swapped at any time
+via set_consumer() without closing or reopening the mic.
+
+Methods:
+  start()        — open mic, start capture thread (idempotent)
+  stop()         — pause the consumer (mic stays open, thread runs)
+  shutdown()     — close mic, stop thread, release resources (final)
+  set_consumer() — atomically swap the audio chunk callback
+  capture_utterance() — VAD-based one-shot command capture
 """
 import audioop
+import collections
 import logging
 import threading
 import time
@@ -29,7 +42,7 @@ class MicrophoneStream:
         self._microphone_factory = microphone_factory or sr.Microphone
         self._chunk_size = chunk_size
         self._sample_rate = sample_rate
-        self._on_audio_chunk = on_audio_chunk
+        self._consumer: Callable[[bytes], None] | None = on_audio_chunk
         self._stream = None
         self._thread = None
         self._microphone = None
@@ -38,6 +51,7 @@ class MicrophoneStream:
         self._channels = 1
         self._resample_state = None
         self._is_running = False
+        self._started = False
         self._lock = threading.Lock()
 
     def _probe_default_input_format(self) -> None:
@@ -79,7 +93,7 @@ class MicrophoneStream:
 
     def _notify_audio_format(self) -> None:
         """Tell the downstream detector exactly what format chunks will use."""
-        callback_owner = getattr(self._on_audio_chunk, "__self__", None)
+        callback_owner = getattr(self._consumer, "__self__", None)
         set_audio_format = getattr(callback_owner, "set_audio_format", None)
         if callable(set_audio_format):
             set_audio_format(
@@ -103,12 +117,33 @@ class MicrophoneStream:
         )
         return converted
 
+    def set_consumer(self, consumer: Callable[[bytes], None] | None) -> None:
+        """
+        Atomically swap the audio chunk consumer.
+
+        The capture thread will call *consumer* for every audio chunk
+        (after format normalisation).  Pass *None* to pause processing
+        (chunks are silently discarded).
+        """
+        self._consumer = consumer
+        logger.debug(
+            "MicrophoneStream consumer -> %s",
+            getattr(consumer, "__name__", type(consumer).__name__)
+            if consumer is not None
+            else "None",
+        )
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def start(self) -> None:
-        """Start capturing audio from the microphone in a background thread."""
+        """Open the microphone and start the capture thread (one-time)."""
         with self._lock:
-            if self._is_running:
-                logger.debug("start() called but already running")
+            if self._started:
+                logger.debug("start() called but already started")
                 return
+            self._started = True
 
             if not audio_lock.acquire("microphone_stream", timeout=5.0):
                 raise RuntimeError(
@@ -184,21 +219,48 @@ class MicrophoneStream:
                 )
             except Exception:
                 audio_lock.release("microphone_stream")
+                self._started = False
                 raise
 
     def stop(self) -> None:
-        """Stop capturing audio and release the microphone."""
+        """
+        Pause audio processing.
+
+        The microphone stays open and the capture thread keeps running;
+        audio chunks are silently discarded until a consumer is set again.
+        """
+        self.set_consumer(None)
+        logger.info("Microphone stream paused (consumer set to None)")
+
+    def shutdown(self) -> None:
+        """Fully stop the microphone stream.  Idempotent — safe to call multiple times."""
+        logger.info("Microphone stream shutting down")
         with self._lock:
             if not self._is_running:
-                logger.debug("stop() called but not running")
+                logger.debug("shutdown() called but not running")
                 return
             self._is_running = False
 
-        if self._microphone:
-            self._microphone.__exit__(None, None, None)
+        if self._stream:
+            try:
+                self._stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                self._stream.close()
+            except Exception:
+                pass
 
-        audio_lock.release("microphone_stream")
-        logger.info("Microphone stream stopped")
+        if self._microphone:
+            try:
+                self._microphone.__exit__(None, None, None)
+            except Exception:
+                pass
+
+        try:
+            audio_lock.release("microphone_stream")
+        except Exception:
+            pass
 
         if self._thread:
             self._thread.join(timeout=5.0)
@@ -206,13 +268,14 @@ class MicrophoneStream:
                 logger.warning("Capture thread did not exit within 5s timeout.")
             self._thread = None
 
-    def shutdown(self) -> None:
-        """Release all microphone resources."""
-        logger.info("Microphone stream shutting down")
-        self.stop()
         with self._lock:
             self._stream = None
             self._microphone = None
+        logger.info("Microphone stream fully shut down")
+
+    # ------------------------------------------------------------------
+    # Capture thread
+    # ------------------------------------------------------------------
 
     def _capture_loop(self) -> None:
         logger.info("Capture loop started")
@@ -279,11 +342,12 @@ class MicrophoneStream:
                 if count % 100 == 0:
                     logger.info("Read %d chunks", count)
 
-                if self._on_audio_chunk:
+                consumer = self._consumer
+                if consumer is not None:
                     try:
-                        self._on_audio_chunk(audio_chunk)
+                        consumer(audio_chunk)
                     except Exception as exc:
-                        logger.error("Audio callback failed: %s", exc, exc_info=True)
+                        logger.error("Audio consumer failed: %s", exc, exc_info=True)
 
             except IOError:
                 logger.debug("Buffer overflow")
@@ -297,3 +361,67 @@ class MicrophoneStream:
                 self._is_running = False
 
         logger.info("Capture loop exited")
+
+    # ------------------------------------------------------------------
+    # One-shot utterance capture (for follow-up commands)
+    # ------------------------------------------------------------------
+
+    def capture_utterance(self, timeout: float = 10.0) -> sr.AudioData | None:
+        """
+        Capture a single utterance using VAD-based end-of-speech detection.
+
+        Blocks the calling thread until speech ends or *timeout* seconds
+        elapse.  The captured audio (including any silence before speech)
+        is returned as an ``sr.AudioData`` instance suitable for
+        transcription.
+
+        This method temporarily installs a consumer that buffers audio
+        and detects speech boundaries via WebRTC VAD.  The previous
+        consumer is restored before returning.
+
+        Returns:
+            ``sr.AudioData`` with the captured utterance, or *None* if
+            no audio was captured within the timeout.
+        """
+        from voice.vad import VAD
+
+        buffer = bytearray()
+        done = threading.Event()
+
+        vad = VAD(
+            on_speech_started=None,
+            on_speech_ended=lambda: done.set(),
+            sample_rate=self._sample_rate,
+        )
+
+        def _consumer(chunk: bytes) -> None:
+            buffer.extend(chunk)
+            vad.process_audio(chunk)
+
+        old_consumer = self._consumer
+        self._consumer = _consumer
+
+        captured = done.wait(timeout=timeout)
+
+        self._consumer = old_consumer
+
+        if captured and buffer:
+            logger.info(
+                "capture_utterance: %d bytes captured via VAD end-of-speech",
+                len(buffer),
+            )
+            return sr.AudioData(
+                bytes(buffer), self._sample_rate, self._sample_width
+            )
+
+        if buffer:
+            logger.info(
+                "capture_utterance: %d bytes captured (timeout, no VAD end)",
+                len(buffer),
+            )
+            return sr.AudioData(
+                bytes(buffer), self._sample_rate, self._sample_width
+            )
+
+        logger.info("capture_utterance: no audio captured (timeout)")
+        return None

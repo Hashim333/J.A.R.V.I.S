@@ -3,6 +3,7 @@
 from voice.elevenlabs_provider import ElevenLabsProvider
 from voice.manager import VoiceManager
 from voice.microphone import MicrophoneCapture, MicrophoneManager
+from voice.pipeline import VoiceConversationPipeline
 from voice.provider import SpeechProvider, VoiceProvider, VoiceProviderError
 from voice.push_to_talk import PushToTalk
 from voice.speech_recognition import SpeechRecognition, SpeechRecognitionResult
@@ -17,6 +18,7 @@ __all__ = [
     "SpeechRecognition",
     "SpeechRecognitionResult",
     "SystemProvider",
+    "VoiceConversationPipeline",
     "VoiceManager",
     "VoiceProvider",
     "VoiceProviderError",

@@ -4,16 +4,20 @@ services/wake_word_service.py
 The Wake Word Service is responsible for listening for a specific wake word
 (e.g., "Jarvis") in the user's speech and detecting voice activity.
 
-It uses a MicrophoneStream to capture audio and a WakeWordDetector that
-combines VAD + local Vosk detection to confirm the wake phrase
-("jarvis") before signalling the event with the captured command audio.
+It uses a MicrophoneStream (injected, not owned) to receive audio chunks
+and a WakeWordDetector that combines VAD + local Vosk detection to confirm
+the wake phrase ("jarvis") before signalling the event with the captured
+command audio.
+
+The MicrophoneStream lifecycle (start / shutdown) is managed by run.py;
+this service only sets and clears the audio consumer.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from services.base_service import BaseService
 from voice.microphone_stream import MicrophoneStream
@@ -32,25 +36,27 @@ class WakeWordService(BaseService):
     audio to ``ListenerService.transcribe()`` for a single Google STT call.
     """
 
-    def __init__(self, wake_word_detected_event: threading.Event) -> None:
+    def __init__(
+        self,
+        wake_word_detected_event: threading.Event,
+        microphone_stream: MicrophoneStream,
+    ) -> None:
         super().__init__(name="wake_word")
         self._wake_word_detected_event = wake_word_detected_event
-        self._microphone_stream: MicrophoneStream | None = None
+        self._microphone_stream = microphone_stream
         self._wake_word_detector: Any = None
         self._command_audio: Any = None
 
     def initialize(self) -> None:
         """
-        Initializes the WakeWordDetector and MicrophoneStream (one-time setup).
+        Initializes the WakeWordDetector (one-time setup).
+        MicrophoneStream is already created and owned by run.py.
         """
         try:
             from voice.wakeword import WakeWordDetector
 
             self._wake_word_detector = WakeWordDetector(
                 on_wake_word_detected=self._on_wake_word_detected,
-            )
-            self._microphone_stream = MicrophoneStream(
-                on_audio_chunk=self._wake_word_detector.process_audio
             )
             logger.info("WakeWordService initialized")
         except Exception as e:
@@ -60,17 +66,18 @@ class WakeWordService(BaseService):
 
     def reset_for_wake(self) -> None:
         """
-        Reset detection state and restart listening.
+        Reset detection state and re-attach the consumer.
 
         Called after a wake word was detected, to prepare for the next one.
-        This is lighter than shutdown + initialize + start.
+        The MicrophoneStream stays open — only the consumer is swapped.
         """
         logger.info("WakeWordService resetting for next wake word")
         self._command_audio = None
         if self._wake_word_detector is not None:
             self._wake_word_detector.reset()
-        if self._microphone_stream is not None:
-            self._microphone_stream.start()
+        self._microphone_stream.set_consumer(
+            self._wake_word_detector.process_audio
+        )
 
     def _on_wake_word_detected(self, audio_data: Any) -> None:
         """Callback for when the wake phrase is confirmed."""
@@ -85,18 +92,22 @@ class WakeWordService(BaseService):
         return self._command_audio
 
     def start(self) -> None:
-        if self._microphone_stream is None:
-            raise RuntimeError("Microphone stream not initialized. Cannot start.")
-        logger.info("WakeWordService starting")
-        self._microphone_stream.start()
-        logger.info("WakeWordService started — listening for wake word")
+        """Route audio from the running MicrophoneStream to the wake-word detector."""
+        logger.info("WakeWordService starting — listening for wake word")
+        self._microphone_stream.set_consumer(
+            self._wake_word_detector.process_audio
+        )
 
     def stop(self) -> None:
-        if self._microphone_stream is not None:
-            logger.info("WakeWordService stopping")
-            self._microphone_stream.stop()
+        """Pause wake-word detection (consumer set to None)."""
+        logger.info("WakeWordService stopping")
+        self._microphone_stream.set_consumer(None)
 
     def shutdown(self) -> None:
+        """
+        Release wake-word resources.
+
+        Does **not** close the MicrophoneStream — that is owned by run.py.
+        """
         logger.info("WakeWordService shutting down")
-        if self._microphone_stream is not None:
-            self._microphone_stream.shutdown()
+        self._microphone_stream.set_consumer(None)

@@ -33,6 +33,12 @@ class ResponseFormatter:
             return self._success_console_text(response)
 
         message = response.message or "An unknown error occurred."
+
+        # Clarification / confirmation requests
+        if getattr(response, "needs_clarification", False):
+            q = getattr(response, "clarification_question", "") or message
+            return f"{q}\n(Type 'yes' to confirm, or rephrase your command)"
+
         if debug and response.error:
             return f"{message}\nDetails: {response.error}"
         return message

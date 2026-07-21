@@ -16,6 +16,7 @@ from services.base_service import BaseService, ServiceStatus
 from services.service_manager import ServiceManager
 from services.listener_service import ListenerService
 from services.wake_word_service import WakeWordService
+from services.conversation_manager import ConversationManager, ConversationState
 
 __all__ = [
     "BaseService",
@@ -23,4 +24,6 @@ __all__ = [
     "ServiceManager",
     "ListenerService",
     "WakeWordService",
+    "ConversationManager",
+    "ConversationState",
 ]

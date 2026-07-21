@@ -23,9 +23,14 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from difflib import get_close_matches, SequenceMatcher
 from typing import Sequence
 
-from rapidfuzz import fuzz, process as rf_process
+try:
+    from rapidfuzz import fuzz, process as rf_process
+except ImportError:  # pragma: no cover - exercised only when RapidFuzz is absent
+    fuzz = None
+    rf_process = None
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +98,10 @@ _ORDINAL_TO_INDEX: dict[str, int] = {
 # Confidence threshold below which the result is flagged as low-confidence.
 _LOW_CONFIDENCE_THRESHOLD = 70.0
 
+_PROFILE_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "hashi": ("aashi", "ashi"),
+}
+
 
 def _normalise(text: str) -> str:
     """Casefold, strip punctuation, collapse whitespace and repeated tokens."""
@@ -114,6 +123,31 @@ def _normalise(text: str) -> str:
 
 def _strip_noise(tokens: list[str]) -> list[str]:
     return [t for t in tokens if t not in _NOISE]
+
+
+def _extract_one(query: str, choices: Sequence[str]) -> tuple[str, float, int] | None:
+    if not query or not choices:
+        return None
+
+    if rf_process is not None and fuzz is not None:
+        match = rf_process.extractOne(
+            query,
+            choices,
+            scorer=fuzz.WRatio,
+            score_cutoff=0,
+        )
+        if match is None:
+            return None
+        matched, score, idx = match
+        return str(matched), float(score), int(idx)
+
+    close = get_close_matches(query, list(choices), n=1, cutoff=0.0)
+    if not close:
+        return None
+    matched = close[0]
+    idx = list(choices).index(matched)
+    score = SequenceMatcher(None, query, matched).ratio() * 100
+    return matched, score, idx
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +178,9 @@ class ProfileSelectionParser:
             self._aliases[_normalise(phrase)] = idx
         # Pre-normalise candidate names for fuzzy matching
         self._norm_candidates = [_normalise(c) for c in self._candidates]
+        for idx, candidate in enumerate(self._norm_candidates):
+            for alias in _PROFILE_NAME_ALIASES.get(candidate, ()):
+                self._aliases.setdefault(_normalise(alias), idx)
 
     # ------------------------------------------------------------------
     # Public API
@@ -178,23 +215,13 @@ class ProfileSelectionParser:
                     return self._result(idx, 100.0)
 
         if self._candidates:
-            match = rf_process.extractOne(
-                signal,
-                self._norm_candidates,
-                scorer=fuzz.WRatio,
-                score_cutoff=0,
-            )
+            match = _extract_one(signal, self._norm_candidates)
             if match is not None:
                 _matched_str, score, idx = match
                 if score >= _LOW_CONFIDENCE_THRESHOLD:
                     return self._result(idx, float(score))
 
-            match = rf_process.extractOne(
-                normalised,
-                self._norm_candidates,
-                scorer=fuzz.WRatio,
-                score_cutoff=0,
-            )
+            match = _extract_one(normalised, self._norm_candidates)
             if match is not None:
                 _matched_str, score, idx = match
                 if score >= _LOW_CONFIDENCE_THRESHOLD:
@@ -203,15 +230,11 @@ class ProfileSelectionParser:
             if len(signal_tokens) > 1:
                 for tok in signal_tokens:
                     if len(tok) > 1:
-                        match = rf_process.extractOne(
-                            tok,
-                            self._norm_candidates,
-                            scorer=fuzz.WRatio,
-                            score_cutoff=70,
-                        )
+                        match = _extract_one(tok, self._norm_candidates)
                         if match is not None:
                             _matched_str, score, idx = match
-                            return self._result(idx, float(score))
+                            if score >= _LOW_CONFIDENCE_THRESHOLD:
+                                return self._result(idx, float(score))
 
         return self._no_match()
 

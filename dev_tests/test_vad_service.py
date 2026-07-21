@@ -72,7 +72,10 @@ class TestWakeWordService(unittest.TestCase):
 
     def setUp(self):
         self.wake_word_event = threading.Event()
-        self.service = WakeWordService(wake_word_detected_event=self.wake_word_event)
+        self.service = WakeWordService(
+            wake_word_detected_event=self.wake_word_event,
+            microphone_stream=MagicMock(),
+        )
         self.service.initialize()
         # Access VAD through the detector
         self.detector = self.service._wake_word_detector

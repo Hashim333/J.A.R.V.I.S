@@ -124,11 +124,11 @@ class MicrophoneManager:
     def _configure_recognizer(recognizer: Any) -> None:
         dynamic = getattr(recognizer, "dynamic_energy_threshold", None)
         if dynamic is not None:
-            recognizer.dynamic_energy_threshold = True
+            recognizer.dynamic_energy_threshold = False
 
         pause = getattr(recognizer, "pause_threshold", None)
         if pause is not None:
-            recognizer.pause_threshold = 1.2
+            recognizer.pause_threshold = 2.5
         phrase = getattr(recognizer, "phrase_threshold", None)
         if phrase is not None:
             recognizer.phrase_threshold = 0.3
@@ -140,7 +140,7 @@ class MicrophoneManager:
     def _adjust_for_noise(recognizer: Any, source: Any) -> None:
         adjust = getattr(recognizer, "adjust_for_ambient_noise", None)
         if callable(adjust):
-            adjust(source, duration=0.5)
+            adjust(source, duration=1.5)
 
 
 class _FallbackSpeechRecognition:

@@ -37,3 +37,6 @@ class Response:
     message: str
     data: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    needs_clarification: bool = False
+    clarification_question: str = ""
+    alternatives: list[str] = field(default_factory=list)

@@ -1,0 +1,82 @@
+{
+    "version": 1,
+    "safe_mode": {
+        "enabled": false,
+        "blocked_actions": [
+            "shutdown",
+            "restart",
+            "sleep",
+            "hibernate",
+            "sign_out",
+            "lock",
+            "delete_file",
+            "format_drive",
+            "kill_process",
+            "registry_modification",
+            "firewall_modification",
+            "network_scan",
+            "service_stop",
+            "taskkill",
+            "powershell_script",
+            "admin_command"
+        ]
+    },
+    "speech": {
+        "min_confidence": 0.3,
+        "reject_below": 0.15
+    },
+    "confirmation": {
+        "required_for": [
+            "shutdown",
+            "restart",
+            "sleep",
+            "hibernate",
+            "sign_out",
+            "lock",
+            "delete_file",
+            "move_file",
+            "rename_file",
+            "copy_file",
+            "close_all_apps",
+            "close_all_tabs",
+            "click_element",
+            "format_drive",
+            "kill_process",
+            "registry_modification",
+            "firewall_modification",
+            "network_scan",
+            "service_stop",
+            "taskkill",
+            "powershell_script",
+            "admin_command"
+        ],
+        "protected_operations": [
+            "shutdown",
+            "restart",
+            "sleep",
+            "hibernate",
+            "sign_out",
+            "lock",
+            "delete_file",
+            "format_drive",
+            "kill_process",
+            "registry_modification",
+            "firewall_modification",
+            "network_scan",
+            "service_stop",
+            "taskkill",
+            "powershell_script",
+            "admin_command"
+        ]
+    },
+    "validation": {
+        "check_file_exists": true,
+        "check_app_exists": true,
+        "max_file_size_mb": 500
+    },
+    "audit": {
+        "enabled": true,
+        "log_file": "logs/audit.jsonl",
+        "max_entries": 10000
+    }
+}

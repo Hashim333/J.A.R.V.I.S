@@ -19,7 +19,11 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
     def setUp(self) -> None:
         """Set up the test case."""
         self.wake_word_event = threading.Event()
-        self.service = WakeWordService(wake_word_detected_event=self.wake_word_event)
+        self.mock_mic_stream = MagicMock()
+        self.service = WakeWordService(
+            wake_word_detected_event=self.wake_word_event,
+            microphone_stream=self.mock_mic_stream,
+        )
         self.manager = ServiceManager()
         self.manager.register(self.service.name, self.service)
 
@@ -27,61 +31,62 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
         """Verify the service starts in the STOPPED state."""
         self.assertEqual(self.service.status, ServiceStatus.STOPPED)
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_start_transitions_to_running(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify start() moves the service to RUNNING."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
+    def test_start_sets_consumer(self) -> None:
+        """Verify start() sets the audio consumer on the MicrophoneStream."""
         self.manager.initialize_all()
         self.manager.start_all()
         self.assertEqual(self.service.status, ServiceStatus.RUNNING)
-        mock_microphone_stream.start.assert_called_once()
+        self.mock_mic_stream.set_consumer.assert_called_once()
         self.manager.stop_all()
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_stop_transitions_to_stopped(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify stop() moves the service to STOPPED."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
+    def test_stop_clears_consumer(self) -> None:
+        """Verify stop() clears the audio consumer."""
         self.manager.initialize_all()
         self.manager.start_all()
         self.manager.stop_all()
         self.assertEqual(self.service.status, ServiceStatus.STOPPED)
-        mock_microphone_stream.stop.assert_called_once()
+        self.mock_mic_stream.set_consumer.assert_called_with(None)
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_restart_stops_and_starts(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify restart() calls stop and then start."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
+    def test_restart_sets_consumer_twice(self) -> None:
+        """Verify restart() clears consumer, then re-sets it."""
         self.manager.initialize_all()
         self.manager.start_all()
-        mock_microphone_stream.start.assert_called_once()
+        self.mock_mic_stream.set_consumer.assert_called_once()
 
         self.manager.restart(self.service.name)
         self.assertEqual(self.service.status, ServiceStatus.RUNNING)
-        mock_microphone_stream.stop.assert_called_once()
-        self.assertEqual(mock_microphone_stream.start.call_count, 2)
+        # stop() + start() = 2 more calls beyond the initial start()
+        self.assertEqual(self.mock_mic_stream.set_consumer.call_count, 3)
 
         self.manager.stop_all()
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_shutdown_stops_the_service(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify shutdown() stops the service."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
+    def test_shutdown_clears_consumer(self) -> None:
+        """Verify shutdown() clears the consumer but does not close the stream."""
         self.manager.initialize_all()
         self.manager.start_all()
         self.manager.shutdown_all()
-        mock_microphone_stream.shutdown.assert_called_once()
+        self.mock_mic_stream.set_consumer.assert_called_with(None)
+        self.mock_mic_stream.shutdown.assert_not_called()
 
     def test_initialization_failure_sets_status_to_failed(self) -> None:
         """Verify that a failure during initialization sets the service status to FAILED."""
-        # We need a new mock for this test to simulate the side effect on the constructor
-        with patch("services.wake_word_service.MicrophoneStream") as mock_stream:
-            mock_stream.side_effect = Exception("Initialization failed")
-            service = WakeWordService(wake_word_detected_event=threading.Event())
+        import voice.wakeword
+        original = voice.wakeword.WakeWordDetector
+        voice.wakeword.WakeWordDetector = MagicMock(
+            side_effect=Exception("Initialization failed"),
+        )
+        try:
+            service = WakeWordService(
+                wake_word_detected_event=threading.Event(),
+                microphone_stream=MagicMock(),
+            )
             manager = ServiceManager()
             manager.register(service.name, service)
 
             manager.initialize_all()
             self.assertEqual(service.status, ServiceStatus.FAILED)
+        finally:
+            voice.wakeword.WakeWordDetector = original
 
 
 if __name__ == "__main__":
