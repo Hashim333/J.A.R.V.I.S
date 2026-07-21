@@ -48,9 +48,17 @@ class Registry:
         from automation.handlers import (
             AppsHandler,
             BrowserHandler,
+            FileManagerHandler,
             KeyboardHandler,
             MouseHandler,
+            SecurityToolsHandler,
+            VisionHandler,
             WindowHandler,
+            SpecialFolderHandler,
+            SettingsHandler,
+            VolumeHandler,
+            ScreenshotHandler,
+            SystemHandler,
         )
 
         apps_handler = AppsHandler()
@@ -58,14 +66,27 @@ class Registry:
         mouse_handler = MouseHandler()
         keyboard_handler = KeyboardHandler()
         window_handler = WindowHandler()
+        folder_handler = SpecialFolderHandler()
+        settings_handler = SettingsHandler()
+        volume_handler = VolumeHandler()
+        screenshot_handler = ScreenshotHandler()
+        system_handler = SystemHandler()
+        file_manager_handler = FileManagerHandler()
+        security_handler = SecurityToolsHandler()
+        vision_handler = VisionHandler()
 
-        for action in ("open_app", "close_app", "is_running"):
+        # Apps: open, close, focus, restart, minimize, maximize, restore, close_all, is_running
+        for action in ("open_app", "close_app", "focus_app", "restart_app",
+                       "minimize_app", "maximize_app", "restore_app",
+                       "close_all_apps", "is_running"):
             self.register(action, apps_handler)
 
-        # Browser Handler
+        # Browser
         for action in (
             "navigate",
             "browser_search",
+            "open_website",
+            "search",
             "new_tab",
             "close_current_tab",
             "close_specific_tab",
@@ -84,7 +105,7 @@ class Registry:
         ):
             self.register(action, browser_handler)
 
-        # Mouse Handler
+        # Mouse
         for action in (
             "move",
             "move_mouse",
@@ -100,7 +121,7 @@ class Registry:
         ):
             self.register(action, mouse_handler)
 
-        # Keyboard Handler
+        # Keyboard
         for action in (
             "type_text",
             "press",
@@ -114,7 +135,7 @@ class Registry:
         ):
             self.register(action, keyboard_handler)
 
-        # Window Handler
+        # Window management
         for action in (
             "active_window",
             "list_windows",
@@ -124,6 +145,71 @@ class Registry:
             "restore_window",
         ):
             self.register(action, window_handler)
+
+        # Special folders
+        self.register("open_special_folder", folder_handler)
+
+        # Settings
+        self.register("open_settings", settings_handler)
+
+        # Volume
+        for action in (
+            "increase_volume",
+            "decrease_volume",
+            "set_volume",
+            "mute_volume",
+            "unmute_volume",
+        ):
+            self.register(action, volume_handler)
+
+        # Screenshot
+        self.register("screenshot", screenshot_handler)
+
+        # File management
+        for action in (
+            "open_file",
+            "find_file",
+            "open_file_location",
+            "copy_file",
+            "move_file",
+            "rename_file",
+            "delete_file",
+        ):
+            self.register(action, file_manager_handler)
+
+        # Security / pentest tooling
+        for action in (
+            "create_pentest_report",
+            "organize_scan_results",
+            "summarize_scan_results",
+            "create_pentest_project",
+        ):
+            self.register(action, security_handler)
+
+        # Vision / screen understanding
+        for action in (
+            "read_screen",
+            "describe_screen",
+            "click_element",
+            "find_element",
+            "read_pdf",
+            "ocr_image",
+            "read_error",
+            "fill_form",
+        ):
+            self.register(action, vision_handler)
+
+        # System commands
+        for action in (
+            "lock", "shutdown", "restart", "sleep",
+            "set_brightness", "wifi_on", "wifi_off",
+            "bluetooth_on", "bluetooth_off",
+            "airplane_mode_on", "airplane_mode_off",
+            "system_status", "sign_out", "cancel_shutdown",
+            "open_task_manager", "open_device_manager", "open_control_panel",
+            "format_drive", "kill_process",
+        ):
+            self.register(action, system_handler)
 
     @staticmethod
     def _validate_action(action: str) -> None:

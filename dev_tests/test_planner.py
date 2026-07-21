@@ -40,7 +40,7 @@ class TestPlanner(unittest.TestCase):
         command = ParsedCommand(
             raw_text="close chrome",
             intent="close_app",
-            entities={"app": "chrome"},
+            entities={"app_name": "chrome"},
             confidence=1.0,
         )
 
@@ -70,7 +70,66 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(step.action, "open_app")
         self.assertEqual(step.target, "chrome")
         self.assertEqual(step.parameters.get("profile"), "work")
-        self.assertEqual(step.description, "Open chrome.")
+        self.assertEqual(step.description, "Open chrome with profile 'work'.")
+
+    def test_plan_restart_app(self) -> None:
+        """Verify a plan to restart an application is created correctly."""
+        command = ParsedCommand(
+            raw_text="restart chrome",
+            intent="restart_app",
+            entities={"app_name": "chrome"},
+            confidence=1.0,
+        )
+        plan = self.planner.create_plan(command)
+        self.assertEqual(plan.intent, "restart_app")
+        self.assertEqual(len(plan.steps), 1)
+        step = plan.steps[0]
+        self.assertEqual(step.action, "restart_app")
+        self.assertEqual(step.target, "chrome")
+
+    def test_plan_minimize_app(self) -> None:
+        """Verify a plan to minimize an application is created correctly."""
+        command = ParsedCommand(
+            raw_text="minimize chrome",
+            intent="minimize_app",
+            entities={"app_name": "chrome"},
+            confidence=1.0,
+        )
+        plan = self.planner.create_plan(command)
+        self.assertEqual(plan.intent, "minimize_app")
+        self.assertEqual(len(plan.steps), 1)
+        step = plan.steps[0]
+        self.assertEqual(step.action, "minimize_app")
+        self.assertEqual(step.target, "chrome")
+
+    def test_plan_maximize_app(self) -> None:
+        """Verify a plan to maximize an application is created correctly."""
+        command = ParsedCommand(
+            raw_text="maximize chrome",
+            intent="maximize_app",
+            entities={"app_name": "chrome"},
+            confidence=1.0,
+        )
+        plan = self.planner.create_plan(command)
+        self.assertEqual(plan.intent, "maximize_app")
+        self.assertEqual(len(plan.steps), 1)
+        step = plan.steps[0]
+        self.assertEqual(step.action, "maximize_app")
+        self.assertEqual(step.target, "chrome")
+
+    def test_plan_close_all_apps(self) -> None:
+        """Verify a plan to close all applications is created correctly."""
+        command = ParsedCommand(
+            raw_text="close everything",
+            intent="close_all_apps",
+            confidence=1.0,
+        )
+        plan = self.planner.create_plan(command)
+        self.assertEqual(plan.intent, "close_all_apps")
+        self.assertEqual(len(plan.steps), 1)
+        step = plan.steps[0]
+        self.assertEqual(step.action, "close_all_apps")
+        self.assertIsNone(step.target)
 
     def test_plan_unknown_intent(self) -> None:
         """Verify an unknown intent results in an empty plan."""

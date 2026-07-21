@@ -111,7 +111,6 @@ class LocalWakeWordDetector:
                     duration_ms,
                 )
 
-            # Log first/last 500ms preservation before any resampling
             bytes_per_ms = sample_rate * self._SAMPLE_WIDTH / 1000
             first_500_bytes = min(len(audio_bytes), int(500 * bytes_per_ms))
             last_500_bytes_start = max(0, len(audio_bytes) - int(500 * bytes_per_ms))
@@ -145,29 +144,23 @@ class LocalWakeWordDetector:
                 vosk_duration_ms,
             )
 
-            recognizer = vosk.KaldiRecognizer(self._model, self._VOSK_SAMPLE_RATE)
-            accepted = recognizer.AcceptWaveform(pcm_bytes)
-            partial_text = ""
-            if accepted:
-                result_source = "Result"
-                result = json.loads(recognizer.Result())
-            else:
-                result_source = "FinalResult"
-                partial = json.loads(recognizer.PartialResult())
-                partial_text = partial.get("partial", "").casefold()
-                result = json.loads(recognizer.FinalResult())
+            # Grammar: ONLY "jarvis" — no "[unk]".  This prevents Vosk from
+            # actively recognising unknown speech as the literal token "[unk]".
+            recognizer = vosk.KaldiRecognizer(self._model, self._VOSK_SAMPLE_RATE, '["jarvis"]')
+            recognizer.AcceptWaveform(pcm_bytes)
+            result = json.loads(recognizer.FinalResult())
             text = result.get("text", "").casefold()
-            if not text and partial_text:
-                text = partial_text
 
             logger.info(
-                "Vosk heard: %r (accepted=%s, result_source=%s, "
-                "partial=%r, audio: %d bytes, %.0f ms at %d Hz)",
-                text, accepted, result_source, partial_text,
-                len(pcm_bytes), vosk_duration_ms, self._VOSK_SAMPLE_RATE,
+                "Vosk heard: %r (audio: %d bytes, %.0f ms at %d Hz)",
+                text, len(pcm_bytes), vosk_duration_ms, self._VOSK_SAMPLE_RATE,
             )
 
-            return self._WAKE_PHRASE in text
+            print(f"RAW VOSK TEXT = {text!r}")
+
+            # Strict equality — only "jarvis" (case-insensitive) is accepted.
+            # "[unk]", partial matches, and empty text are all rejected.
+            return text == self._WAKE_PHRASE
         except Exception as exc:
             logger.error("Vosk recognition failed: %s", exc, exc_info=True)
             return False

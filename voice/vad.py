@@ -27,7 +27,7 @@ class VAD:
         on_speech_ended: Callable[[], None] | None = None,
         aggressiveness: int = 1,
         frame_duration_ms: int = 30,
-        padding_duration_ms: int = 300,
+        padding_duration_ms: int = 750,
         sample_rate: int = 16000,
     ) -> None:
         self._on_speech_started = on_speech_started

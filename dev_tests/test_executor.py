@@ -50,7 +50,7 @@ class TestExecutor(unittest.TestCase):
         response = self.executor.execute(plan)
 
         self.assertTrue(response.success)
-        self.assertEqual(response.message, "All 1 step(s) executed successfully.")
+        self.assertEqual(response.message, "Step 0 completed.")
         self.assertIsNone(response.error)
         self.assertIsNotNone(handler.called_with_step)
         self.assertEqual(handler.called_with_step.target, "test_target")
@@ -74,7 +74,7 @@ class TestExecutor(unittest.TestCase):
         response = self.executor.execute(plan)
 
         self.assertFalse(response.success)
-        self.assertEqual(response.message, "Step 0 (action='failing_action') failed.")
+        self.assertIn("Step 0 (action='failing_action') failed:", response.message)
         self.assertIn("RuntimeError: Handler failed as requested.", response.error)
         self.assertIsNone(second_handler.called_with_step)  # Second step never ran
 
@@ -90,19 +90,19 @@ class TestExecutor(unittest.TestCase):
         response = self.executor.execute(plan)
 
         self.assertFalse(response.success)
-        self.assertEqual(response.message, "Step 0 (action='unregistered_action') failed.")
+        self.assertIn("Step 0 (action='unregistered_action') failed:", response.message)
         self.assertIn("KeyError: 'No handler registered for action", response.error)
 
     def test_execute_empty_plan(self) -> None:
-        """Verify an empty plan returns a successful, no-op Response."""
+        """Verify an empty plan returns a failed Response with explanation."""
         plan = ExecutionPlan(
             raw_text="do nothing", intent="no_op", confidence=1.0, steps=[]
         )
 
         response = self.executor.execute(plan)
 
-        self.assertTrue(response.success)
-        self.assertEqual(response.message, "Execution plan had no steps to run.")
+        self.assertFalse(response.success)
+        self.assertEqual(response.message, "Unknown command: 'do nothing'.")
 
 
 class TestRegistry(unittest.TestCase):

@@ -63,8 +63,8 @@ class TestListenerService(unittest.TestCase):
         # Act: Run the command listener
         result = self.service.listen_for_command()
 
-        # Assert: Verify the early exit and correct error propagation
-        self.mock_microphone_manager.capture_once.assert_called_once()
+        # Assert: Verify retries (max_retries=2 -> 3 attempts), then failure
+        self.assertEqual(self.mock_microphone_manager.capture_once.call_count, 3)
         self.mock_speech_recognition.recognize.assert_not_called()
         self.assertFalse(result.success)
         self.assertEqual(result.error, "Microphone not found.")

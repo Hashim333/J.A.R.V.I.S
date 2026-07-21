@@ -136,7 +136,7 @@ class WakeWordDetector:
             except Exception as exc:
                 logger.error("_on_wake_word_detected callback failed: %s", exc, exc_info=True)
         else:
-            logger.debug("Force-flush: wake word not found (%d bytes)", len(snapshot))
+            logger.debug("Force-flush: wake word not found (%d bytes), clearing buffer", len(snapshot))
             self._audio_buffer = bytearray()
 
     def _on_speech_started(self) -> None:

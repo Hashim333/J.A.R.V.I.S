@@ -21,9 +21,12 @@ from brain.parser import Parser
 from brain.planner import Planner
 from executor.executor import Executor
 from automation.registry import Registry
-from automation.handlers import AppsHandler, MouseHandler, KeyboardHandler
+from automation.handlers import AppsHandler, BrowserHandler, MouseHandler, KeyboardHandler
 from response.manager import ResponseManager
-from services import ServiceManager, WakeWordService, ListenerService
+from services import ServiceManager, WakeWordService, ListenerService, ConversationManager, ConversationState
+from voice.microphone_stream import MicrophoneStream
+from voice.pipeline import VoiceConversationPipeline
+from voice.manager import VoiceManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -152,8 +155,19 @@ def main() -> None:
     # --- 3. Create and Wire Services ---
     command_queue = queue.Queue()
     wake_word_detected = threading.Event()
-    listener_service = ListenerService()
-    wake_word_service = WakeWordService(wake_word_detected_event=wake_word_detected)
+
+    microphone_stream = MicrophoneStream(
+        chunk_size=1024,
+        sample_rate=16000,
+    )
+
+    listener_service = ListenerService(
+        microphone_stream=microphone_stream,
+    )
+    wake_word_service = WakeWordService(
+        wake_word_detected_event=wake_word_detected,
+        microphone_stream=microphone_stream,
+    )
 
     # --- 4. Register Automation Handlers ---
     def _voice_input() -> str | None:
@@ -163,8 +177,11 @@ def main() -> None:
     apps_handler = AppsHandler()
     mouse_handler = MouseHandler()
     keyboard_handler = KeyboardHandler()
+    browser_handler = BrowserHandler()
     registry.register("open_app", apps_handler)
     registry.register("close_app", apps_handler)
+    registry.register("open_website", browser_handler)
+    registry.register("search", browser_handler)
     registry.register("move_mouse", mouse_handler)
     registry.register("left_click", mouse_handler)
     registry.register("right_click", mouse_handler)
@@ -180,9 +197,33 @@ def main() -> None:
     service_manager.register("listener", listener_service)
     service_manager.register("wake_word", wake_word_service)
 
-    # --- 5. Start Services ---
+    # --- 5. Create Voice Manager ---
+    voice_manager = VoiceManager()
+
+    # --- 6. Create Voice Pipeline ---
+    pipeline = VoiceConversationPipeline(
+        listener_service=listener_service,
+        voice_manager=voice_manager,
+        microphone_stream=microphone_stream,
+        max_retries=3,
+        capture_timeout=10.0,
+    )
+
+    # --- 7. Create Conversation Manager ---
+    conversation_manager = ConversationManager(
+        wake_word_service=wake_word_service,
+        listener_service=listener_service,
+        activity_timeout=30.0,
+    )
+
+    # --- 8. Start Microphone (once, long-lived) ---
+    print("Starting microphone stream...")
+    microphone_stream.start()
+
+    # --- 9. Start Services ---
     _report_service_results("initialize", service_manager.initialize_all())
     _report_service_results("start", service_manager.start_all())
+    print(service_manager.list_services())
 
     print("Brain Ready")
     print("Parser Ready")
@@ -194,67 +235,23 @@ def main() -> None:
     print("Say 'JARVIS' or type a command.")
     print()
 
-    # --- 6. Start Text Input Thread ---
+    # --- 10. Start Text Input Thread ---
     input_thread = threading.Thread(
         target=_text_input_loop, args=(command_queue,), daemon=True
     )
     input_thread.start()
 
-    # --- 7. Main Orchestration Loop ---
+    # --- 11. Main Orchestration Loop ---
     logger.info("Entering main loop — wake word and text input active")
     try:
         while True:
-            # Check for a voice command
-            if wake_word_detected.is_set():
-                wake_word_detected.clear()
-                command_audio = wake_word_service.get_command_audio()
-
-                # Stop the wake mic so ListenerService can use it.
-                logger.info("Wake word detected, pausing wake service")
-                wake_word_service.stop()
-
-                # Transcribe the captured command audio.
-                result = listener_service.transcribe(command_audio)
-                logger.info("Wake transcription result: success=%s, text=%r",
-                           result.success, result.text)
-
-                if result.success and result.text:
-                    command = _strip_wake_word(result.text)
-
-                    if command:
-                        print(f"Command from wake word: '{command}'")
-                        logger.info("Processing voice command: '%s'", command)
-                        response = brain.process(command)
-                        response_manager.present_console(response)
-                    else:
-                        print("Wake word detected. Listening for command...")
-                        logger.info("Only wake word detected, listening for follow-up command")
-                        result2 = listener_service.listen_for_command()
-
-                        if result2.success and result2.text:
-                            print(f"Heard: '{result2.text}'")
-                            logger.info("Processing follow-up command: '%s'", result2.text)
-                            response = brain.process(result2.text)
-                            response_manager.present_console(response)
-                        else:
-                            print(f"Could not understand command. Error: {result2.error}")
-                            logger.warning("Follow-up command failed: %s", result2.error)
-                            import time as _time
-                            _time.sleep(1.5)
-                else:
-                    print(f"Could not understand command. Error: {result.error}")
-                    logger.warning("Wake transcription failed: %s", result.error)
-                    import time as _time
-                    _time.sleep(1.5)
-
-                # Re-arm wake word detection for the next cycle.
-                logger.info("Re-arming wake word detection")
-                wake_word_service.reset_for_wake()
-                print("\nListening for wake word or text command...")
-
-            # Check for a text command
+            # ================================================================
+            # Text commands (always processed, non-blocking)
+            # ================================================================
             try:
                 command = command_queue.get_nowait()
+
+                # --- Built-in commands (exit, help) — always available ---
                 if command.casefold() in {"exit", "quit"}:
                     print("Shutting down JARVIS...")
                     print("Goodbye.")
@@ -263,13 +260,125 @@ def main() -> None:
                     print(HELP_TEXT)
                     continue
 
+                # --- Sleep command — handled before brain processing ---
+                if conversation_manager.is_sleep_command(command):
+                    if conversation_manager.state == ConversationState.ACTIVE_CONVERSATION:
+                        conversation_manager.transition_to_standby(reason="sleep command")
+                        print("\nListening for wake word or text command...")
+                    else:
+                        print("JARVIS is already in standby mode.")
+                    continue
+
+                # --- Regular text command ---
                 logger.info("Processing text command: '%s'", command)
                 response = brain.process(command)
                 response_manager.present_console(response)
+
+                # Handle confirmation flow
+                if getattr(response, "needs_clarification", False) and (
+                    "Are you sure" in (response.clarification_question or "")
+                    or "confirm" in (response.message or "").casefold()
+                ):
+                    print("(waiting for confirmation...)")
+                    try:
+                        answer = input("> ")
+                    except (KeyboardInterrupt, EOFError):
+                        answer = ""
+                    if answer.strip().casefold() in ("yes", "y", "confirm", "do it", "go ahead"):
+                        logger.info("User confirmed, re-processing command")
+                        response = brain.process(command, confirmed=True)
+                        response_manager.present_console(response)
+                    else:
+                        print("Action cancelled.")
+                    continue
+
+                # Enter conversation mode so subsequent commands don't need wake word
+                if conversation_manager.state == ConversationState.STANDBY:
+                    conversation_manager.transition_to_active()
+                else:
+                    conversation_manager.reset_activity()
+                continue
             except queue.Empty:
                 pass
 
-            time.sleep(0.1)
+            # ================================================================
+            # Voice commands (state-dependent)
+            # ================================================================
+            if conversation_manager.state == ConversationState.STANDBY:
+                # -- STANDBY: accept wake word only --
+                if wake_word_detected.is_set():
+                    command = pipeline.wait_for_command(wake_word_detected)
+
+                    if command:
+                        print(f"Command: '{command}'")
+                        logger.info("Processing voice command: '%s'", command)
+                        response = brain.process(command)
+                        response_manager.present_console(response)
+
+                        # Handle confirmation for voice commands
+                        if getattr(response, "needs_clarification", False) and (
+                            "Are you sure" in (response.clarification_question or "")
+                        ):
+                            print("Say 'yes' to confirm, or say 'cancel' to abort.")
+                            confirm_result = listener_service.listen_for_command(timeout=5.0)
+                            if confirm_result.success and confirm_result.text:
+                                answer = confirm_result.text.strip().casefold()
+                                if answer in ("yes", "y", "confirm", "do it", "go ahead"):
+                                    logger.info("Voice confirmation received")
+                                    response = brain.process(command, confirmed=True)
+                                    response_manager.present_console(response)
+
+                        print("\nConversation mode active — keep giving commands.")
+                        conversation_manager.transition_to_active()
+                    else:
+                        print("Could not understand command.")
+                        logger.warning("Voice command failed after all retries")
+                        wake_word_service.reset_for_wake()
+                        print("\nListening for wake word or text command...")
+
+            elif conversation_manager.state == ConversationState.ACTIVE_CONVERSATION:
+                # -- ACTIVE_CONVERSATION: no wake word, listen for commands --
+                if conversation_manager.is_expired:
+                    conversation_manager.transition_to_standby(reason="timeout")
+                    print("\nConversation timed out. Listening for wake word or text command...")
+                    continue
+
+                listen_to = min(5.0, max(1.0, conversation_manager.remaining_time))
+                logger.info("Listening for command (state=ACTIVE_CONVERSATION, timeout=%.1f)", listen_to)
+                result = listener_service.listen_for_command(timeout=listen_to)
+
+                if result.success and result.text:
+                    if conversation_manager.is_sleep_command(result.text):
+                        print("Sleep command received. Returning to standby.")
+                        conversation_manager.transition_to_standby(reason="sleep command")
+                        print("\nListening for wake word or text command...")
+                        continue
+
+                    print(f"Command: '{result.text}'")
+                    logger.info("Processing conversation command: '%s'", result.text)
+                    response = brain.process(result.text)
+                    response_manager.present_console(response)
+
+                    if getattr(response, "needs_clarification", False) and (
+                        "Are you sure" in (response.clarification_question or "")
+                    ):
+                        print("Say 'yes' to confirm, or anything else to cancel.")
+                        confirm_result = listener_service.listen_for_command(timeout=5.0)
+                        if confirm_result.success and confirm_result.text:
+                            answer = confirm_result.text.strip().casefold()
+                            if answer in ("yes", "y", "confirm", "do it", "go ahead"):
+                                logger.info("Voice confirmation received")
+                                response = brain.process(result.text, confirmed=True)
+                                response_manager.present_console(response)
+
+                    conversation_manager.reset_activity()
+                    print("\nConversation mode active — keep giving commands.")
+                else:
+                    if conversation_manager.is_expired:
+                        conversation_manager.transition_to_standby(reason="timeout")
+                        print("\nConversation timed out. Listening for wake word or text command...")
+
+            time.sleep(0.05)
 
     except KeyboardInterrupt:
         print("\nShutting down JARVIS...")
@@ -284,6 +393,8 @@ def main() -> None:
             pass
         logger.info("Shutting down all services")
         _report_service_results("shutdown", service_manager.shutdown_all())
+        logger.info("Shutting down microphone stream")
+        microphone_stream.shutdown()
 
 
 

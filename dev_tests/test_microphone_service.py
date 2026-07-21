@@ -6,7 +6,7 @@ the microphone stream and its lifecycle management.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import threading
 
 from services.base_service import ServiceStatus
@@ -18,46 +18,41 @@ class TestMicrophoneService(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up each test with a new service instance."""
-        self.service = WakeWordService(wake_word_detected_event=threading.Event())
+        self.mock_mic_stream = MagicMock()
+        self.service = WakeWordService(
+            wake_word_detected_event=threading.Event(),
+            microphone_stream=self.mock_mic_stream,
+        )
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_initialize(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify that initialize creates a MicrophoneStream instance."""
-        self.assertIsNone(self.service._microphone_stream)
+    def test_initialize(self) -> None:
+        """Verify that initialize creates a WakeWordDetector."""
+        self.assertIsNone(self.service._wake_word_detector)
         self.service.initialize()
-        self.assertIsNotNone(self.service._microphone_stream)
-        mock_microphone_stream_class.assert_called_once()
+        self.assertIsNotNone(self.service._wake_word_detector)
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_start(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify that start calls the stream's start method."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
+    def test_start(self) -> None:
+        """Verify that start calls set_consumer on the stream."""
         self.service.initialize()
         self.service.start()
-        mock_microphone_stream.start.assert_called_once()
+        self.mock_mic_stream.set_consumer.assert_called_once()
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_stop(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify that stop calls the stream's stop method."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
+    def test_stop(self) -> None:
+        """Verify that stop calls set_consumer(None) on the stream."""
         self.service.initialize()
         self.service.start()
         self.service.stop()
-        mock_microphone_stream.stop.assert_called_once()
+        self.mock_mic_stream.set_consumer.assert_called_with(None)
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_shutdown(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Verify that shutdown calls the stream's shutdown method."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
+    def test_shutdown(self) -> None:
+        """Verify that shutdown calls set_consumer(None) but does NOT close the stream."""
         self.service.initialize()
         self.service.start()
         self.service.shutdown()
-        mock_microphone_stream.shutdown.assert_called_once()
+        self.mock_mic_stream.set_consumer.assert_called_with(None)
+        self.mock_mic_stream.shutdown.assert_not_called()
 
     def test_restart(self) -> None:
         """Verify that restart calls stop and then start."""
-        
-        # To test restart, we need to mock stop and start to check call order
         self.service.stop = MagicMock()
         self.service.start = MagicMock()
 
@@ -66,25 +61,20 @@ class TestMicrophoneService(unittest.TestCase):
         self.service.stop.assert_called_once()
         self.service.start.assert_called_once()
 
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_initialization_does_not_fail(
-        self, mock_microphone_stream_class: MagicMock
-    ) -> None:
+    def test_initialization_does_not_fail_on_mic_not_found(self) -> None:
         """Test that service initialization does not fail if microphone is not found."""
-        mock_microphone_stream_class.side_effect = Exception("Microphone not found")
+        import voice.wakeword
+        original = voice.wakeword.WakeWordDetector
+        voice.wakeword.WakeWordDetector = MagicMock(
+            side_effect=Exception("Microphone not found"),
+        )
         try:
-            self.service.initialize()
-        except Exception:
-            self.fail("initialize() raised an exception unexpectedly.")
-
-    @patch("services.wake_word_service.MicrophoneStream")
-    def test_start_failure(self, mock_microphone_stream_class: MagicMock) -> None:
-        """Test how the service handles a failure during start."""
-        mock_microphone_stream = mock_microphone_stream_class.return_value
-        mock_microphone_stream.start.side_effect = Exception("Failed to start stream")
-        self.service.initialize()
-        with self.assertRaises(Exception):
-            self.service.start()
+            try:
+                self.service.initialize()
+            except Exception:
+                self.fail("initialize() raised an exception unexpectedly.")
+        finally:
+            voice.wakeword.WakeWordDetector = original
 
 
 if __name__ == "__main__":
