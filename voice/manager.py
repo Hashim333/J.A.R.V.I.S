@@ -1,95 +1,288 @@
 """
 voice/manager.py
 
-Voice provider coordinator.
+Voice provider coordinator with speech queue, provider fallback,
+and comprehensive logging.
+
+Manages:
+  - Provider selection (ElevenLabs / System)
+  - Provider fallback on failure
+  - Speech queue (FIFO with priority bump)
+  - Cancel / clear queue
+  - Retry logic
+  - Configuration validation
 """
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+import queue
+import threading
+import time
+from typing import Any, Callable
 
 from config.settings import settings
 from voice.elevenlabs_provider import ElevenLabsProvider
-from voice.provider import VoiceProvider
+from voice.provider import VoiceProvider, VoiceProviderError
 from voice.system_provider import SystemProvider
+
+logger = logging.getLogger(__name__)
 
 
 class VoiceManager:
-    """Load the configured voice provider and expose speech output."""
+    """Provider coordinator with speech queue and fallback.
+
+    Usage::
+
+        manager = VoiceManager()
+        manager.speak("Hello")
+        manager.speak("How are you?")   # queued, plays after "Hello"
+        manager.cancel_all()            # stop + clear queue
+        manager.speak("Urgent", priority=True)  # bumps ahead of queue
+    """
 
     def __init__(self, config: Any = settings) -> None:
         self._settings = config
         self._diagnostics: list[str] = []
+        self._queue: queue.Queue[tuple[str, bool]] = queue.Queue()
+        self._queue_lock = threading.Lock()
+        self._worker_thread: threading.Thread | None = None
+        self._stop_worker = threading.Event()
+        self._current_text: str | None = None
+
+        # Load the configured provider
         try:
             self._provider = self._load_provider()
+            logger.info(
+                "VoiceManager: initialized with %s",
+                type(self._provider).__name__,
+            )
         except Exception as exc:
             self._diagnostics.append(
                 f"Voice provider initialization failed; using system voice. ({exc})"
             )
+            logger.error("VoiceManager: init failed, using fallback: %s", exc)
             self._provider = self._system_provider()
 
-    def speak(self, text: str) -> bool:
-        """Speak text through the configured provider."""
-        try:
-            spoken = self._provider.speak(text)
-        except Exception:
-            spoken = False
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-        if spoken:
-            return True
+    def speak(self, text: str, priority: bool = False) -> bool:
+        """Enqueue *text* for speech.
 
-        if isinstance(self._provider, SystemProvider):
+        If *priority* is True, the text is inserted at the front of the
+        queue and current speech is interrupted.
+
+        Returns True when the text was enqueued.
+        """
+        if not isinstance(text, str) or not text.strip():
             return False
 
-        self._diagnostics.append(
-            "Configured voice provider failed while speaking; using system voice."
-        )
-        self._provider = self._system_provider()
+        if priority:
+            self.stop()
+            with self._queue_lock:
+                # Insert at front — drain existing items, re-queue after
+                existing = []
+                while not self._queue.empty():
+                    try:
+                        existing.append(self._queue.get_nowait())
+                    except queue.Empty:
+                        break
+                self._queue.put((text.strip(), True))
+                for item in existing:
+                    self._queue.put(item)
+            logger.info("VoiceManager: priority enqueue: '%s'", text[:60])
+        else:
+            self._queue.put((text.strip(), False))
+            logger.info("VoiceManager: enqueued: '%s'", text[:60])
+
+        self._ensure_worker()
+        return True
+
+    def stop(self) -> None:
+        """Stop current speech immediately."""
+        self._current_text = None
         try:
-            return self._provider.speak(text)
+            self._provider.stop()
+        except Exception as exc:
+            logger.debug("VoiceManager: provider.stop() failed: %s", exc)
+        logger.info("VoiceManager: stopped current speech")
+
+    def cancel_all(self) -> None:
+        """Stop current speech and clear the entire queue."""
+        self.stop()
+        with self._queue_lock:
+            while not self._queue.empty():
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
+        logger.info("VoiceManager: queue cleared")
+
+    def pause(self) -> None:
+        """Pause speech playback (if supported by provider)."""
+        try:
+            self._provider.pause()
         except Exception:
-            return False
+            pass
+        logger.info("VoiceManager: paused")
+
+    def resume(self) -> None:
+        """Resume paused speech playback."""
+        try:
+            self._provider.resume()
+        except Exception:
+            pass
+        logger.info("VoiceManager: resumed")
+
+    @property
+    def is_playing(self) -> bool:
+        """True when audio is currently playing."""
+        return self._provider.is_playing
+
+    @property
+    def queue_size(self) -> int:
+        return self._queue.qsize()
 
     @property
     def diagnostics(self) -> tuple[str, ...]:
-        """Friendly voice configuration diagnostics from initialization/runtime."""
+        """Configuration and runtime diagnostics."""
         return tuple(self._diagnostics)
 
+    @property
+    def provider(self) -> VoiceProvider:
+        """The currently active voice provider."""
+        return self._provider
+
+    # ------------------------------------------------------------------
+    # Provider management
+    # ------------------------------------------------------------------
+
     def _load_provider(self) -> VoiceProvider:
-        provider = self._provider_name()
-        if provider == "system":
+        """Load the configured voice provider."""
+        provider_name = self._provider_name()
+        logger.info("VoiceManager: configured provider=%r", provider_name)
+
+        if provider_name == "system":
             return self._system_provider()
 
-        if provider == "elevenlabs":
+        if provider_name == "elevenlabs":
             api_key = self._elevenlabs_api_key()
             voice_id = self._voice_id()
+
             if not api_key:
-                self._diagnostics.append(
-                    "ELEVENLABS_API_KEY is missing; using system voice."
-                )
+                msg = "ELEVENLABS_API_KEY is missing; using system voice."
+                self._diagnostics.append(msg)
+                logger.warning("VoiceManager: %s", msg)
                 return self._system_provider()
+
             if not voice_id:
-                self._diagnostics.append("VOICE_ID is missing; using system voice.")
+                msg = "VOICE_ID is missing; using system voice."
+                self._diagnostics.append(msg)
+                logger.warning("VoiceManager: %s", msg)
                 return self._system_provider()
+
             try:
-                return ElevenLabsProvider(
+                provider = ElevenLabsProvider(
                     api_key=api_key,
                     voice_id=voice_id,
                     model=self._voice_model(),
+                    stability=self._voice_stability(),
+                    similarity_boost=self._voice_similarity(),
+                    style=self._voice_style(),
+                    speaker_boost=self._voice_speaker_boost(),
                 )
+                logger.info(
+                    "VoiceManager: ElevenLabs provider created "
+                    "(voice=%s, model=%s)", voice_id, self._voice_model(),
+                )
+                return provider
             except Exception as exc:
-                self._diagnostics.append(
-                    f"ElevenLabs provider failed to initialize; using system voice. ({exc})"
-                )
+                msg = f"ElevenLabs provider failed to initialize; using system voice. ({exc})"
+                self._diagnostics.append(msg)
+                logger.error("VoiceManager: %s", exc)
                 return self._system_provider()
 
-        self._diagnostics.append(
-            f"Unsupported VOICE_PROVIDER {provider!r}; using system voice."
-        )
+        msg = f"Unsupported VOICE_PROVIDER {provider_name!r}; using system voice."
+        self._diagnostics.append(msg)
+        logger.warning("VoiceManager: %s", msg)
         return self._system_provider()
 
+    def _fallback_to_system(self, reason: str = "") -> None:
+        """Switch to the system provider (fallback)."""
+        if isinstance(self._provider, SystemProvider):
+            return  # already using fallback
+        msg = f"Switching to system voice provider"
+        if reason:
+            msg += f": {reason}"
+        self._diagnostics.append(msg)
+        logger.warning("VoiceManager: %s", msg)
+        self._provider = self._system_provider()
+
+    # ------------------------------------------------------------------
+    # Speech worker
+    # ------------------------------------------------------------------
+
+    def _ensure_worker(self) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return
+        self._stop_worker.clear()
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop, daemon=True
+        )
+        self._worker_thread.start()
+
+    def _worker_loop(self) -> None:
+        """Background thread: drain the speech queue."""
+        logger.info("VoiceManager: worker started")
+        while not self._stop_worker.is_set():
+            try:
+                text, priority = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if self._stop_worker.is_set():
+                break
+
+            self._current_text = text
+            start = time.monotonic()
+            success = False
+
+            try:
+                success = self._provider.speak(text)
+            except Exception as exc:
+                logger.error("VoiceManager: provider.speak() raised: %s", exc)
+
+            elapsed = (time.monotonic() - start) * 1000
+            self._current_text = None
+
+            if success:
+                logger.info(
+                    "VoiceManager: OK (%d chars, %.0f ms): '%s'",
+                    len(text), elapsed, text[:60],
+                )
+            else:
+                logger.warning(
+                    "VoiceManager: FAILED (%d chars, %.0f ms): '%s'",
+                    len(text), elapsed, text[:60],
+                )
+                # Fallback for ElevenLabs failures
+                if not isinstance(self._provider, SystemProvider):
+                    self._fallback_to_system(
+                        f"speak() returned False for '{text[:40]}'"
+                    )
+
+        logger.info("VoiceManager: worker stopped")
+
+    # ------------------------------------------------------------------
+    # Settings helpers
+    # ------------------------------------------------------------------
+
     def _provider_name(self) -> str:
-        return str(getattr(self._settings, "voice_provider", "system")).strip().casefold()
+        return str(
+            getattr(self._settings, "voice_provider", "system")
+        ).strip().casefold()
 
     def _system_provider(self) -> SystemProvider:
         return SystemProvider(voice_id=self._voice_id())
@@ -104,4 +297,42 @@ class VoiceManager:
         ).strip()
 
     def _elevenlabs_api_key(self) -> str:
-        return str(getattr(self._settings, "elevenlabs_api_key", "") or "").strip()
+        return str(
+            getattr(self._settings, "elevenlabs_api_key", "") or ""
+        ).strip()
+
+    def _voice_stability(self) -> float | None:
+        val = getattr(self._settings, "voice_stability", None)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def _voice_similarity(self) -> float | None:
+        val = getattr(self._settings, "voice_similarity", None)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def _voice_style(self) -> float | None:
+        val = getattr(self._settings, "voice_style", None)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def _voice_speaker_boost(self) -> bool | None:
+        val = getattr(self._settings, "voice_speaker_boost", None)
+        if val is not None:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.casefold() in ("true", "1", "yes")
+        return None

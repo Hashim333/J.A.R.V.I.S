@@ -87,6 +87,16 @@ class Brain:
                 clarification_question=question,
             )
 
+        # Handle unknown intents gracefully — the parser couldn't match
+        # this text to any known command pattern.
+        if parsed.intent == "unknown":
+            print(f"[PIPELINE] Unknown intent — returning friendly message")
+            return Response(
+                success=False,
+                message=f"I don't know how to do that yet. You can try: open <app>, close <app>, search <query>, or type 'help'.",
+                data={"raw_text": text},
+            )
+
         # Speech confidence check — reject or flag low-confidence input
         if parsed.confidence < 1.0:
             confidence_check = self._policy.check_speech_confidence(parsed.confidence)

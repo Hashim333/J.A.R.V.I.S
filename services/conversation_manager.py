@@ -12,6 +12,8 @@ State diagram:
     │ wake word │     sleep command           │  continuous listen │
     │  only     │ <────────────────────────── │  30s timeout       │
     └──────────┘     critical error           └────────────────────┘
+
+Also maintains a SelectionContext for multi-turn selection flows.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import time
 
 from services.listener_service import ListenerService
 from services.wake_word_service import WakeWordService
+from voice.selection_manager import SelectionContext
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +60,19 @@ class ConversationManager:
         wake_word_service: WakeWordService,
         listener_service: ListenerService,
         activity_timeout: float = 30.0,
+        selection_timeout: float = 30.0,
     ) -> None:
         self._wake_word_service = wake_word_service
         self._listener_service = listener_service
         self._activity_timeout = activity_timeout
+        self._selection_timeout = selection_timeout
         self._state = ConversationState.STANDBY
         self._last_activity: float | None = None
+        self._selection_context = SelectionContext()
+
+    @property
+    def selection_context(self) -> SelectionContext:
+        return self._selection_context
 
     @property
     def state(self) -> ConversationState:

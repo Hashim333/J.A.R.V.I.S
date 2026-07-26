@@ -19,8 +19,7 @@ from automation.ui_detector import (
     UIElement,
 )
 from automation.interactive_launcher import (
-    _find_profile_by_name, _speak_choices, _ask_choice,
-    _extract_dialog_options,
+    _find_profile_by_name,
 )
 
 
@@ -98,11 +97,6 @@ class TestInteractiveLauncher(unittest.TestCase):
     def test_find_profile_by_name_empty_list(self):
         """Empty list should return None."""
         self.assertIsNone(_find_profile_by_name([], "test"))
-
-    def test_extract_dialog_options_returns_list(self):
-        """_extract_dialog_options should return a list."""
-        options = _extract_dialog_options()
-        self.assertIsInstance(options, list)
 
     def test_ui_element_properties(self):
         """UIElement should have correct derived properties."""

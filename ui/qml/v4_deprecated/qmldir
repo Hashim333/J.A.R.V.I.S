@@ -1,0 +1,15 @@
+MainWindow 1.0 MainWindow.qml
+Dashboard 1.0 Dashboard.qml
+Header 1.0 Header.qml
+Footer 1.0 Footer.qml
+Sidebar 1.0 Sidebar.qml
+RightPanel 1.0 RightPanel.qml
+AiCore 1.0 AiCore.qml
+VoicePanel 1.0 VoicePanel.qml
+Conversation 1.0 Conversation.qml
+ParticleBackground 1.0 ParticleBackground.qml
+BottomCards 1.0 BottomCards.qml
+SystemCards 1.0 SystemCards.qml
+GlowLayer 1.0 GlowLayer.qml
+FloatingOrb 1.0 FloatingOrb.qml
+Theme 1.0 Theme.qml

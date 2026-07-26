@@ -53,6 +53,9 @@ class MicrophoneStream:
         self._is_running = False
         self._started = False
         self._lock = threading.Lock()
+        self._processor = None
+        self._on_audio_level: Callable[[float], None] | None = None
+        self._muted: bool = False
 
     def _probe_default_input_format(self) -> None:
         """Log the PyAudio default input format before opening the stream."""
@@ -122,8 +125,8 @@ class MicrophoneStream:
         Atomically swap the audio chunk consumer.
 
         The capture thread will call *consumer* for every audio chunk
-        (after format normalisation).  Pass *None* to pause processing
-        (chunks are silently discarded).
+        (after format normalisation and optional processing).  Pass
+        *None* to pause processing (chunks are silently discarded).
         """
         self._consumer = consumer
         logger.debug(
@@ -132,6 +135,28 @@ class MicrophoneStream:
             if consumer is not None
             else "None",
         )
+
+    def set_processor(self, processor: Any) -> None:
+        """Attach a MicrophoneProcessor for AGC / noise gate / normalisation.
+
+        The processor's start() is called automatically when the stream
+        starts, and shutdown() when the stream shuts down.
+        """
+        self._processor = processor
+
+    def set_on_audio_level(self, callback: Callable[[float], None] | None) -> None:
+        """Register a callback for periodic audio level reports (0.0-1.0)."""
+        self._on_audio_level = callback
+
+    def mute(self) -> None:
+        """Mute mic processing. Audio chunks are discarded until unmute()."""
+        self._muted = True
+        logger.debug("MicrophoneStream: muted")
+
+    def unmute(self) -> None:
+        """Restore mic processing."""
+        self._muted = False
+        logger.debug("MicrophoneStream: unmuted")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -212,6 +237,8 @@ class MicrophoneStream:
                 self._thread = threading.Thread(target=self._capture_loop)
                 self._thread.daemon = True
                 self._thread.start()
+                if self._processor is not None:
+                    self._processor.start()
                 logger.info(
                     "Microphone stream started (sample_rate=%d, chunk_size=%d)",
                     self._sample_rate,
@@ -251,6 +278,12 @@ class MicrophoneStream:
             except Exception:
                 pass
 
+        if self._processor is not None:
+            try:
+                self._processor.shutdown()
+            except Exception:
+                pass
+
         if self._microphone:
             try:
                 self._microphone.__exit__(None, None, None)
@@ -285,6 +318,7 @@ class MicrophoneStream:
         output_byte_count = 0
         last_log_time = time.monotonic()
         last_read_elapsed_ms = 0.0
+        level_report_count = 0
 
         while self._is_running:
             try:
@@ -293,9 +327,28 @@ class MicrophoneStream:
                 last_read_elapsed_ms = (time.monotonic() - read_started) * 1000
                 audio_chunk = self._normalize_chunk(source_chunk)
 
+                if self._processor is not None:
+                    try:
+                        audio_chunk = self._processor.process_chunk(audio_chunk)
+                    except Exception as exc:
+                        logger.error("Processor failed: %s", exc, exc_info=True)
+
                 count += 1
                 source_byte_count += len(source_chunk)
                 output_byte_count += len(audio_chunk)
+
+                level_report_count += 1
+                if level_report_count >= 5 and self._on_audio_level is not None:
+                    level_report_count = 0
+                    try:
+                        level = (
+                            self._processor.audio_level
+                            if self._processor is not None
+                            else 0.0
+                        )
+                        self._on_audio_level(level)
+                    except Exception:
+                        pass
 
                 now = time.monotonic()
                 elapsed = now - last_log_time
@@ -343,7 +396,7 @@ class MicrophoneStream:
                     logger.info("Read %d chunks", count)
 
                 consumer = self._consumer
-                if consumer is not None:
+                if consumer is not None and not self._muted:
                     try:
                         consumer(audio_chunk)
                     except Exception as exc:

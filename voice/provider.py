@@ -14,12 +14,39 @@ class VoiceProviderError(RuntimeError):
 
 
 class VoiceProvider(ABC):
-    """Minimal interface implemented by all voice providers."""
+    """Interface implemented by all voice providers.
+
+    Providers convert text into audio. The audio is played through
+    a shared VoicePlayer instance for low-latency, interruptible
+    output.
+    """
 
     @abstractmethod
     def speak(self, text: str) -> bool:
-        """Speak text and return True when the provider accepted it."""
+        """Synthesise and play *text*.
+
+        Returns True when the provider accepted the request.
+        The actual audio plays asynchronously on a background thread.
+        Call stop() to interrupt.
+        """
         raise NotImplementedError
+
+    def stop(self) -> None:
+        """Cancel any in-progress speech immediately. Default no-op."""
+        return
+
+    @property
+    def is_playing(self) -> bool:
+        """True when this provider is currently playing audio."""
+        return False
+
+    def pause(self) -> None:
+        """Pause playback. Call resume() to continue. Default no-op."""
+        return
+
+    def resume(self) -> None:
+        """Resume paused playback. Default no-op."""
+        return
 
 
 # Backward-compatible alias for older imports in the voice package.

@@ -19,32 +19,39 @@ class VoiceFoundationTests(unittest.TestCase):
         self.assertIn("speak", VoiceProvider.__abstractmethods__)
 
     def test_system_provider_speak_uses_windows_tts(self) -> None:
+        """speak() launches PowerShell with System.Speech."""
         provider = SystemProvider()
-        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        mock_proc = unittest.mock.MagicMock()
+        mock_proc.poll.return_value = None  # process still running
 
-        with patch("voice.system_provider.subprocess.run", return_value=completed) as run:
+        with patch("voice.system_provider.subprocess.Popen", return_value=mock_proc) as popen:
             self.assertTrue(provider.speak("Hello"))
 
-        args = run.call_args.args[0]
+        args = popen.call_args.args[0]
         self.assertIn("powershell", args[0])
-        self.assertIn("System.Speech", args[-1])
-        self.assertIn("Hello", args[-1])
+        full_cmd = " ".join(args)
+        self.assertIn("System.Speech", full_cmd)
+        self.assertIn("Hello", full_cmd)
 
     def test_system_provider_returns_false_for_blank_text(self) -> None:
         self.assertFalse(SystemProvider().speak("   "))
 
     def test_system_provider_returns_false_on_failure(self) -> None:
+        """speak() launches PowerShell and returns True (non-blocking)."""
         provider = SystemProvider()
-        completed = SimpleNamespace(returncode=1, stdout="", stderr="failed")
 
-        with patch("voice.system_provider.subprocess.run", return_value=completed):
-            self.assertFalse(provider.speak("Hello"))
+        with patch("voice.system_provider.subprocess.Popen") as mock_popen:
+            result = provider.speak("Hello")
+
+        self.assertTrue(result)
+        mock_popen.assert_called_once()
 
     def test_configuration_defaults_to_system_provider(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            import config.settings as settings_module
+        with patch("dotenv.load_dotenv"):
+            with patch.dict("os.environ", {}, clear=True):
+                import config.settings as settings_module
 
-            reloaded = importlib.reload(settings_module)
+                reloaded = importlib.reload(settings_module)
 
         self.assertEqual(reloaded.settings.voice_provider, "system")
         self.assertEqual(reloaded.VOICE_PROVIDER, "system")
@@ -168,10 +175,16 @@ class VoiceFoundationTests(unittest.TestCase):
             patch.object(manager._provider, "speak", return_value=False),
             patch.object(SystemProvider, "speak", return_value=True),
         ):
-            self.assertTrue(manager.speak("Hello"))
+            # speak() enqueues and returns True (async)
+            result = manager.speak("Hello")
+            self.assertTrue(result)
+
+        # Wait for worker to process the failed item
+        import time
+        time.sleep(0.2)
 
         self.assertIsInstance(manager._provider, SystemProvider)
-        self.assertIn("failed while speaking", manager.diagnostics[-1])
+        self.assertIn("Switching to system voice provider", manager.diagnostics[-1])
 
     def test_voice_manager_missing_optional_settings_do_not_crash(self) -> None:
         manager = VoiceManager(config=SimpleNamespace(voice_provider="system"))

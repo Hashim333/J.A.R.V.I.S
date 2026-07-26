@@ -2,12 +2,17 @@
 config/settings.py
 
 Single source of truth for all JARVIS runtime configuration.
-All values can be overridden via environment variables.
+All values can be overridden via environment variables or a .env file.
 """
 
+from __future__ import annotations
+
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 
 # ---------------------------------------------------------------------------
@@ -48,13 +53,24 @@ class Settings:
     push_to_talk_enabled: bool
     push_to_talk_key: str
 
+    # --- Microphone ---
+    mic_sensitivity: float
+    mic_agc_enabled: bool
+    mic_agc_target_level: float
+    mic_noise_gate_enabled: bool
+    mic_noise_gate_threshold: float
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _bool_env(key: str, default: bool) -> bool:
     """Parse a boolean from an environment variable."""
     raw = os.getenv(key)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes"}
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _str_env(key: str, default: str) -> str:
@@ -73,9 +89,131 @@ def _float_env(key: str, default: float) -> float:
         return default
 
 
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+_CACHED_DIAGNOSTICS: list[str] = []
+
+
+def validate_config(s: Settings) -> list[str]:
+    """Validate the resolved configuration.
+
+    Returns a list of diagnostic messages.  An empty list means all checks
+    passed.
+    """
+    msgs: list[str] = []
+
+    provider = s.voice_provider.strip().casefold()
+    if provider not in ("system", "elevenlabs"):
+        msgs.append(
+            f"Invalid VOICE_PROVIDER={s.voice_provider!r}; "
+            f"expected 'system' or 'elevenlabs'."
+        )
+
+    if provider == "elevenlabs":
+        if not s.elevenlabs_api_key:
+            msgs.append("ElevenLabs provider selected but API key is missing.")
+        if not s.voice_id:
+            msgs.append("ElevenLabs provider selected but VOICE_ID is missing.")
+        if not s.voice_model:
+            msgs.append("VOICE_MODEL must not be empty when using ElevenLabs.")
+
+    url = s.ollama_base_url.strip()
+    if not url.startswith(("http://", "https://")):
+        msgs.append(
+            f"OLLAMA_BASE_URL={s.ollama_base_url!r} must start with "
+            f"http:// or https://."
+        )
+
+    if s.timeout < 1:
+        msgs.append(f"OLLAMA_TIMEOUT={s.timeout} must be a positive integer.")
+
+    for key, val in (
+        ("VOICE_STABILITY", s.voice_stability),
+        ("VOICE_SIMILARITY", s.voice_similarity),
+        ("VOICE_STYLE", s.voice_style),
+    ):
+        if not 0.0 <= val <= 1.0:
+            msgs.append(
+                f"{key}={val} is out of range. Must be between 0.0 and 1.0."
+            )
+
+    if s.mic_sensitivity < 0.0:
+        msgs.append(
+            f"MIC_SENSITIVITY={s.mic_sensitivity} must be >= 0.0."
+        )
+    if not 0.001 <= s.mic_agc_target_level <= 1.0:
+        msgs.append(
+            f"MIC_AGC_TARGET_LEVEL={s.mic_agc_target_level} is out of range. "
+            f"Must be between 0.001 and 1.0."
+        )
+    if not 0.001 <= s.mic_noise_gate_threshold <= 0.5:
+        msgs.append(
+            f"MIC_NOISE_GATE_THRESHOLD={s.mic_noise_gate_threshold} is out of range. "
+            f"Must be between 0.001 and 0.5."
+        )
+
+    return msgs
+
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+def _mask_key(key: str) -> str:
+    """Mask an API key for safe display.
+
+    >>> _mask_key("abc12345")
+    'ab****45'
+    >>> _mask_key("ab")
+    '********'
+    """
+    if len(key) > 4:
+        return key[:2] + "****" + key[-2:]
+    return "********"
+
+
+def print_config_summary(s: Settings) -> None:
+    """Print a formatted summary of the active configuration."""
+    api_key = s.elevenlabs_api_key
+    masked = _mask_key(api_key) if api_key else "(not set)"
+
+    lines = [
+        "\nConfiguration Loaded",
+        "-" * 50,
+        "",
+        f"  Voice Provider:   {s.voice_provider.capitalize()}",
+        f"  Voice Enabled:    {'Yes' if s.voice_enabled else 'No'}",
+        f"  Voice ID:         {s.voice_id or '(not set)'}",
+        f"  Model:            {s.voice_model}",
+        f"  API Key:          {masked}",
+        f"  Ollama URL:       {s.ollama_base_url}",
+        f"  Ollama Model:     {s.model}",
+        f"  Ollama Timeout:   {s.timeout}s",
+        f"  Debug:            {'Yes' if s.debug else 'No'}",
+        f"  Mic Sensitivity:  {s.mic_sensitivity}",
+        f"  Mic AGC:          {'On' if s.mic_agc_enabled else 'Off'} (target: {s.mic_agc_target_level})",
+        f"  Mic Noise Gate:   {'On' if s.mic_noise_gate_enabled else 'Off'} (threshold: {s.mic_noise_gate_threshold})",
+        "",
+    ]
+    print("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Load
+# ---------------------------------------------------------------------------
+
+def get_diagnostics() -> tuple[str, ...]:
+    """Return the most recent validation diagnostics."""
+    return tuple(_CACHED_DIAGNOSTICS)
+
+
 def _load() -> Settings:
-    """Construct Settings from environment variables with safe defaults."""
-    return Settings(
+    """Construct Settings from environment variables + .env file."""
+    load_dotenv()
+
+    s = Settings(
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
         timeout=int(os.getenv("OLLAMA_TIMEOUT", "30")),
@@ -91,7 +229,22 @@ def _load() -> Settings:
         voice_speaker_boost=_bool_env("VOICE_SPEAKER_BOOST", default=True),
         push_to_talk_enabled=_bool_env("PUSH_TO_TALK_ENABLED", default=False),
         push_to_talk_key=_str_env("PUSH_TO_TALK_KEY", "F9"),
+        mic_sensitivity=_float_env("MIC_SENSITIVITY", 1.0),
+        mic_agc_enabled=_bool_env("MIC_AGC_ENABLED", default=True),
+        mic_agc_target_level=_float_env("MIC_AGC_TARGET_LEVEL", 0.15),
+        mic_noise_gate_enabled=_bool_env("MIC_NOISE_GATE_ENABLED", default=True),
+        mic_noise_gate_threshold=_float_env("MIC_NOISE_GATE_THRESHOLD", 0.02),
     )
+
+    global _CACHED_DIAGNOSTICS
+    _CACHED_DIAGNOSTICS = validate_config(s)
+
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        for msg in _CACHED_DIAGNOSTICS:
+            print(f"WARNING: {msg}", file=sys.stderr)
+        print_config_summary(s)
+
+    return s
 
 
 # Module-level singleton — import this everywhere.
@@ -102,14 +255,14 @@ settings: Settings = _load()
 #   from config.settings import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT
 # ---------------------------------------------------------------------------
 
-OLLAMA_BASE_URL: str  = settings.ollama_base_url
-OLLAMA_MODEL: str     = settings.model
-OLLAMA_TIMEOUT: int   = settings.timeout
-DEBUG: bool           = settings.debug
-VOICE_ENABLED: bool   = settings.voice_enabled
-VOICE_PROVIDER: str   = settings.voice_provider
-VOICE_ID: str         = settings.voice_id
-VOICE_MODEL: str      = settings.voice_model
+OLLAMA_BASE_URL: str = settings.ollama_base_url
+OLLAMA_MODEL: str = settings.model
+OLLAMA_TIMEOUT: int = settings.timeout
+DEBUG: bool = settings.debug
+VOICE_ENABLED: bool = settings.voice_enabled
+VOICE_PROVIDER: str = settings.voice_provider
+VOICE_ID: str = settings.voice_id
+VOICE_MODEL: str = settings.voice_model
 ELEVENLABS_API_KEY: str = settings.elevenlabs_api_key
 VOICE_STABILITY: float = settings.voice_stability
 VOICE_SIMILARITY: float = settings.voice_similarity
@@ -117,3 +270,8 @@ VOICE_STYLE: float = settings.voice_style
 VOICE_SPEAKER_BOOST: bool = settings.voice_speaker_boost
 PUSH_TO_TALK_ENABLED: bool = settings.push_to_talk_enabled
 PUSH_TO_TALK_KEY: str = settings.push_to_talk_key
+MIC_SENSITIVITY: float = settings.mic_sensitivity
+MIC_AGC_ENABLED: bool = settings.mic_agc_enabled
+MIC_AGC_TARGET_LEVEL: float = settings.mic_agc_target_level
+MIC_NOISE_GATE_ENABLED: bool = settings.mic_noise_gate_enabled
+MIC_NOISE_GATE_THRESHOLD: float = settings.mic_noise_gate_threshold

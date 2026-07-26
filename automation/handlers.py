@@ -25,6 +25,7 @@ from memory.file_memory import FileMemory
 from automation.keyboard import KeyboardController
 from automation.mouse import MouseController
 from models.execution_plan import Step
+from voice.selection_manager import VoiceSelectionManager
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +107,21 @@ class AppsHandler:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _resolve_app(self, target: str) -> Any | None:
+    def _resolve_app(
+        self,
+        target: str,
+        voice_input: Callable[[], str | None] | None = None,
+    ) -> Any | None:
         """Look up an app by name, handling ambiguity and generic aliases.
-        
+
+        When *voice_input* is available and multiple apps match, a
+        ``VoiceSelectionManager`` is used to ask the user which one they
+        meant.  When voice input is unavailable the caller receives a
+        clarification dict instead.
+
         Returns ApplicationInfo on success, dict with needs_clarification on
-        ambiguity, or None when not found (including well-known stubs with no
-        executable).
+        ambiguity (only when voice_input is None), or None when not found
+        (including well-known stubs with no executable).
         """
         logger.info("Looking up app: %s", target)
         app_info = self._app_registry.lookup(target)
@@ -126,6 +136,16 @@ class AppsHandler:
         if len(matches) >= 2:
             names = [m[0].canonical_name for m in matches[:3]]
             logger.info("Multiple matches for %r: %s", target, names)
+            if voice_input is not None:
+                manager = VoiceSelectionManager(voice_input=voice_input)
+                header = f"I found multiple applications matching '{target}'."
+                selected = manager.select(names, header=header)
+                if selected is not None:
+                    for m in matches:
+                        if m[0].canonical_name == selected:
+                            logger.info("Resolved ambiguous %r -> %s", target, selected)
+                            return m[0]
+                return None
             return {"needs_clarification": True, "names": names, "matches": [m[0] for m in matches[:5]]}
 
         generic = _GENERIC_ALIASES.get(target.strip().casefold())
@@ -161,7 +181,7 @@ class AppsHandler:
         step: Step,
         voice_input: Callable[[], str | None] | None,
     ) -> dict:
-        app_info = self._resolve_app(target)
+        app_info = self._resolve_app(target, voice_input)
         if app_info is None:
             return self._app_not_found(target)
         if isinstance(app_info, dict) and app_info.get("needs_clarification"):
@@ -221,7 +241,7 @@ class AppsHandler:
         voice_input: Callable[[], str | None] | None = None,
         auto_force: bool = True,
     ) -> dict:
-        app_info = self._resolve_app(target)
+        app_info = self._resolve_app(target, voice_input)
         if app_info is None:
             return self._app_not_found(target)
         if isinstance(app_info, dict) and app_info.get("needs_clarification"):
@@ -345,22 +365,26 @@ class AppsHandler:
         voice_input: Callable[[], str | None] | None,
     ) -> str:
         """Ask the user whether to close all instances or only the active one."""
-        msg = f"I found {count} {app_name} windows.\nClose all or only the active one?"
-        print(msg)
-
-        if voice_input is not None:
-            raw = voice_input()
-            if raw is None:
-                reply = input("(all/active/cancel): ").strip().casefold()
-            else:
-                reply = raw.strip().casefold()
-        else:
-            reply = input("(all/active/cancel): ").strip().casefold()
-
-        if reply in ("all", "a", "close all"):
+        manager = VoiceSelectionManager(voice_input=voice_input)
+        options = ["all", "active"]
+        header = f"I found {count} {app_name} windows. Close all or only the active one?"
+        selected = manager.select(
+            options=options,
+            header=header,
+            retries=2,
+            synonyms={
+                "all windows": "all",
+                "close all": "all",
+                "every": "all",
+                "this one": "active",
+                "current": "active",
+                "foreground": "active",
+            },
+        )
+        if selected == "all":
             logger.info("Intent=CLOSE_APPLICATION Action=multi_instance_choice Choice=all")
             return "all"
-        if reply in ("active", "current", "foreground", "this one"):
+        if selected == "active":
             logger.info("Intent=CLOSE_APPLICATION Action=multi_instance_choice Choice=active")
             return "active"
         logger.info("Intent=CLOSE_APPLICATION Action=multi_instance_choice Choice=cancel")
@@ -1002,39 +1026,6 @@ class FileManagerHandler:
         # File not found at the exact path — report and stop.
         return result
 
-    @staticmethod
-    def _prompt_file_choice(
-        names: list[str],
-        voice_input: Callable[[], str | None] | None,
-    ) -> int | None:
-        """Ask the user which file to open when multiple matches exist."""
-        print("I found multiple files:")
-        for i, name in enumerate(names, 1):
-            print(f"{i}. {name}")
-
-        if voice_input is not None:
-            raw = voice_input()
-            if raw is None:
-                reply = input("Which one? (1-5 or cancel): ").strip().casefold()
-            else:
-                reply = raw.strip().casefold()
-        else:
-            reply = input("Which one? (1-5 or cancel): ").strip().casefold()
-
-        if reply in ("cancel", "c", "none"):
-            return None
-        try:
-            idx = int(reply) - 1
-            if 0 <= idx < len(names):
-                return idx
-        except ValueError:
-            pass
-        # Try name match
-        for i, name in enumerate(names):
-            if reply in name.casefold():
-                return i
-        return None
-
     # ------------------------------------------------------------------
     # Find file
     # ------------------------------------------------------------------
@@ -1048,7 +1039,6 @@ class FileManagerHandler:
         if not file_query:
             return {"success": False, "message": "No search query specified."}
 
-        # Search only common folders — do not fall back to memory.
         matches = file_ops.find_file(file_query)
         if not matches:
             return {"success": False, "message": f"No files found matching '{file_query}'."}
@@ -1061,14 +1051,19 @@ class FileManagerHandler:
             }
 
         names = [m["name"] for m in matches[:5]]
-        choice = self._prompt_file_choice(names, voice_input)
-        if choice is None or choice == "cancel":
+        manager = VoiceSelectionManager(voice_input=voice_input)
+        header = f"I found {len(matches)} files matching '{file_query}'."
+        selected = manager.select(names, header=header)
+        if selected is None:
             return {"success": False, "message": "Cancelled."}
-        return {
-            "success": True,
-            "message": f"Found {matches[choice]['name']}.",
-            "details": {"path": matches[choice]["path"], "matches": matches},
-        }
+        for m in matches:
+            if m["name"] == selected:
+                return {
+                    "success": True,
+                    "message": f"Found {selected}.",
+                    "details": {"path": m["path"], "matches": matches},
+                }
+        return {"success": False, "message": "Selection failed."}
 
     # ------------------------------------------------------------------
     # Open file location

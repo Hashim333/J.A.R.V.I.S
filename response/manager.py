@@ -23,6 +23,7 @@ class ResponseManager:
         debug: bool = False,
         voice_enabled: bool | None = None,
         voice_manager: VoiceManager | None = None,
+        voice_engine: object | None = None,
     ) -> None:
         self._formatter = formatter or ResponseFormatter()
         self._debug = debug
@@ -30,6 +31,7 @@ class ResponseManager:
             settings.voice_enabled if voice_enabled is None else voice_enabled
         )
         self._voice_manager = voice_manager
+        self._voice_engine = voice_engine
 
     def console_text(self, response: Any) -> str:
         """Format a Response for console output."""
@@ -56,6 +58,15 @@ class ResponseManager:
         if not message:
             return
 
+        # Prefer the VoiceEngine (non-blocking, interruptible)
+        if self._voice_engine is not None:
+            try:
+                self._voice_engine.speak(message)
+                return
+            except Exception:
+                pass
+
+        # Fallback to direct VoiceManager
         if self._voice_manager is None:
             self._voice_manager = VoiceManager()
         self._voice_manager.speak(message)

@@ -1084,23 +1084,10 @@ def _chrome_profiles() -> list[_ChromeProfile]:
     return profiles
 
 
-_MAX_VOICE_ATTEMPTS = 5
-
-
-def _build_chrome_aliases(profiles: list[_ChromeProfile]) -> dict[str, int]:
-    aliases: dict[str, int] = {}
-    if profiles:
-        for phrase in ("my profile", "mine", "default"):
-            aliases[phrase] = 0
-    return aliases
-
-
 def _select_chrome_profile(
     profiles: list[_ChromeProfile],
     voice_input: Callable[[], str | None] | None = None,
 ) -> _ChromeProfile:
-    from brain.profile_selection_parser import ProfileSelectionParser
-
     if len(profiles) == 1:
         return profiles[0]
 
@@ -1116,46 +1103,15 @@ def _select_chrome_profile(
         return unique[0]
 
     names = [p.display_name for p in unique]
-    parser = ProfileSelectionParser(candidates=names, aliases=_build_chrome_aliases(unique))
-    names_str = ", ".join(names)
-    print("Which Chrome profile would you like to open?")
-    for i, p in enumerate(unique, start=1):
-        print(f"{i}. {p.display_name}")
-
-    def _prompt() -> None:
-        print(f"You can say the profile name ({names_str}) or the profile number.")
-
-    attempts = 0
-    while True:
-        if voice_input is not None:
-            raw = voice_input()
-            if raw is None:
-                attempts += 1
-                if attempts >= _MAX_VOICE_ATTEMPTS:
-                    raise AppOperationError("Could not recognise speech after multiple attempts.")
-                print("I didn't catch that.")
-                _prompt()
-                continue
-            utterance = raw.strip()
-        else:
-            sys.stdout.write("Chrome profile: ")
-            sys.stdout.flush()
-            utterance = (sys.__stdin__.readline() or "").strip()
-
-        if utterance.casefold() == "cancel":
-            raise AppOperationError("Chrome profile selection cancelled.")
-
-        result = parser.parse(utterance)
-        if result.low_confidence:
-            print("I didn't catch that.")
-            _prompt()
-            if voice_input is not None:
-                attempts += 1
-                if attempts >= _MAX_VOICE_ATTEMPTS:
-                    raise AppOperationError("Could not understand your choice after multiple attempts.")
-                continue
-            continue
-        return unique[result.index]
+    from voice.selection_manager import VoiceSelectionManager
+    manager = VoiceSelectionManager(voice_input=voice_input)
+    selected_name = manager.select(names, header="Which Chrome profile would you like to open?")
+    if selected_name is None:
+        raise AppOperationError("Chrome profile selection cancelled.")
+    for p in unique:
+        if p.display_name == selected_name:
+            return p
+    raise AppOperationError(f"Selected profile '{selected_name}' not found.")
 
 
 def _popen(command: list[str]) -> None:

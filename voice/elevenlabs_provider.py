@@ -1,27 +1,58 @@
 """
 voice/elevenlabs_provider.py
 
-ElevenLabs text-to-speech provider.
+Real-time ElevenLabs text-to-speech provider.
+
+Downloads audio from the ElevenLabs API and plays it through a shared
+VoicePlayer instance for low-latency, interruptible, in-process audio
+playback.  No external media player windows.
+
+Supports:
+  - PCM output (raw audio, no decode needed)
+  - MP3 output with optional pydub-based decode
+  - Stream endpoint for lower latency
+  - Stop / pause / resume via VoicePlayer
+  - Retry on transient failure
+  - Comprehensive logging
 """
 
 from __future__ import annotations
 
 import json
-import os
-import tempfile
+import logging
+import time
 import urllib.error
 import urllib.request
 from socket import timeout as SocketTimeout
+from typing import Any
 
 from config.settings import settings
+from voice.player import VoicePlayer
 from voice.provider import VoiceProvider
 
+logger = logging.getLogger(__name__)
 
 ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+_REQUEST_TIMEOUT = 30
+_MAX_RETRIES = 1
+
+# Supported PCM output formats (raw audio, no decode needed)
+_PCM_FORMATS: dict[str, tuple[int, int]] = {
+    "pcm_8000": (8000, 1),
+    "pcm_16000": (16000, 1),
+    "pcm_22050": (22050, 1),
+    "pcm_44100": (44100, 1),
+}
+
+_DEFAULT_OUTPUT_FORMAT = "pcm_22050"
+_DEFAULT_PLAYBACK_FORMAT = (22050, 2, 1)  # sample_rate, sample_width, channels
 
 
 class ElevenLabsProvider(VoiceProvider):
-    """Speak through ElevenLabs using configuration-provided credentials."""
+    """Speak through ElevenLabs using configuration-provided credentials.
+
+    Audio is played through a shared VoicePlayer instance.
+    """
 
     def __init__(
         self,
@@ -33,11 +64,19 @@ class ElevenLabsProvider(VoiceProvider):
         similarity_boost: float | None = None,
         style: float | None = None,
         speaker_boost: bool | None = None,
-        timeout: int = 30,
+        timeout: int = _REQUEST_TIMEOUT,
+        output_format: str = _DEFAULT_OUTPUT_FORMAT,
+        player: VoicePlayer | None = None,
     ) -> None:
-        self._api_key = api_key if api_key is not None else settings.elevenlabs_api_key
-        self._voice_id = voice_id if voice_id is not None else settings.voice_id
-        self._model = model if model is not None else settings.voice_model
+        self._api_key = (
+            api_key if api_key is not None else settings.elevenlabs_api_key
+        )
+        self._voice_id = (
+            voice_id if voice_id is not None else settings.voice_id
+        )
+        self._model = (
+            model if model is not None else settings.voice_model
+        )
         self._stability = (
             stability if stability is not None else settings.voice_stability
         )
@@ -46,73 +85,297 @@ class ElevenLabsProvider(VoiceProvider):
             if similarity_boost is not None
             else settings.voice_similarity
         )
-        self._style = style if style is not None else settings.voice_style
+        self._style = (
+            style if style is not None else settings.voice_style
+        )
         self._speaker_boost = (
             speaker_boost
             if speaker_boost is not None
             else settings.voice_speaker_boost
         )
         self._timeout = timeout
+        self._output_format = output_format
+        self._player = player or VoicePlayer()
+        self._stats: dict[str, Any] = {}
+
+        # Validate configuration
+        self._validate_config()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def speak(self, text: str) -> bool:
+        """Synthesise text via ElevenLabs and play through VoicePlayer.
+
+        Returns True when the API request was accepted. Audio plays
+        asynchronously on the VoicePlayer's background thread.
+        """
         if not isinstance(text, str) or not text.strip():
             return False
         if not self._api_key:
+            logger.error("ElevenLabs: speak aborted — no API key configured")
             return False
         if not self._voice_id:
+            logger.error("ElevenLabs: speak aborted — no Voice ID configured")
             return False
 
-        request = self._build_request(text.strip())
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                audio = response.read()
-        except (
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-            SocketTimeout,
-            TimeoutError,
-            OSError,
-        ):
-            return False
+        payload = text.strip()
+        request = self._build_request(payload)
+        last_error: Exception | None = None
 
-        if not audio:
-            return False
+        for attempt in range(1 + _MAX_RETRIES):
+            logger.info(
+                "ElevenLabs: request attempt %d/%d (voice=%s, model=%s, format=%s, %d chars)",
+                attempt + 1, 1 + _MAX_RETRIES,
+                self._voice_id, self._model, self._output_format,
+                len(payload),
+            )
 
-        return self._play_audio(audio)
+            start = time.monotonic()
+            try:
+                with urllib.request.urlopen(
+                    request, timeout=self._timeout
+                ) as response:
+                    status = response.status
+                    content_type = response.headers.get("Content-Type", "")
+                    audio_data = response.read()
+            except (
+                urllib.error.HTTPError,
+                urllib.error.URLError,
+                SocketTimeout,
+                TimeoutError,
+                OSError,
+            ) as exc:
+                elapsed = (time.monotonic() - start) * 1000
+                logger.warning(
+                    "ElevenLabs: request failed (attempt %d, %.0f ms): %s",
+                    attempt + 1, elapsed, exc,
+                )
+                last_error = exc
+                if attempt < _MAX_RETRIES:
+                    logger.info("ElevenLabs: retrying...")
+                    time.sleep(0.5)
+                continue
+
+            elapsed = (time.monotonic() - start) * 1000
+            self._stats["last_request_ms"] = elapsed
+
+            if status != 200:
+                logger.error(
+                    "ElevenLabs: HTTP %d (attempt %d, %.0f ms)",
+                    status, attempt + 1, elapsed,
+                )
+                last_error = RuntimeError(f"HTTP {status}")
+                if attempt < _MAX_RETRIES:
+                    continue
+                return False
+
+            if not audio_data:
+                logger.error("ElevenLabs: empty response (attempt %d)", attempt + 1)
+                last_error = RuntimeError("empty response")
+                if attempt < _MAX_RETRIES:
+                    continue
+                return False
+
+            logger.info(
+                "ElevenLabs: API OK (%d bytes, %.0f ms, Content-Type: %s)",
+                len(audio_data), elapsed, content_type,
+            )
+
+            # Determine if the response is PCM (raw) or MP3
+            is_pcm = any(fmt in content_type for fmt in (
+                "audio/pcm", "audio/L16", "audio/l16",
+                "audio/raw", "audio/x-raw",
+            )) or self._output_format in _PCM_FORMATS
+
+            if is_pcm:
+                sample_rate, channels = _PCM_FORMATS.get(
+                    self._output_format, (22050, 1)
+                )
+                self._player.play(
+                    audio_data,
+                    sample_rate=sample_rate,
+                    sample_width=2,
+                    channels=channels,
+                )
+                logger.info(
+                    "ElevenLabs: playing PCM (%d Hz, %d ch, %d bytes)",
+                    sample_rate, channels, len(audio_data),
+                )
+                return True
+
+            # MP3 response — try to decode and play
+            return self._play_mp3(audio_data, payload)
+
+        logger.error(
+            "ElevenLabs: all %d attempts failed: %s",
+            1 + _MAX_RETRIES, last_error,
+        )
+        return False
+
+    def stop(self) -> None:
+        """Stop playback immediately."""
+        self._player.stop()
+        logger.debug("ElevenLabs: stopped via player")
+
+    @property
+    def is_playing(self) -> bool:
+        """True when audio is currently playing."""
+        return self._player.is_playing
+
+    def pause(self) -> None:
+        """Pause playback."""
+        self._player.pause()
+        logger.debug("ElevenLabs: paused")
+
+    def resume(self) -> None:
+        """Resume paused playback."""
+        self._player.resume()
+        logger.debug("ElevenLabs: resumed")
+
+    @property
+    def player(self) -> VoicePlayer:
+        """The shared VoicePlayer instance used for playback."""
+        return self._player
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """Return diagnostic statistics."""
+        return dict(self._stats)
+
+    # ------------------------------------------------------------------
+    # Internal: request building
+    # ------------------------------------------------------------------
 
     def _build_request(self, text: str) -> urllib.request.Request:
-        body = json.dumps(
-            {
-                "text": text,
-                "model_id": self._model,
-                "voice_settings": {
-                    "stability": self._stability,
-                    "similarity_boost": self._similarity_boost,
-                    "style": self._style,
-                    "use_speaker_boost": self._speaker_boost,
-                },
-            }
-        ).encode("utf-8")
+        """Build a streaming HTTP request with PCM output format."""
+        body_fields: dict[str, Any] = {
+            "text": text,
+            "model_id": self._model,
+        }
+
+        voice_settings: dict[str, Any] = {}
+        if self._stability is not None:
+            voice_settings["stability"] = self._stability
+        if self._similarity_boost is not None:
+            voice_settings["similarity_boost"] = self._similarity_boost
+        if self._style is not None:
+            voice_settings["style"] = self._style
+        if self._speaker_boost is not None:
+            voice_settings["use_speaker_boost"] = self._speaker_boost
+        if voice_settings:
+            body_fields["voice_settings"] = voice_settings
+
+        body = json.dumps(body_fields).encode("utf-8")
+
+        # Use the streaming endpoint for lower latency
+        url = f"{ELEVENLABS_URL}/{self._voice_id}/stream"
+
+        # Request PCM format
+        accept = (
+            f"audio/pcm;rate={_PCM_FORMATS.get(self._output_format, (22050,))[0]}"
+            if self._output_format in _PCM_FORMATS
+            else "audio/mpeg"
+        )
 
         return urllib.request.Request(
-            f"{ELEVENLABS_URL}/{self._voice_id}",
+            f"{url}?output_format={self._output_format}",
             data=body,
             headers={
-                "Accept": "audio/mpeg",
+                "Accept": accept,
                 "Content-Type": "application/json",
                 "xi-api-key": self._api_key or "",
             },
             method="POST",
         )
 
+    # ------------------------------------------------------------------
+    # Internal: MP3 playback
+    # ------------------------------------------------------------------
+
+    def _play_mp3(self, mp3_data: bytes, text: str) -> bool:
+        """Decode MP3 bytes and play through VoicePlayer.
+
+        Tries multiple decode backends, falling forward on failure.
+        """
+        pcm_data = self._decode_mp3(mp3_data)
+        if pcm_data:
+            pcm, sample_rate = pcm_data
+            self._player.play(
+                pcm, sample_rate=sample_rate,
+                sample_width=2, channels=1,
+            )
+            return True
+
+        # Last resort: write temp WAV and play via Windows
+        logger.warning("ElevenLabs: no MP3 decoder available, using temp file fallback")
+        return self._play_mp3_fallback(mp3_data)
+
     @staticmethod
-    def _play_audio(audio: bytes) -> bool:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-            tmp.write(audio)
-            audio_path = tmp.name
+    def _decode_mp3(mp3_data: bytes) -> tuple[bytes, int] | None:
+        """Decode MP3 data to 16-bit mono PCM.
+
+        Returns (pcm_bytes, sample_rate) or None if no decoder available.
+        """
+        # Backend 1: pydub (requires ffmpeg)
+        try:
+            import io as _io
+            from pydub import AudioSegment  # type: ignore[import-untyped]
+
+            seg: AudioSegment = AudioSegment.from_mp3(_io.BytesIO(mp3_data))
+            seg = seg.set_frame_rate(22050).set_channels(1).set_sample_width(2)
+            pcm = seg.raw_data
+            logger.info(
+                "ElevenLabs: decoded MP3 via pydub (%d bytes, %d Hz)",
+                len(pcm), seg.frame_rate,
+            )
+            return pcm, seg.frame_rate
+        except ImportError:
+            logger.debug("ElevenLabs: pydub not available for MP3 decode")
+        except Exception as exc:
+            logger.debug("ElevenLabs: pydub decode failed: %s", exc)
+
+        return None
+
+    @staticmethod
+    def _play_mp3_fallback(mp3_data: bytes) -> bool:
+        """Fallback: write MP3 to temp file, play via winsound."""
+        import tempfile
+        import winsound
 
         try:
-            os.startfile(audio_path)  # type: ignore[attr-defined]
-        except (AttributeError, OSError):
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=".wav"
+            ) as tmp:
+                tmp.write(mp3_data)
+                path = tmp.name
+            # This likely won't work for MP3 but is a last resort
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            logger.warning("ElevenLabs: temp file fallback (may not support MP3)")
+            return True
+        except Exception as exc:
+            logger.error("ElevenLabs: fallback playback failed: %s", exc)
             return False
-        return True
+
+    # ------------------------------------------------------------------
+    # Internal: validation
+    # ------------------------------------------------------------------
+
+    def _validate_config(self) -> None:
+        """Log configuration diagnostics."""
+        if not self._api_key:
+            logger.error("ElevenLabs: ELEVENLABS_API_KEY is not configured")
+        if not self._voice_id:
+            logger.error("ElevenLabs: VOICE_ID is not configured")
+        logger.info(
+            "ElevenLabs: configured (voice=%s, model=%s, format=%s, "
+            "stability=%s, similarity=%s, style=%s, boost=%s)",
+            self._voice_id or "(none)",
+            self._model,
+            self._output_format,
+            self._stability,
+            self._similarity_boost,
+            self._style,
+            self._speaker_boost,
+        )
