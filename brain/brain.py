@@ -1,40 +1,19 @@
-"""
-brain/brain.py
-
-Brain is the single entry point and coordinator of the full pipeline:
-
-    Brain.process(text)
-        -> Parser.parse(text)            -> ParsedCommand
-        -> Planner.create_plan(parsed)   -> ExecutionPlan
-        -> Executor.execute(plan)        -> Response
-
-Brain receives its dependencies (Parser, Planner, Executor) via its
-constructor. It does not create them internally.
-
-Brain handles ambiguity, speech-confidence rejection, and dangerous-intent
-confirmation.
-"""
-
 from __future__ import annotations
 
 from brain.parser import Parser
 from brain.planner import Planner
+from brain.parsed_command import ParsedCommand
 from models.response import Response
 
 
 class Brain:
-    """
-    Coordinates Parser -> Planner -> Executor -> Response.
-
-    Dependencies are injected via the constructor.
-    """
-
     def __init__(
         self,
         parser: Parser,
         planner: Planner,
         executor: Executor,
         safety_policy: SafetyPolicy | None = None,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self._parser = parser
         self._planner = planner
@@ -43,20 +22,11 @@ class Brain:
         if self._policy is None:
             from safety.policy import SafetyPolicy
             self._policy = SafetyPolicy()
+        self._context_manager = context_manager
+        self._pending_parsed: ParsedCommand | None = None
+        self._original_text: str = ""
 
     def process(self, text: str, confirmed: bool = False) -> Response:
-        """
-        Run the full pipeline for a single piece of user input.
-
-        Steps:
-            1. Parser.parse(text) -> ParsedCommand
-            2. Speech-confidence check (reject very low confidence voice input)
-            3. Planner.create_plan(parsed) -> ExecutionPlan
-            4. Executor.execute(plan) -> Response
-
-        When *confirmed* is True the dangerous-intent confirmation check
-        is skipped (because the user already confirmed).
-        """
         print(f"\n{'='*60}")
         print(f"[PIPELINE] Brain.process() INPUT: {text!r} confirmed={confirmed}")
         print(f"{'='*60}")
@@ -87,8 +57,7 @@ class Brain:
                 clarification_question=question,
             )
 
-        # Handle unknown intents gracefully — the parser couldn't match
-        # this text to any known command pattern.
+        # Handle unknown intents gracefully
         if parsed.intent == "unknown":
             print(f"[PIPELINE] Unknown intent — returning friendly message")
             return Response(
@@ -97,7 +66,7 @@ class Brain:
                 data={"raw_text": text},
             )
 
-        # Speech confidence check — reject or flag low-confidence input
+        # Speech confidence check
         if parsed.confidence < 1.0:
             confidence_check = self._policy.check_speech_confidence(parsed.confidence)
             if not confidence_check["accepted"]:
@@ -111,6 +80,17 @@ class Brain:
             if confidence_check.get("needs_confirmation"):
                 reason = confidence_check["reason"]
                 print(f"[PIPELINE] Speech confidence — needs confirmation: {reason}")
+
+        # Context awareness check (before planning)
+        if not confirmed and self._context_manager is not None:
+            context_check = self._context_manager.check_before_execution(
+                parsed.intent, parsed.entities, text
+            )
+            if context_check is not None:
+                print(f"[PIPELINE] Context Manager — needs clarification: {context_check.message}")
+                self._pending_parsed = parsed
+                self._original_text = text
+                return context_check
 
         try:
             plan = self._planner.create_plan(parsed, confirmed=confirmed)
@@ -128,7 +108,7 @@ class Brain:
         for i, step in enumerate(plan.steps):
             print(f"[PIPELINE]   Step {i}: action={step.action!r} target={step.target!r} params={step.parameters}")
 
-        # Dangerous-intent confirmation (skipped when already confirmed)
+        # Dangerous-intent confirmation
         if not confirmed and plan.metadata.get("requires_confirmation"):
             reason = plan.metadata.get("confirmation_reason", "This action may be destructive.")
             print(f"[PIPELINE] Dangerous intent — confirmation required: {reason}")
@@ -155,4 +135,77 @@ class Brain:
         if hasattr(response, 'error') and response.error:
             print(f"[PIPELINE] Executor -> error={response.error!r}")
         print(f"{'='*60}\n")
+        return response
+
+    def resolve_context(self, answer: str) -> Response:
+        if self._context_manager is None or self._pending_parsed is None:
+            return Response(
+                success=False,
+                message="No pending context clarification.",
+            )
+
+        resolved = self._context_manager.handle_follow_up(answer)
+        if resolved is None or not resolved.success:
+            return resolved or Response(
+                success=False,
+                message="Could not resolve context.",
+            )
+
+        action = resolved.data.get("action", "unknown")
+        new_intent = resolved.data.get("intent", "")
+        context = resolved.data.get("context", {})
+
+        print(f"[PIPELINE] Context resolved: action={action} intent={new_intent}")
+
+        # Get the original parsed command
+        parsed = self._pending_parsed
+        text = self._original_text
+
+        # Build a new ParsedCommand based on the resolved action
+        if new_intent:
+            new_entities = dict(parsed.entities)
+            if new_intent == "focus_app":
+                new_entities["focus_if_running"] = True
+            elif new_intent == "open_app":
+                new_entities["focus_if_running"] = False
+            elif new_intent == "search":
+                new_entities["in_new_tab"] = True
+            elif new_intent == "open_website":
+                new_entities["open_in_new_tab"] = True
+
+            new_parsed = ParsedCommand(
+                raw_text=text,
+                intent=new_intent,
+                entities=new_entities,
+                confidence=parsed.confidence,
+            )
+        else:
+            new_parsed = parsed
+
+        self._pending_parsed = None
+        self._original_text = ""
+
+        try:
+            plan = self._planner.create_plan(new_parsed, confirmed=True)
+        except Exception as exc:
+            print(f"[PIPELINE] Planner EXCEPTION (context resolve): {type(exc).__name__}: {exc}")
+            return Response(
+                success=False,
+                message="Planner failed while creating execution plan.",
+                data={"raw_text": text},
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        try:
+            response = self._executor.execute(plan)
+        except Exception as exc:
+            print(f"[PIPELINE] Executor EXCEPTION (context resolve): {type(exc).__name__}: {exc}")
+            return Response(
+                success=False,
+                message="Executor failed while running execution plan.",
+                data={"raw_text": text, "intent": plan.intent},
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        print(f"[PIPELINE] Context resolve -> success={response.success} message={response.message!r}")
         return response

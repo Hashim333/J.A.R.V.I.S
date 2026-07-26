@@ -23,6 +23,7 @@ import time
 from brain import Brain
 from brain.parser import Parser
 from brain.planner import Planner
+from context_manager.context_manager import ContextManager
 from executor.executor import Executor
 from automation.registry import Registry
 from automation.handlers import AppsHandler, BrowserHandler, MouseHandler, KeyboardHandler
@@ -98,6 +99,7 @@ def _backend_loop(
     command_queue,
     wake_word_detected,
     brain,
+    context_manager,
     response_manager,
     listener_service,
     wake_word_service,
@@ -158,22 +160,33 @@ def _backend_loop(
 
                 _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
-                if getattr(response, "needs_clarification", False) and (
-                    "Are you sure" in (response.clarification_question or "")
-                    or "confirm" in (response.message or "").casefold()
-                ):
-                    bridge.show_subtitle(response.clarification_question or "Are you sure?")
-                    try:
-                        answer = input("> ")
-                    except (KeyboardInterrupt, EOFError):
-                        answer = ""
-                    if answer.strip().casefold() in ("yes", "y", "confirm", "do it", "go ahead"):
-                        logger.info("User confirmed, re-processing command")
-                        bridge.set_core_state("thinking")
-                        response = brain.process(command, confirmed=True)
-                        _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-                    else:
-                        bridge.show_subtitle("Action cancelled.")
+                if getattr(response, "needs_clarification", False):
+                    if context_manager.has_pending_question():
+                        bridge.show_subtitle(context_manager.get_pending_question())
+                        try:
+                            answer = input("> ")
+                        except (KeyboardInterrupt, EOFError):
+                            answer = ""
+                        if answer.strip():
+                            bridge.set_core_state("thinking")
+                            response = brain.resolve_context(answer.strip())
+                            _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
+                        else:
+                            bridge.show_subtitle("Action cancelled.")
+                    elif ("Are you sure" in (response.clarification_question or "")
+                          or "confirm" in (response.message or "").casefold()):
+                        bridge.show_subtitle(response.clarification_question or "Are you sure?")
+                        try:
+                            answer = input("> ")
+                        except (KeyboardInterrupt, EOFError):
+                            answer = ""
+                        if answer.strip().casefold() in ("yes", "y", "confirm", "do it", "go ahead"):
+                            logger.info("User confirmed, re-processing command")
+                            bridge.set_core_state("thinking")
+                            response = brain.process(command, confirmed=True)
+                            _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
+                        else:
+                            bridge.show_subtitle("Action cancelled.")
 
                 if conversation_manager.state == ConversationState.STANDBY:
                     conversation_manager.transition_to_active()
@@ -209,18 +222,27 @@ def _backend_loop(
 
                         _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
-                        if getattr(response, "needs_clarification", False) and (
-                            "Are you sure" in (response.clarification_question or "")
-                        ):
-                            bridge.show_subtitle(response.clarification_question or "Say 'yes' to confirm.")
-                            confirm_result = listener_service.listen_for_command(timeout=5.0)
-                            if confirm_result.success and confirm_result.text:
-                                answer = confirm_result.text.strip().casefold()
-                                if answer in ("yes", "y", "confirm", "do it", "go ahead"):
-                                    logger.info("Voice confirmation received")
+                        if getattr(response, "needs_clarification", False):
+                            if context_manager.has_pending_question():
+                                bridge.show_subtitle(context_manager.get_pending_question())
+                                confirm_result = listener_service.listen_for_command(timeout=8.0)
+                                if confirm_result.success and confirm_result.text:
                                     bridge.set_core_state("thinking")
-                                    response = brain.process(stripped, confirmed=True)
+                                    answer = confirm_result.text.strip()
+                                    response = brain.resolve_context(answer)
                                     _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
+                                else:
+                                    bridge.show_subtitle("Action cancelled.")
+                            elif "Are you sure" in (response.clarification_question or ""):
+                                bridge.show_subtitle(response.clarification_question or "Say 'yes' to confirm.")
+                                confirm_result = listener_service.listen_for_command(timeout=5.0)
+                                if confirm_result.success and confirm_result.text:
+                                    answer = confirm_result.text.strip().casefold()
+                                    if answer in ("yes", "y", "confirm", "do it", "go ahead"):
+                                        logger.info("Voice confirmation received")
+                                        bridge.set_core_state("thinking")
+                                        response = brain.process(stripped, confirmed=True)
+                                        _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
                         bridge.set_core_state("speaking")
                         conversation_manager.transition_to_active()
@@ -264,18 +286,27 @@ def _backend_loop(
 
                     _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
-                    if getattr(response, "needs_clarification", False) and (
-                        "Are you sure" in (response.clarification_question or "")
-                    ):
-                        bridge.show_subtitle(response.clarification_question or "Say 'yes' to confirm.")
-                        confirm_result = listener_service.listen_for_command(timeout=5.0)
-                        if confirm_result.success and confirm_result.text:
-                            answer = confirm_result.text.strip().casefold()
-                            if answer in ("yes", "y", "confirm", "do it", "go ahead"):
-                                logger.info("Voice confirmation received")
+                    if getattr(response, "needs_clarification", False):
+                        if context_manager.has_pending_question():
+                            bridge.show_subtitle(context_manager.get_pending_question())
+                            confirm_result = listener_service.listen_for_command(timeout=8.0)
+                            if confirm_result.success and confirm_result.text:
                                 bridge.set_core_state("thinking")
-                                response = brain.process(stripped, confirmed=True)
+                                answer = confirm_result.text.strip()
+                                response = brain.resolve_context(answer)
                                 _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
+                            else:
+                                bridge.show_subtitle("Action cancelled.")
+                        elif "Are you sure" in (response.clarification_question or ""):
+                            bridge.show_subtitle(response.clarification_question or "Say 'yes' to confirm.")
+                            confirm_result = listener_service.listen_for_command(timeout=5.0)
+                            if confirm_result.success and confirm_result.text:
+                                answer = confirm_result.text.strip().casefold()
+                                if answer in ("yes", "y", "confirm", "do it", "go ahead"):
+                                    logger.info("Voice confirmation received")
+                                    bridge.set_core_state("thinking")
+                                    response = brain.process(stripped, confirmed=True)
+                                    _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
                     bridge.set_core_state("speaking")
                     conversation_manager.reset_activity()
@@ -312,10 +343,16 @@ def main() -> None:
         registry = Registry()
         response_manager = ResponseManager(debug=DEBUG)
         executor = Executor(registry)
-        brain = Brain(parser, planner, executor)
+        context_manager = ContextManager()
+        brain = Brain(parser, planner, executor, context_manager=context_manager)
         command = " ".join(sys.argv[1:])
         print(f"Executing single command: '{command}'")
         response = brain.process(command)
+        if response.needs_clarification and context_manager.has_pending_question():
+            print(f"\n{response.message}")
+            answer = input("> ").strip()
+            if answer:
+                response = brain.resolve_context(answer)
         response_manager.present_console(response)
         return
 
@@ -385,7 +422,8 @@ def main() -> None:
     registry.register("hotkey", keyboard_handler)
 
     executor = Executor(registry, voice_input=_voice_input)
-    brain = Brain(parser, planner, executor)
+    context_manager = ContextManager()
+    brain = Brain(parser, planner, executor, context_manager=context_manager)
 
     service_manager = ServiceManager()
     service_manager.register("listener", listener_service)
@@ -447,6 +485,7 @@ def main() -> None:
             command_queue,
             wake_word_detected,
             brain,
+            context_manager,
             response_manager,
             listener_service,
             wake_word_service,
