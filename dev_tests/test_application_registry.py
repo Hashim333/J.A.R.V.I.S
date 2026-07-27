@@ -181,6 +181,15 @@ class TestApplicationRegistry(unittest.TestCase):
         info = self.reg.lookup("xyzwizard")
         self.assertIsNone(info)
 
+    def test_new_window_does_not_match_unrelated_app(self) -> None:
+        """'new window' must NOT fuzzy-match unrelated apps (e.g. printer status windows).
+
+        Regression test for BUG #3: 'new window' was matching 'Canon LBP2900 Status Window'
+        via substring alias match with score 0.6, below the confidence threshold.
+        """
+        info = self.reg.lookup("new window")
+        self.assertIsNone(info, f"Expected None for 'new window', got {info}")
+
     def test_search_returns_scored_results(self) -> None:
         """search() should return results sorted by score descending."""
         results = self.reg.search("chrome")

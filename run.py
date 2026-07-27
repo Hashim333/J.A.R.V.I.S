@@ -25,6 +25,7 @@ from brain.parser import Parser
 from brain.planner import Planner
 from context_manager.context_manager import ContextManager
 from executor.executor import Executor
+from verification.task_verifier import TaskVerifier
 from automation.registry import Registry
 from automation.handlers import AppsHandler, BrowserHandler, MouseHandler, KeyboardHandler
 from response.manager import ResponseManager
@@ -161,8 +162,8 @@ def _backend_loop(
                 _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
                 if getattr(response, "needs_clarification", False):
-                    if context_manager.has_pending_question():
-                        bridge.show_subtitle(context_manager.get_pending_question())
+                    if brain.pending_clarification_exists:
+                        bridge.show_subtitle(response.clarification_question or response.message)
                         try:
                             answer = input("> ")
                         except (KeyboardInterrupt, EOFError):
@@ -223,8 +224,8 @@ def _backend_loop(
                         _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
                         if getattr(response, "needs_clarification", False):
-                            if context_manager.has_pending_question():
-                                bridge.show_subtitle(context_manager.get_pending_question())
+                            if brain.pending_clarification_exists:
+                                bridge.show_subtitle(response.clarification_question or response.message)
                                 confirm_result = listener_service.listen_for_command(timeout=8.0)
                                 if confirm_result.success and confirm_result.text:
                                     bridge.set_core_state("thinking")
@@ -287,8 +288,8 @@ def _backend_loop(
                     _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
 
                     if getattr(response, "needs_clarification", False):
-                        if context_manager.has_pending_question():
-                            bridge.show_subtitle(context_manager.get_pending_question())
+                        if brain.pending_clarification_exists:
+                            bridge.show_subtitle(response.clarification_question or response.message)
                             confirm_result = listener_service.listen_for_command(timeout=8.0)
                             if confirm_result.success and confirm_result.text:
                                 bridge.set_core_state("thinking")
@@ -344,12 +345,13 @@ def main() -> None:
         response_manager = ResponseManager(debug=DEBUG)
         executor = Executor(registry)
         context_manager = ContextManager()
-        brain = Brain(parser, planner, executor, context_manager=context_manager)
+        task_verifier = TaskVerifier()
+        brain = Brain(parser, planner, executor, context_manager=context_manager, task_verifier=task_verifier)
         command = " ".join(sys.argv[1:])
         print(f"Executing single command: '{command}'")
         response = brain.process(command)
-        if response.needs_clarification and context_manager.has_pending_question():
-            print(f"\n{response.message}")
+        if response.needs_clarification and brain.pending_clarification_exists:
+            print(f"\n{response.clarification_question or response.message}")
             answer = input("> ").strip()
             if answer:
                 response = brain.resolve_context(answer)
@@ -423,7 +425,8 @@ def main() -> None:
 
     executor = Executor(registry, voice_input=_voice_input)
     context_manager = ContextManager()
-    brain = Brain(parser, planner, executor, context_manager=context_manager)
+    task_verifier = TaskVerifier()
+    brain = Brain(parser, planner, executor, context_manager=context_manager, task_verifier=task_verifier)
 
     service_manager = ServiceManager()
     service_manager.register("listener", listener_service)

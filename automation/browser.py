@@ -25,6 +25,8 @@ import automation.windows as windows
 
 logger = logging.getLogger(__name__)
 
+_JARVIS_WINDOW_TITLES = ("jarvis", "jarvis desktop", "jarvis orb")
+
 
 class BrowserOperationError(Exception):
     """Raised when a browser operation fails."""
@@ -80,6 +82,44 @@ _SITE_SEARCH_CONFIG: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
+# Window safety
+# ---------------------------------------------------------------------------
+
+
+def _verify_foreground_is(target_hint: str) -> bool:
+    """Return True if the foreground window title contains *target_hint*."""
+    try:
+        fg = gw.getActiveWindow()
+        if fg is None:
+            return False
+        return target_hint.casefold() in fg.title.casefold()
+    except Exception:
+        return False
+
+
+def _ensure_safe_focus(target_hint: str) -> None:
+    """Focus a window matching *target_hint* and wait until it is verified as foreground."""
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if _verify_foreground_is(target_hint):
+            return
+        time.sleep(0.15)
+    logger.warning("Could not verify %r is the foreground window — proceeding anyway", target_hint)
+
+
+def _jarvis_is_visible() -> bool:
+    """Check whether any JARVIS window is currently visible."""
+    try:
+        for window in gw.getAllWindows():
+            title = window.title.strip().casefold()
+            if title in _JARVIS_WINDOW_TITLES and window.visible:
+                return True
+        return False
+    except Exception:
+        return True  # assume visible if we can't check
+
+
+# ---------------------------------------------------------------------------
 # Tab detection
 # ---------------------------------------------------------------------------
 
@@ -116,6 +156,8 @@ def _focus_chrome(site_name: str | None = None) -> None:
                     if window.isMinimized:
                         window.restore()
                     window.activate()
+                    time.sleep(0.2)
+                    _ensure_safe_focus("chrome")
                     return
         except Exception:
             pass
@@ -123,6 +165,8 @@ def _focus_chrome(site_name: str | None = None) -> None:
     focused = windows.focus_window("chrome")
     if not focused:
         raise BrowserOperationError("Chrome is running but no window could be focused.")
+    time.sleep(0.2)
+    _ensure_safe_focus("chrome")
 
 
 # ---------------------------------------------------------------------------
@@ -163,34 +207,29 @@ def _wait_after_nav(site_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def open_url(url: str) -> bool:
-    """Open a URL.  If the site is already open in a Chrome tab, focus it.
+def open_url(url: str, open_in_new_tab: bool = False) -> bool:
+    """Open a URL.
 
-    Falls back to a new tab when the site is not open.
+    SAFETY: never navigates the current browser tab.
+    Always opens a new tab (Ctrl+T) before navigating.
+    Tab reuse is coordinated by the ContextManager at a higher level.
     """
     normalized = _normalize_url(url)
 
-    known_site = _normalized_to_site_name(normalized)
-    if known_site and _is_site_open(known_site):
-        logger.info("Tab reuse: %r already open — focusing", known_site)
-        _focus_chrome(known_site)
-        return True
-
-    logger.info("Opening new tab: %s", normalized)
     _focus_chrome()
+    new_tab()
     _navigate_current_tab(normalized)
+    _ensure_safe_focus("chrome")
     return True
 
 
 def search(provider: str, query: str) -> bool:
     """Search *provider* for *query*.
 
-    If the site is already open the current tab is reused (no duplicate
-    tabs).  If the site supports an on-page keyboard shortcut it is used;
-    otherwise a search-URL is navigated to.
+    Always opens a new tab before searching.
+    Tab reuse is coordinated by the ContextManager at a higher level.
     """
     provider_key = provider.strip().casefold()
-    site_open = _is_site_open(provider_key)
 
     template = _SEARCH_URLS.get(provider_key)
     if not template:
@@ -202,18 +241,9 @@ def search(provider: str, query: str) -> bool:
     cfg = _SITE_SEARCH_CONFIG.get(provider_key, {})
     shortcut = cfg.get("shortcut")
 
-    if site_open:
-        logger.info("Tab reuse for search: %r already open — reusing tab", provider_key)
-        _focus_chrome(provider_key)
-
-        if shortcut:
-            _search_via_shortcut(provider_key, query)
-        else:
-            _navigate_current_tab(search_url)
-        return True
-
     logger.info("Opening new tab for search: %s", search_url)
     _focus_chrome()
+    new_tab()
     _navigate_current_tab(search_url)
     _wait_after_nav(provider_key)
 

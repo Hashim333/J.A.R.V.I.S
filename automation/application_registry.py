@@ -874,17 +874,20 @@ class ApplicationRegistry:
             # Create a stub
             return self._system_app_info(key)
 
-        # 6. Fuzzy match in discovered apps
+        # 6. Fuzzy match in discovered apps (with confidence threshold)
         matches = self.search(key, threshold=0.5)
+        min_confidence = 0.7 if " " not in key else 0.75
         if len(matches) == 1:
-            return matches[0][0]
+            if matches[0][1] >= min_confidence:
+                return matches[0][0]
+            return None  # too low confidence — do not launch
         if len(matches) >= 2:
             best_score = matches[0][1]
             second_score = matches[1][1]
-            # If the top match is clearly better, return it
-            if best_score - second_score >= 0.2:
+            # If the top match is clearly better and meets confidence, return it
+            if best_score >= min_confidence and best_score - second_score >= 0.2:
                 return matches[0][0]
-            return None  # ambiguous
+            return None  # ambiguous or too low confidence
 
         return None
 

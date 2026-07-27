@@ -203,6 +203,9 @@ class AppsHandler:
         profile = step.parameters.get("profile")
         if profile and "chrome" in app_info.canonical_name.casefold():
             extra_args = [f"--profile-directory={profile}"]
+        new_window = step.parameters.get("new_window", False)
+        if new_window and any(b in app_info.canonical_name.casefold() for b in ("chrome", "edge", "msedge", "brave", "opera", "vivaldi", "firefox")):
+            extra_args.append("--new-window")
 
         result = apps.launch_executable(app_info.executable, extra_args, process_name)
         logger.info("Intent=OPEN_APPLICATION App=%s Matched=%s Executable=%s LaunchMethod=%s Success=%s",
@@ -554,7 +557,8 @@ class BrowserHandler:
                 raise StepParameterError(
                     f"Step action {step.action!r} requires a non-empty 'url' parameter or target."
                 )
-            return browser.open_url(url)
+            open_in_new_tab = step.parameters.get("open_in_new_tab", False)
+            return browser.open_url(url, open_in_new_tab=open_in_new_tab)
 
         if step.action in ("browser_search", "search"):
             provider = step.parameters.get("provider", "google")

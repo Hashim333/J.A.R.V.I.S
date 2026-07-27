@@ -169,6 +169,31 @@ class TestParser(unittest.TestCase):
         parsed = self.parser.parse("close all windows")
         self.assertEqual(parsed.intent, "close_all_apps")
 
+    # ------------------------------------------------------------------
+    # Regression: BUG #2 — "open new window" must NOT produce app_name="new window"
+    # ------------------------------------------------------------------
+
+    def test_parse_open_new_window_not_app_name(self) -> None:
+        """'open new window' should produce open_app with chrome, not app_name='new window'."""
+        parsed = self.parser.parse("open new window")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertNotEqual(parsed.entities.get("app_name"), "new window")
+        self.assertEqual(parsed.entities.get("app_name"), "chrome")
+
+    def test_parse_open_new_tab_not_app_name(self) -> None:
+        """'open new tab' should produce open_app with chrome, not app_name='new tab'."""
+        parsed = self.parser.parse("open new tab")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertNotEqual(parsed.entities.get("app_name"), "new tab")
+        self.assertEqual(parsed.entities.get("app_name"), "chrome")
+
+    def test_parse_open_another_window_not_app_name(self) -> None:
+        """'open another window' should produce open_app with chrome."""
+        parsed = self.parser.parse("open another window")
+        self.assertEqual(parsed.intent, "open_app")
+        self.assertNotEqual(parsed.entities.get("app_name"), "another window")
+        self.assertEqual(parsed.entities.get("app_name"), "chrome")
+
 
 if __name__ == "__main__":
     unittest.main()

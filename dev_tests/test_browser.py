@@ -26,49 +26,42 @@ class TestBrowserAutomation(unittest.TestCase):
     """Tests for browser automation functions."""
 
     def setUp(self):
-        self._is_site_open_patcher = patch("automation.browser._is_site_open")
         self._focus_chrome_patcher = patch("automation.browser._focus_chrome")
         self._navigate_patcher = patch("automation.browser._navigate_current_tab")
+        self._new_tab_patcher = patch("automation.browser.new_tab")
         self._search_shortcut_patcher = patch("automation.browser._search_via_shortcut")
         self._wait_patcher = patch("automation.browser._wait_after_nav")
 
-        self.mock_is_site_open = self._is_site_open_patcher.start()
         self.mock_focus_chrome = self._focus_chrome_patcher.start()
         self.mock_navigate = self._navigate_patcher.start()
+        self.mock_new_tab = self._new_tab_patcher.start()
         self.mock_search_shortcut = self._search_shortcut_patcher.start()
         self.mock_wait = self._wait_patcher.start()
 
-        self.addCleanup(self._is_site_open_patcher.stop)
         self.addCleanup(self._focus_chrome_patcher.stop)
         self.addCleanup(self._navigate_patcher.stop)
+        self.addCleanup(self._new_tab_patcher.stop)
         self.addCleanup(self._search_shortcut_patcher.stop)
         self.addCleanup(self._wait_patcher.stop)
 
     # -- open_url tests --------------------------------------------------------
 
-    def test_open_url_known_site_not_open_opens_new_tab(self) -> None:
-        """Known site that isn't open should navigate a new tab."""
-        self.mock_is_site_open.return_value = False
+    def test_open_url_known_site_opens_new_tab(self) -> None:
+        """Known site always opens a new tab (safe default)."""
         open_url("youtube")
         self.mock_focus_chrome.assert_called_once()
+        self.mock_new_tab.assert_called_once()
         self.mock_navigate.assert_called_once_with("https://www.youtube.com")
 
-    def test_open_url_known_site_already_open_focuses(self) -> None:
-        """Known site that IS open should only focus Chrome."""
-        self.mock_is_site_open.return_value = True
-        open_url("youtube")
-        self.mock_focus_chrome.assert_called_once_with("youtube")
-        self.mock_navigate.assert_not_called()
-
-    def test_open_url_full_url_not_open_opens_new_tab(self) -> None:
-        self.mock_is_site_open.return_value = False
+    def test_open_url_full_url_opens_new_tab(self) -> None:
         open_url("https://www.python.org")
         self.mock_focus_chrome.assert_called_once()
+        self.mock_new_tab.assert_called_once()
         self.mock_navigate.assert_called_once_with("https://www.python.org")
 
     def test_open_url_unknown_site_with_dot(self) -> None:
-        self.mock_is_site_open.return_value = False
         open_url("example.com")
+        self.mock_new_tab.assert_called_once()
         self.mock_navigate.assert_called_once_with("https://example.com")
 
     def test_open_url_empty_raises_error(self) -> None:
@@ -81,75 +74,46 @@ class TestBrowserAutomation(unittest.TestCase):
 
     # -- search tests ----------------------------------------------------------
 
-    def test_search_google_not_open(self) -> None:
-        self.mock_is_site_open.return_value = False
+    def test_search_google(self) -> None:
         search("google", "python decorators")
+        self.mock_focus_chrome.assert_called_once()
+        self.mock_new_tab.assert_called_once()
         self.mock_navigate.assert_called_once_with(
             "https://www.google.com/search?q=python+decorators"
         )
 
-    def test_search_google_already_open(self) -> None:
-        self.mock_is_site_open.return_value = True
-        search("google", "python decorators")
-        self.mock_focus_chrome.assert_called_once_with("google")
-        self.mock_navigate.assert_called_once_with(
-            "https://www.google.com/search?q=python+decorators"
-        )
-
-    def test_search_youtube_not_open(self) -> None:
-        self.mock_is_site_open.return_value = False
+    def test_search_youtube(self) -> None:
         search("youtube", "lo fi hip hop")
+        self.mock_focus_chrome.assert_called_once()
+        self.mock_new_tab.assert_called_once()
         self.mock_navigate.assert_called_once_with(
             "https://www.youtube.com/results?search_query=lo+fi+hip+hop"
         )
-
-    def test_search_youtube_already_open_uses_shortcut(self) -> None:
-        """YouTube has a keyboard shortcut — should use it when already open."""
-        self.mock_is_site_open.return_value = True
-        search("youtube", "lo fi hip hop")
-        self.mock_focus_chrome.assert_called_once_with("youtube")
         self.mock_search_shortcut.assert_called_once_with("youtube", "lo fi hip hop")
-        self.mock_navigate.assert_not_called()
 
-    def test_search_github_not_open(self) -> None:
-        self.mock_is_site_open.return_value = False
+    def test_search_github(self) -> None:
         search("github", "openai")
+        self.mock_focus_chrome.assert_called_once()
+        self.mock_new_tab.assert_called_once()
         self.mock_navigate.assert_called_once_with(
             "https://github.com/search?q=openai"
         )
-
-    def test_search_github_already_open_uses_shortcut(self) -> None:
-        self.mock_is_site_open.return_value = True
-        search("github", "openai")
-        self.mock_focus_chrome.assert_called_once_with("github")
         self.mock_search_shortcut.assert_called_once_with("github", "openai")
-        self.mock_navigate.assert_not_called()
 
-    def test_search_wikipedia_not_open(self) -> None:
-        self.mock_is_site_open.return_value = False
+    def test_search_wikipedia(self) -> None:
         search("wikipedia", "kerala")
         self.mock_navigate.assert_called_once_with(
             "https://en.wikipedia.org/w/index.php?search=kerala"
         )
 
-    def test_search_stackoverflow_not_open(self) -> None:
-        self.mock_is_site_open.return_value = False
+    def test_search_stackoverflow(self) -> None:
         search("stackoverflow", "selenium python")
         self.mock_navigate.assert_called_once_with(
             "https://stackoverflow.com/search?q=selenium+python"
         )
 
-    def test_search_facebook_not_open(self) -> None:
-        self.mock_is_site_open.return_value = False
+    def test_search_facebook(self) -> None:
         search("facebook", "openai")
-        self.mock_navigate.assert_called_once_with(
-            "https://www.facebook.com/search/top/?q=openai"
-        )
-
-    def test_search_facebook_already_open(self) -> None:
-        self.mock_is_site_open.return_value = True
-        search("facebook", "openai")
-        self.mock_focus_chrome.assert_called_once_with("facebook")
         self.mock_navigate.assert_called_once_with(
             "https://www.facebook.com/search/top/?q=openai"
         )
@@ -290,6 +254,90 @@ class TestBrowserAutomation(unittest.TestCase):
         mock_focus.return_value = True
         refresh_page(hard=True)
         mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "r")
+
+
+# ===========================================================================
+# Regression tests — BUG 1 / BUG 3 / BUG 5
+# ===========================================================================
+
+class TestBrowserSafety(unittest.TestCase):
+    """Verify critical safety regressions are fixed."""
+
+    @patch("automation.browser._focus_chrome")
+    @patch("automation.browser.new_tab")
+    @patch("automation.browser._navigate_current_tab")
+    @patch("automation.browser._ensure_safe_focus")
+    def test_bug3_open_url_always_new_tab(
+        self, mock_safe, mock_nav, mock_new_tab, mock_focus
+    ):
+        """BUG 3: open_url must always open a new tab before navigating."""
+        open_url("https://www.youtube.com")
+        mock_focus.assert_called_once()
+        mock_new_tab.assert_called_once()
+        mock_nav.assert_called_once_with("https://www.youtube.com")
+
+    @patch("automation.browser._focus_chrome")
+    @patch("automation.browser.new_tab")
+    @patch("automation.browser._navigate_current_tab")
+    @patch("automation.browser._search_via_shortcut")
+    @patch("automation.browser._wait_after_nav")
+    @patch("automation.browser._ensure_safe_focus")
+    def test_bug3_search_always_new_tab(
+        self, mock_safe, mock_wait, mock_shortcut, mock_nav, mock_new_tab, mock_focus
+    ):
+        """BUG 3: search must always open a new tab before navigating."""
+        search("google", "python")
+        mock_focus.assert_called_once()
+        mock_new_tab.assert_called_once()
+        mock_nav.assert_called_once()
+
+    def test_bug5_verify_foreground_detection(self):
+        """BUG 5: _verify_foreground_is should detect chrome in title."""
+        from automation.browser import _verify_foreground_is
+        with patch("automation.browser.gw.getActiveWindow") as mock_get:
+            mock_win = MagicMock()
+            mock_win.title = "YouTube - Google Chrome"
+            mock_get.return_value = mock_win
+            self.assertTrue(_verify_foreground_is("chrome"))
+
+    def test_bug5_verify_foreground_no_match(self):
+        """BUG 5: Should return False when foreground is not chrome."""
+        from automation.browser import _verify_foreground_is
+        with patch("automation.browser.gw.getActiveWindow") as mock_get:
+            mock_win = MagicMock()
+            mock_win.title = "JARVIS Desktop"
+            mock_get.return_value = mock_win
+            self.assertFalse(_verify_foreground_is("chrome"))
+
+    @patch("automation.browser.gw.getActiveWindow")
+    def test_bug5_verify_none(self, mock_get):
+        """BUG 5: Should handle None foreground window."""
+        from automation.browser import _verify_foreground_is
+        mock_get.return_value = None
+        self.assertFalse(_verify_foreground_is("chrome"))
+
+
+class TestProtectedTabDetection(unittest.TestCase):
+    """BUG 1: Protected tabs must never be reused."""
+
+    def setUp(self):
+        from context_manager.context_manager import ContextManager
+        self.cm = ContextManager()
+
+    def test_chatgpt_is_protected(self):
+        self.assertTrue(self.cm._is_protected_tab("https://chatgpt.com", "ChatGPT"))
+
+    def test_gmail_is_protected(self):
+        self.assertTrue(self.cm._is_protected_tab("https://mail.google.com", "Gmail"))
+
+    def test_github_is_protected(self):
+        self.assertTrue(self.cm._is_protected_tab("https://github.com/user/repo", "GitHub"))
+
+    def test_youtube_is_not_protected(self):
+        self.assertFalse(self.cm._is_protected_tab("https://www.youtube.com", "YouTube"))
+
+    def test_google_search_is_not_protected(self):
+        self.assertFalse(self.cm._is_protected_tab("https://www.google.com/search?q=cats", "Google Search"))
 
 
 if __name__ == "__main__":

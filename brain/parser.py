@@ -90,11 +90,17 @@ class Parser:
     _MAXIMIZE_VERBS = ("maximize", "maximise")
     _RESTORE_VERBS = ("restore",)
     _SEARCH_VERBS = ("search", "look up", "find", "google", "search for")
+    _PLAY_VERBS = ("play", "play me", "play some")
 
     # All command verbs combined for multi-command detection
     _ALL_COMMAND_VERBS: frozenset[str] = frozenset(
         {v for verbs in (_OPEN_VERBS, _CLOSE_VERBS, _FOCUS_VERBS, _RESTART_VERBS, _MINIMIZE_VERBS, _MAXIMIZE_VERBS, _RESTORE_VERBS, _SEARCH_VERBS) for v in verbs}
     )
+    # Phrases that are browser modifiers, not application names
+    _BROWSER_MODIFIERS: frozenset[str] = frozenset({
+        "new window", "another window", "new tab", "another tab",
+        "new instance", "separate window",
+    })
     _VOLUME_UP = ("increase volume", "raise volume", "turn up volume", "volume up")
     _VOLUME_DOWN = ("decrease volume", "lower volume", "turn down volume", "volume down")
     _UNMUTE = ("unmute", "unmute volume")
@@ -463,6 +469,11 @@ class Parser:
         if search_result:
             return search_result
 
+        # Play music: "play <song/artist>"
+        play_result = self._parse_play(normalized, raw_text)
+        if play_result:
+            return play_result
+
         # Settings
         settings_result = self._parse_settings(normalized, raw_text)
         if settings_result:
@@ -521,6 +532,41 @@ class Parser:
                     entities={"query": rest, "provider": "google"},
                 )
 
+        return None
+
+    # ------------------------------------------------------------------
+    # Play music parsing
+    # ------------------------------------------------------------------
+
+    def _parse_play(self, normalized: str, raw_text: str) -> ParsedCommand | None:
+        for verb in self._PLAY_VERBS:
+            if normalized == verb:
+                continue
+            if normalized.startswith(verb):
+                rest = normalized[len(verb):].strip()
+                if not rest:
+                    continue
+                # "play YouTube" → open_website
+                if rest in self._KNOWN_WEBSITES:
+                    return ParsedCommand(
+                        raw_text=raw_text,
+                        intent="open_website",
+                        entities={"website": rest, "url": self._KNOWN_WEBSITES[rest]},
+                    )
+                # "play <app>" → open_app (e.g. "play solitaire")
+                app_name = self._APP_SYNONYMS.get(rest)
+                if app_name:
+                    return ParsedCommand(
+                        raw_text=raw_text,
+                        intent="open_app",
+                        entities={"app_name": app_name, "original_app": rest},
+                    )
+                # Default: play_music
+                return ParsedCommand(
+                    raw_text=raw_text,
+                    intent="play_music",
+                    entities={"query": rest, "provider": "youtube"},
+                )
         return None
 
     # ------------------------------------------------------------------
@@ -1210,6 +1256,15 @@ class Parser:
                         raw_text=raw_text,
                         intent="open_app",
                         entities=entities,
+                    )
+
+                # Check if rest is a browser modifier (e.g. "new window", "new tab")
+                # These must NOT be treated as application names.
+                if rest in self._BROWSER_MODIFIERS:
+                    return ParsedCommand(
+                        raw_text=raw_text,
+                        intent="open_app",
+                        entities={"app_name": "chrome", "new_window": True, "focus_if_running": False, "original_app": rest},
                     )
 
                 # Rest might be an app name that is not a known website or app

@@ -154,6 +154,10 @@ class Planner:
                 f"Query: {parsed.entities.get('query', '')}. "
                 f"Provider: {parsed.entities.get('provider', 'google')}."
             ),
+            "play_music": lambda: (
+                f"User said {raw!r}. Intent is to play music. "
+                f"Query: {parsed.entities.get('query', '')}."
+            ),
             "compound": lambda: {
                 f"User said {raw!r}. Intent is compound with "
                 f"{len(parsed.entities.get('commands', []))} sub-commands."
@@ -352,13 +356,19 @@ class Planner:
 
     def _build_open_app(self, parsed: ParsedCommand) -> list[Step]:
         app_name = parsed.entities.get("app_name")
-        params: dict[str, Any] = {"focus_if_running": True}
+        focus_if_running = parsed.entities.get("focus_if_running", True)
+        new_window = parsed.entities.get("new_window", False)
+        params: dict[str, Any] = {"focus_if_running": focus_if_running}
+        if new_window:
+            params["new_window"] = True
         profile = parsed.entities.get("profile")
         if profile:
             params["profile"] = profile
         desc = f"Open {app_name}."
         if profile:
             desc = f"Open {app_name} with profile '{profile}'."
+        if new_window:
+            desc = f"Open {app_name} in a new window."
         return [self._step("open_app", app_name, params, desc)]
 
     def _build_close_app(self, parsed: ParsedCommand) -> list[Step]:
@@ -404,6 +414,14 @@ class Planner:
             "search", None,
             {"query": query, "provider": provider},
             f"Search {provider} for '{query}'.",
+        )]
+
+    def _build_play_music(self, parsed: ParsedCommand) -> list[Step]:
+        query = parsed.entities.get("query", "")
+        return [self._step(
+            "search", None,
+            {"query": query, "provider": "youtube"},
+            f"Play {query} on YouTube Music.",
         )]
 
     def _build_compound(self, parsed: ParsedCommand) -> list[Step]:
@@ -723,6 +741,7 @@ class Planner:
         "close_all_apps": _build_close_all_apps,
         "open_website": _build_open_website,
         "search": _build_search,
+        "play_music": _build_play_music,
         "compound": _build_compound,
         "open_special_folder": _build_open_special_folder,
         "open_settings": _build_open_settings,
