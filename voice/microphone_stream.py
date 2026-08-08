@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 import speech_recognition as sr
 
+from monitoring.pipeline_trace import stage_entry, stage_exit
 from voice.audio_lock import audio_lock
 
 logger = logging.getLogger(__name__)
@@ -368,7 +369,7 @@ class MicrophoneStream:
                     estimated_source_rate = round(
                         source_bytes_per_sec / (self._sample_width * self._channels)
                     )
-                    logger.info(
+                    logger.debug(
                         "Microphone throughput: source=%d bytes "
                         "(%.0f bytes/s, expected_duration=%.0f ms), "
                         "output=%d bytes (%.0f bytes/s, expected_duration=%.0f ms), "
@@ -393,7 +394,7 @@ class MicrophoneStream:
                     last_log_time = now
 
                 if count % 100 == 0:
-                    logger.info("Read %d chunks", count)
+                    logger.debug("Read %d chunks", count)
 
                 consumer = self._consumer
                 if consumer is not None and not self._muted:
@@ -406,12 +407,17 @@ class MicrophoneStream:
                 logger.debug("Buffer overflow")
 
             except OSError:
-                logger.warning("Microphone device error, stopping capture thread")
-                self._is_running = False
+                logger.warning("Microphone device error — recovery attempt")
+                time.sleep(0.5)
+                try:
+                    self._stream.stop_stream()
+                    self._stream.start_stream()
+                except Exception:
+                    logger.error("Microphone stream restart failed — shutting down capture")
+                    self._is_running = False
 
             except Exception as exc:
-                logger.warning("Unexpected stream error: %s", exc, exc_info=True)
-                self._is_running = False
+                logger.error("Unexpected stream error: %s — continuing", exc, exc_info=True)
 
         logger.info("Capture loop exited")
 
@@ -438,6 +444,8 @@ class MicrophoneStream:
         """
         from voice.vad import VAD
 
+        start = stage_entry("capture_utterance", input_=timeout)
+
         buffer = bytearray()
         done = threading.Event()
 
@@ -451,18 +459,28 @@ class MicrophoneStream:
             buffer.extend(chunk)
             vad.process_audio(chunk)
 
-        old_consumer = self._consumer
-        self._consumer = _consumer
+        with self._lock:
+            old_consumer = self._consumer
+            self._consumer = _consumer
+            # Echo-prevention may have muted the mic right before capture.
+            # Force it open for the duration of this capture.
+            was_muted = self._muted
+            self._muted = False
 
         captured = done.wait(timeout=timeout)
 
-        self._consumer = old_consumer
+        with self._lock:
+            # Only restore if our consumer is still active (not swapped by another caller)
+            if self._consumer is _consumer:
+                self._consumer = old_consumer
+            self._muted = was_muted  # restore the pre-capture mute state
 
         if captured and buffer:
             logger.info(
                 "capture_utterance: %d bytes captured via VAD end-of-speech",
                 len(buffer),
             )
+            stage_exit("capture_utterance", start, status="OK", output="vad_end")
             return sr.AudioData(
                 bytes(buffer), self._sample_rate, self._sample_width
             )
@@ -472,9 +490,11 @@ class MicrophoneStream:
                 "capture_utterance: %d bytes captured (timeout, no VAD end)",
                 len(buffer),
             )
+            stage_exit("capture_utterance", start, status="OK", output="timeout_with_audio")
             return sr.AudioData(
                 bytes(buffer), self._sample_rate, self._sample_width
             )
 
         logger.info("capture_utterance: no audio captured (timeout)")
+        stage_exit("capture_utterance", start, status="TIMEOUT", output="no_audio")
         return None

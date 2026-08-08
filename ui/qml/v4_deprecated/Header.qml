@@ -1,32 +1,17 @@
 import QtQuick 2.15
 import QtQuick.Window 2.15
 
-/**
- * Header — top bar with clock, date, and window controls.
- * Uses Window.window attached property to control the parent window.
- */
-Rectangle {
+Item {
     id: root
 
     width: parent.width
-    height: 28
-    color: "transparent"
+    height: 76
     z: 5
 
-    // Top accent lines
-    Rectangle {
-        y: 0; width: parent.width; height: 1
-        color: "#57320B"; opacity: 0.85
-    }
-    Rectangle {
-        y: 1; width: parent.width; height: 1
-        color: "#120b04"
-    }
-
-    // ── Window drag area ──
     MouseArea {
         anchors.fill: parent
-        anchors.rightMargin: 120
+        anchors.leftMargin: 280
+        anchors.rightMargin: 140
         onPressed: {
             var w = Window.window
             if (w && !w.isWindowMaximized) w.startSystemMove()
@@ -35,103 +20,138 @@ Rectangle {
             var w = Window.window
             if (w && w.doToggleMax) w.doToggleMax()
         }
-        cursorShape: Qt.OpenHandCursor
     }
 
-    // ── Clock ──
-    Text {
-        id: clockText
-        anchors.left: parent.left
-        anchors.leftMargin: 24
-        anchors.verticalCenter: parent.verticalCenter
-        text: {
-            var d = new Date()
-            return d.getHours().toString().padStart(2, '0') + ":" +
-                   d.getMinutes().toString().padStart(2, '0') + ":" +
-                   d.getSeconds().toString().padStart(2, '0')
+    Rectangle {
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: 276
+        height: 72
+        radius: 18
+        color: Qt.rgba(4/255, 5/255, 7/255, 0.72)
+        border.width: 1
+        border.color: Qt.rgba(255/255, 126/255, 0, 0.28)
+
+        Text {
+            id: clockText
+            anchors.top: parent.top
+            anchors.topMargin: 12
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: formatTime()
+            font.family: "Segoe UI"
+            font.pixelSize: 24
+            color: "#d7c8ba"
         }
-        font.family: "Consolas"
-        font.pixelSize: 12
-        color: Qt.rgba(207/255, 195/255, 186/255, 0.6)
-    }
 
-    // ── Date ──
-    Text {
-        anchors.left: parent.left
-        anchors.leftMargin: 90
-        anchors.verticalCenter: parent.verticalCenter
-        text: {
-            var d = new Date()
-            var days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
-            var months = ["January","February","March","April","May","June",
-                          "July","August","September","October","November","December"]
-            return days[d.getDay()] + ", " + months[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear()
+        Text {
+            anchors.top: clockText.bottom
+            anchors.topMargin: 0
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: formatDate()
+            font.family: "Segoe UI"
+            font.pixelSize: 13
+            color: "#9f8c7c"
         }
-        font.family: "Segoe UI"
-        font.pixelSize: 8
-        color: Qt.rgba(143/255, 131/255, 123/255, 0.4)
     }
 
-    // ── Window Controls ──
     Row {
         anchors.right: parent.right
-        anchors.rightMargin: 16
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 14
+        anchors.rightMargin: 26
+        anchors.top: parent.top
+        anchors.topMargin: 18
+        spacing: 23
 
         WindowButton {
-            text: "−"
+            text: "-"
             onClicked: { var w = Window.window; if (w && w.doMinimize) w.doMinimize() }
         }
         WindowButton {
-            text: "□"
+            text: "\u25A1"
             onClicked: { var w = Window.window; if (w && w.doMaximize) w.doMaximize() }
         }
         WindowButton {
-            text: "✕"
+            text: "X"
             isClose: true
             onClicked: { var w = Window.window; if (w && w.doClose) w.doClose() }
         }
     }
 
-    // ── Timer for clock update ──
-    Timer {
-        interval: 1000; running: true; repeat: true
-        onTriggered: {
-            var d = new Date()
-            clockText.text = d.getHours().toString().padStart(2, '0') + ":" +
-                             d.getMinutes().toString().padStart(2, '0') + ":" +
-                             d.getSeconds().toString().padStart(2, '0')
+    Canvas {
+        anchors.left: parent.left
+        anchors.leftMargin: 254
+        anchors.top: parent.top
+        anchors.topMargin: 31
+        width: 140
+        height: 28
+        opacity: 0.75
+        onPaint: {
+            var ctx = getContext("2d")
+            if (!ctx) return
+            ctx.clearRect(0, 0, width, height)
+            ctx.strokeStyle = "#ff7e00"
+            ctx.lineWidth = 1
+            ctx.beginPath()
+            for (var x = 0; x < width - 14; x += 4) {
+                var amp = 2 + Math.abs(Math.sin(x * 0.23)) * 9
+                ctx.moveTo(x, height / 2 - amp)
+                ctx.lineTo(x, height / 2 + amp)
+            }
+            ctx.stroke()
+            ctx.fillStyle = "#ff7e00"
+            ctx.beginPath()
+            ctx.arc(width - 8, height / 2, 3, 0, Math.PI * 2)
+            ctx.fill()
         }
     }
 
-    // ── Window Button Component ──
+    function formatTime() {
+        var d = new Date()
+        var hours = d.getHours()
+        var suffix = hours >= 12 ? " PM" : " AM"
+        hours = hours % 12
+        if (hours === 0) hours = 12
+        return hours.toString().padStart(2, "0") + ":" +
+               d.getMinutes().toString().padStart(2, "0") + ":" +
+               d.getSeconds().toString().padStart(2, "0") + suffix
+    }
+
+    function formatDate() {
+        var d = new Date()
+        var days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
+        var months = ["January","February","March","April","May","June","July","August","September","October","November","December"]
+        return days[d.getDay()] + ", " + months[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear()
+    }
+
+    Timer {
+        interval: 1000
+        running: true
+        repeat: true
+        onTriggered: clockText.text = formatTime()
+    }
+
     component WindowButton: Rectangle {
         property string text: ""
         property bool isClose: false
         signal clicked()
 
-        width: 22; height: 22; radius: 11
+        width: 20
+        height: 20
+        radius: 4
         color: "transparent"
-        Behavior on color { ColorAnimation { duration: 150 } }
 
         Text {
             anchors.centerIn: parent
             text: parent.text
             font.family: "Segoe UI"
-            font.pixelSize: 12; font.bold: true
-            color: Qt.rgba(255/255, 140/255, 26/255, 0.50)
+            font.pixelSize: 18
+            color: "#ff7e00"
         }
 
         MouseArea {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onEntered: {
-                parent.color = isClose
-                    ? Qt.rgba(255/255, 26/255, 26/255, 0.20)
-                    : Qt.rgba(255/255, 140/255, 26/255, 0.15)
-            }
+            onEntered: parent.color = isClose ? Qt.rgba(1, 0, 0, 0.16) : Qt.rgba(1, 0.49, 0, 0.14)
             onExited: parent.color = "transparent"
             onClicked: parent.clicked()
         }

@@ -1,16 +1,22 @@
 from brain.llm import LLM
 
-brain = LLM()
 
-while True:
-    question = input("You: ")
+def main() -> None:
+    brain = LLM()
 
-    if question.lower() == "exit":
-        break
+    while True:
+        question = input("You: ")
 
-    try:
-        answer = brain.ask(question)
-        print("\nJARVIS:", answer)
+        if question.lower() == "exit":
+            break
 
-    except Exception as e:
-        print("Error:", e)
+        try:
+            answer = brain.ask(question)
+            print("\nJARVIS:", answer)
+
+        except Exception as e:
+            print("Error:", e)
+
+
+if __name__ == "__main__":
+    main()

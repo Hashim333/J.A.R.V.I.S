@@ -1,31 +1,28 @@
 """
 automation/browser.py
 
-Context-aware browser automation.  Before opening a new tab this module
-checks whether the target site is already open in an existing Chrome
-tab and reuses it.
+DOM-driven browser automation over the Chrome DevTools Protocol.
 
-Supported sites (auto-detect + search-on-site):
-  google, youtube, github, gmail, chatgpt,
-  facebook, instagram, linkedin
+Every operation runs against a Chrome instance that exposes a DevTools
+port (see ``automation.browser_service`` — JARVIS launches its own managed
+Chrome with ``--remote-debugging-port`` when none is open).  Tabs are
+enumerated, reused, activated and closed through CDP HTTP endpoints, and
+pages are read/manipulated with ``Runtime.evaluate`` on the DOM plus the
+accessibility tree.
+
+No OCR, no screen coordinates and no image matching anywhere in this module.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
-import pyautogui
-import pygetwindow as gw
-
-import automation.apps as apps
-import automation.windows as windows
+from automation.browser_service import get_browser_service, stop_browser_service
+from automation.cdp import CdpBrowser, CdpError, CdpTab
 
 logger = logging.getLogger(__name__)
-
-_JARVIS_WINDOW_TITLES = ("jarvis", "jarvis desktop", "jarvis orb")
 
 
 class BrowserOperationError(Exception):
@@ -59,114 +56,68 @@ _SEARCH_URLS: dict[str, str] = {
     "linkedin": "https://www.linkedin.com/search/results/all/?keywords={query}",
 }
 
-# Per-site search strategies (for on-page search bar interaction)
-_SITE_SEARCH_CONFIG: dict[str, dict] = {
-    "youtube": {
-        "shortcut": "/",
-        "wait_after_nav": 1.5,
-    },
-    "github": {
-        "shortcut": "s",
-        "wait_after_nav": 1.0,
-    },
-    "google": {
-        "shortcut": None,
-        "wait_after_nav": 0.5,
-    },
-    "gmail": {"shortcut": None, "wait_after_nav": 1.0},
-    "chatgpt": {"shortcut": None, "wait_after_nav": 1.0},
-    "facebook": {"shortcut": None, "wait_after_nav": 1.5},
-    "instagram": {"shortcut": None, "wait_after_nav": 1.5},
-    "linkedin": {"shortcut": None, "wait_after_nav": 1.0},
-}
-
 
 # ---------------------------------------------------------------------------
-# Window safety
+# Low-level access
 # ---------------------------------------------------------------------------
 
 
-def _verify_foreground_is(target_hint: str) -> bool:
-    """Return True if the foreground window title contains *target_hint*."""
+def _client() -> CdpBrowser:
+    return get_browser_service().client
+
+
+def _ok(message: str, **details: object) -> dict:
+    result: dict = {"success": True, "message": message}
+    if details:
+        result["details"] = details
+    return result
+
+
+def _fail(message: str) -> dict:
+    return {"success": False, "message": message}
+
+
+def _ensure_available() -> None:
     try:
-        fg = gw.getActiveWindow()
-        if fg is None:
-            return False
-        return target_hint.casefold() in fg.title.casefold()
-    except Exception:
-        return False
+        _client()
+    except Exception as exc:
+        raise BrowserOperationError(f"Browser automation unavailable: {exc}") from exc
 
 
-def _ensure_safe_focus(target_hint: str) -> None:
-    """Focus a window matching *target_hint* and wait until it is verified as foreground."""
-    deadline = time.monotonic() + 3.0
+def _tab_host(url: str) -> str:
+    return urlparse(url).netloc.removeprefix("www.")
+
+
+def _search_reuse_fragment(provider: str) -> str:
+    """Return the URL fragment that identifies an existing search tab.
+
+    YouTube searches may only reuse a *results* tab (never a playing video
+    tab); other providers may reuse any tab on their domain.
+    """
+    if provider == "youtube":
+        return "youtube.com/results"
+    base = _SEARCH_URLS.get(provider, "")
+    if not base:
+        return ""
+    return _tab_host(base)
+
+
+def _wait_until_url_contains(
+    cdp: CdpBrowser,
+    tab: CdpTab,
+    fragment: str,
+    timeout: float = 8.0,
+) -> bool:
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _verify_foreground_is(target_hint):
-            return
-        time.sleep(0.15)
-    logger.warning("Could not verify %r is the foreground window — proceeding anyway", target_hint)
-
-
-def _jarvis_is_visible() -> bool:
-    """Check whether any JARVIS window is currently visible."""
-    try:
-        for window in gw.getAllWindows():
-            title = window.title.strip().casefold()
-            if title in _JARVIS_WINDOW_TITLES and window.visible:
-                return True
-        return False
-    except Exception:
-        return True  # assume visible if we can't check
-
-
-# ---------------------------------------------------------------------------
-# Tab detection
-# ---------------------------------------------------------------------------
-
-
-def _is_site_open(site_name: str) -> bool:
-    """Return True if *site_name* appears in any Chrome window title."""
-    site_key = site_name.strip().casefold()
-    try:
-        for window in gw.getAllWindows():
-            title = window.title.strip()
-            if not title or "chrome" not in title.casefold():
-                continue
-            if site_key in title.casefold():
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def _focus_chrome(site_name: str | None = None) -> None:
-    """Ensure Chrome is focused, optionally targeting a window with *site_name*."""
-    if not apps.is_running("chrome"):
-        apps.open_app("chrome")
-        time.sleep(1.0)
-
-    if site_name:
-        site_key = site_name.strip().casefold()
         try:
-            for window in gw.getAllWindows():
-                title = window.title.strip().casefold()
-                if not title or "chrome" not in title:
-                    continue
-                if site_key in title:
-                    if window.isMinimized:
-                        window.restore()
-                    window.activate()
-                    time.sleep(0.2)
-                    _ensure_safe_focus("chrome")
-                    return
-        except Exception:
-            pass
-
-    focused = windows.focus_window("chrome")
-    if not focused:
-        raise BrowserOperationError("Chrome is running but no window could be focused.")
-    time.sleep(0.2)
-    _ensure_safe_focus("chrome")
+            state = cdp.page_state(tab)
+        except CdpError:
+            state = {}
+        if fragment.casefold() in state.get("url", "").casefold():
+            return True
+        time.sleep(0.4)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -174,199 +125,392 @@ def _focus_chrome(site_name: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _navigate_current_tab(url: str) -> None:
-    """Navigate the *current* browser tab to *url* (Ctrl+L then type+Enter)."""
-    time.sleep(0.15)
-    pyautogui.hotkey("ctrl", "l")
-    time.sleep(0.1)
-    pyautogui.write(url, interval=0)
-    pyautogui.press("enter")
+def open_url(url: str, open_in_new_tab: bool = False) -> dict:
+    """Open *url*, reusing an existing tab on the same site when possible.
 
-
-def _search_via_shortcut(site_name: str, query: str) -> None:
-    """Use an on-page keyboard shortcut to search."""
-    cfg = _SITE_SEARCH_CONFIG.get(site_name.strip().casefold())
-    shortcut = (cfg or {}).get("shortcut")
-    if shortcut:
-        time.sleep(0.3)
-        pyautogui.press(shortcut)
-        time.sleep(0.2)
-        pyautogui.write(query, interval=0)
-        pyautogui.press("enter")
-
-
-def _wait_after_nav(site_name: str) -> None:
-    """Pause enough for *site_name* to load after navigation."""
-    cfg = _SITE_SEARCH_CONFIG.get(site_name.strip().casefold())
-    wait = (cfg or {}).get("wait_after_nav", 0.5)
-    time.sleep(wait)
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
-def open_url(url: str, open_in_new_tab: bool = False) -> bool:
-    """Open a URL.
-
-    SAFETY: never navigates the current browser tab.
-    Always opens a new tab (Ctrl+T) before navigating.
-    Tab reuse is coordinated by the ContextManager at a higher level.
+    SAFETY: a tab is never duplicated — an existing tab on the site's
+    domain is activated instead of opening a second copy.
     """
     normalized = _normalize_url(url)
+    _ensure_available()
+    cdp = _client()
+    try:
+        existing = None if open_in_new_tab else cdp.find_tab(url_substring=_tab_host(normalized))
+    except CdpError as exc:
+        return _fail(f"Could not inspect browser tabs ({exc}).")
 
-    _focus_chrome()
-    new_tab()
-    _navigate_current_tab(normalized)
-    _ensure_safe_focus("chrome")
-    return True
+    if existing is not None:
+        try:
+            cdp.activate(existing)
+        except CdpError as exc:
+            return _fail(f"Could not focus the existing tab ({exc}).")
+        return _ok(f"Focused the existing tab for {normalized}.", url=normalized, reused=True)
+
+    try:
+        tab = cdp.new_tab(normalized)
+    except CdpError as exc:
+        return _fail(f"Could not open {normalized} ({exc}).")
+    if tab is None:
+        return _fail(f"Could not open a new tab for {normalized}.")
+    return _ok(f"Opened {normalized}.", url=normalized, reused=False)
 
 
-def search(provider: str, query: str) -> bool:
-    """Search *provider* for *query*.
+def search(provider: str, query: str) -> dict:
+    """Search *provider* for *query*, reusing an existing search tab.
 
-    Always opens a new tab before searching.
-    Tab reuse is coordinated by the ContextManager at a higher level.
+    Only one search tab per provider is ever created.  A second search of
+    the same provider navigates the existing search tab instead of opening
+    a duplicate.
     """
     provider_key = provider.strip().casefold()
-
     template = _SEARCH_URLS.get(provider_key)
     if not template:
-        raise BrowserOperationError(f"Unsupported search provider: {provider!r}.")
+        return _fail(f"Unsupported search provider: {provider!r}.")
     if not isinstance(query, str) or not query.strip():
-        raise BrowserOperationError("Search query must be a non-empty string.")
+        return _fail("Search query must be a non-empty string.")
 
     search_url = template.format(query=quote_plus(query.strip()))
-    cfg = _SITE_SEARCH_CONFIG.get(provider_key, {})
-    shortcut = cfg.get("shortcut")
+    _ensure_available()
+    cdp = _client()
+    reuse_fragment = _search_reuse_fragment(provider_key)
 
-    logger.info("Opening new tab for search: %s", search_url)
-    _focus_chrome()
-    new_tab()
-    _navigate_current_tab(search_url)
-    _wait_after_nav(provider_key)
+    try:
+        exact = cdp.find_tab(url_substring=search_url)
+        if exact is not None:
+            cdp.activate(exact)
+            return _ok(f"Searched {provider} for {query!r} (existing tab).", url=search_url, reused=True)
+        existing = cdp.find_tab(url_substring=reuse_fragment) if reuse_fragment else None
+        if existing is not None:
+            cdp.navigate(existing, search_url)
+            cdp.activate(existing)
+            _wait_until_url_contains(cdp, existing, _tab_host(search_url), timeout=6.0)
+            return _ok(f"Searched {provider} for {query!r}.", url=search_url, reused=True)
+        tab = cdp.new_tab(search_url)
+    except CdpError as exc:
+        return _fail(f"Could not search {provider} ({exc}).")
 
-    if shortcut:
-        _search_via_shortcut(provider_key, query)
-
-    return True
+    if tab is None:
+        return _fail("Could not open a search tab.")
+    try:
+        cdp.activate(tab)
+    except CdpError:
+        pass
+    return _ok(f"Searched {provider} for {query!r}.", url=search_url, reused=False)
 
 
 # ---------------------------------------------------------------------------
-# Tab management (unchanged API)
+# Tab management
 # ---------------------------------------------------------------------------
 
 
-def new_tab() -> bool:
-    """Open a new tab."""
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", "t")
-    return True
+def new_tab() -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.new_tab("about:blank")
+    except CdpError as exc:
+        return _fail(f"Could not open a new tab ({exc}).")
+    if tab is None:
+        return _fail("Could not open a new tab.")
+    return _ok("Opened a new tab.")
 
 
-def close_current_tab() -> bool:
-    """Close the active tab."""
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", "w")
-    return True
+def close_current_tab() -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.active_tab()
+    except CdpError as exc:
+        return _fail(f"Could not read browser tabs ({exc}).")
+    if tab is None:
+        return _fail("There is no tab to close.")
+    try:
+        cdp.close_tab(tab)
+    except CdpError as exc:
+        return _fail(f"Could not close the tab ({exc}).")
+    return _ok("Closed the current tab.")
 
 
-def close_all_tabs() -> bool:
-    """Close the current window and all its tabs."""
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", "shift", "w")
-    return True
+def close_all_tabs() -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tabs = cdp.list_tabs()
+        for tab in tabs:
+            try:
+                cdp.close_tab(tab)
+            except CdpError:
+                pass
+    except CdpError as exc:
+        return _fail(f"Could not close the tabs ({exc}).")
+    return _ok("Closed all browser tabs.")
 
 
-def close_other_tabs() -> bool:
-    _ensure_chrome_window()
-    pyautogui.hotkey("alt", "e")
-    pyautogui.press("o")
-    return True
+def close_other_tabs() -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tabs = cdp.list_tabs()
+        active = cdp.active_tab()
+        for tab in tabs:
+            if active is not None and tab.tab_id == active.tab_id:
+                continue
+            try:
+                cdp.close_tab(tab)
+            except CdpError:
+                pass
+    except CdpError as exc:
+        return _fail(f"Could not close the other tabs ({exc}).")
+    return _ok("Closed all other tabs.")
 
 
-def close_specific_tab(tab: int) -> bool:
+def close_specific_tab(tab: int) -> dict:
     if not isinstance(tab, int) or not 1 <= tab <= 8:
         raise BrowserOperationError("Tab number must be 1-8.")
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", str(tab))
-    pyautogui.hotkey("ctrl", "w")
-    return True
+    _ensure_available()
+    cdp = _client()
+    try:
+        tabs = cdp.list_tabs()
+        if tab > len(tabs):
+            return _fail(f"There is no tab {tab}.")
+        cdp.close_tab(tabs[tab - 1])
+    except CdpError as exc:
+        return _fail(f"Could not close tab {tab} ({exc}).")
+    return _ok(f"Closed tab {tab}.")
 
 
-def switch_tab(tab: int | None = None) -> bool:
+def switch_tab(tab: int | None = None) -> dict:
     if tab is None:
         return next_tab()
     if not isinstance(tab, int) or not 1 <= tab <= 8:
         raise BrowserOperationError("Tab number must be 1-8.")
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", str(tab))
-    return True
+    _ensure_available()
+    cdp = _client()
+    try:
+        tabs = cdp.list_tabs()
+        if tab > len(tabs):
+            return _fail(f"There is no tab {tab}.")
+        cdp.activate(tabs[tab - 1])
+    except CdpError as exc:
+        return _fail(f"Could not switch to tab {tab} ({exc}).")
+    return _ok(f"Switched to tab {tab}.")
 
 
-def next_tab() -> bool:
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", "tab")
-    return True
+def next_tab() -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tabs = cdp.list_tabs()
+        if len(tabs) < 2:
+            return _ok("There is only one tab open.")
+        active = cdp.active_tab()
+        idx = next((i for i, t in enumerate(tabs) if t.tab_id == (active.tab_id if active else "")), -1)
+        target = tabs[(idx + 1) % len(tabs)]
+        cdp.activate(target)
+    except CdpError as exc:
+        return _fail(f"Could not switch tabs ({exc}).")
+    return _ok("Switched to the next tab.")
 
 
-def previous_tab() -> bool:
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", "shift", "tab")
-    return True
+def previous_tab() -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tabs = cdp.list_tabs()
+        if len(tabs) < 2:
+            return _ok("There is only one tab open.")
+        active = cdp.active_tab()
+        idx = next((i for i, t in enumerate(tabs) if t.tab_id == (active.tab_id if active else "")), 0)
+        target = tabs[(idx - 1) % len(tabs)]
+        cdp.activate(target)
+    except CdpError as exc:
+        return _fail(f"Could not switch tabs ({exc}).")
+    return _ok("Switched to the previous tab.")
 
 
-def duplicate_tab() -> bool:
-    _ensure_chrome_window()
-    pyautogui.hotkey("alt", "d")
-    pyautogui.hotkey("alt", "enter")
-    return True
+def duplicate_tab() -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        active = cdp.active_tab()
+        if active is None:
+            return _fail("There is no tab to duplicate.")
+        tab = cdp.new_tab(active.url)
+        if tab is not None:
+            cdp.activate(tab)
+    except CdpError as exc:
+        return _fail(f"Could not duplicate the tab ({exc}).")
+    return _ok("Duplicated the current tab.")
 
 
-def reopen_closed_tab() -> bool:
-    _ensure_chrome_window()
-    pyautogui.hotkey("ctrl", "shift", "t")
-    return True
+def reopen_closed_tab() -> dict:
+    return _fail("Chrome's DevTools protocol cannot reopen a closed tab.")
 
 
-def refresh_page(hard: bool = False) -> bool:
-    _ensure_chrome_window()
-    if hard:
-        pyautogui.hotkey("ctrl", "shift", "r")
-    else:
-        pyautogui.press("f5")
-    return True
+def refresh_page(hard: bool = False) -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.active_tab()
+        if tab is None:
+            return _fail("There is no tab to refresh.")
+        cdp.reload(tab, ignore_cache=hard)
+    except CdpError as exc:
+        return _fail(f"Could not refresh the page ({exc}).")
+    return _ok("Refreshed the page.")
 
 
-def reload() -> bool:
+def reload() -> dict:
     return refresh_page(hard=False)
 
 
-def back() -> bool:
-    _ensure_chrome_window()
-    pyautogui.hotkey("alt", "left")
-    return True
+def back() -> dict:
+    return _history("-1", "Went back.")
 
 
-def forward() -> bool:
-    _ensure_chrome_window()
-    pyautogui.hotkey("alt", "right")
-    return True
+def forward() -> dict:
+    return _history("1", "Went forward.")
+
+
+def _history(delta: str, message: str) -> dict:
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.active_tab()
+        if tab is None:
+            return _fail("There is no browser tab open.")
+        cdp.evaluate(tab, f"history.go({delta}); true")
+    except CdpError as exc:
+        return _fail(f"Could not navigate history ({exc}).")
+    return _ok(message)
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Page state / reading
 # ---------------------------------------------------------------------------
 
 
-def _ensure_chrome_window() -> None:
-    if not apps.is_running("chrome"):
-        apps.open_app("chrome")
-        time.sleep(1.0)
-    focused = windows.focus_window("chrome")
-    if not focused:
-        raise BrowserOperationError("Chrome is running but no window could be focused.")
+def current_state() -> dict:
+    """Return the active tab's URL, title, selected text and DOM summary."""
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.active_tab()
+        if tab is None:
+            return {"success": False, "message": "No browser tab is open."}
+        state = cdp.page_state(tab)
+        ax = cdp.accessibility_tree(tab)
+    except CdpError as exc:
+        return {"success": False, "message": f"Could not read the page ({exc})."}
+    return {
+        "success": True,
+        "message": "Current page state.",
+        "details": {
+            "url": state.get("url", ""),
+            "title": state.get("title", ""),
+            "selected_text": state.get("selectedText", ""),
+            "ready_state": state.get("readyState", ""),
+            "tab": tab.tab_id,
+            "ax_nodes": len(ax),
+        },
+    }
+
+
+def current_url() -> str:
+    """Return the active tab's URL, or ``""`` when no tab is open."""
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.active_tab()
+        if tab is None:
+            return ""
+        return cdp.page_state(tab).get("url", "")
+    except CdpError:
+        return ""
+
+
+def selected_text() -> str:
+    """Return the text currently selected on the active tab."""
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.active_tab()
+        if tab is None:
+            return ""
+        return cdp.page_state(tab).get("selectedText", "")
+    except CdpError:
+        return ""
+
+
+def scroll(direction: str = "down") -> dict:
+    """Scroll the active tab using the DOM (no mouse, no coordinates)."""
+    direction = (direction or "down").casefold()
+    if direction == "top":
+        js = "window.scrollTo({top: 0, behavior: 'smooth'}); true"
+    elif direction == "bottom":
+        js = "window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'}); true"
+    else:
+        sign = -600 if "up" in direction else 600
+        js = f"window.scrollBy({{top: {sign}, behavior: 'smooth'}}); true"
+
+    _ensure_available()
+    cdp = _client()
+    try:
+        tab = cdp.active_tab()
+        if tab is None:
+            return {"success": False, "message": "No browser tab is open."}
+        cdp.activate(tab)
+        ok = bool(cdp.evaluate(tab, js))
+    except CdpError as exc:
+        return {"success": False, "message": f"Could not scroll the page ({exc})."}
+    if not ok:
+        return {"success": False, "message": "Could not scroll the page."}
+    return {"success": True, "message": "Scrolled the page.", "details": {"direction": direction}}
+
+
+def tabs() -> list[CdpTab]:
+    _ensure_available()
+    return _client().list_tabs()
+
+
+def activate_tab(tab: CdpTab) -> bool:
+    _ensure_available()
+    return _client().activate(tab)
+
+
+def evaluate(expression: str) -> object:
+    """Evaluate *expression* on the active tab (returns the DOM value)."""
+    _ensure_available()
+    cdp = _client()
+    tab = cdp.active_tab()
+    if tab is None:
+        return None
+    return cdp.evaluate(tab, expression)
+
+
+def accessibility_tree() -> list[dict]:
+    """Return a compact accessibility-tree snapshot of the active tab."""
+    _ensure_available()
+    cdp = _client()
+    tab = cdp.active_tab()
+    if tab is None:
+        return []
+    return cdp.accessibility_tree(tab)
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
+
+def stop_browser() -> bool:
+    """Stop the managed browser (used during JARVIS shutdown)."""
+    return stop_browser_service()
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
 
 
 def _normalize_url(url: str) -> str:
@@ -383,11 +527,3 @@ def _normalize_url(url: str) -> str:
     raise BrowserOperationError(
         f"Unsupported website {url!r}. Use a full URL or a known website name."
     )
-
-
-def _normalized_to_site_name(normalized_url: str) -> str | None:
-    """Reverse-lookup a normalized URL to its known site name."""
-    for name, site_url in _KNOWN_URLS.items():
-        if normalized_url == site_url:
-            return name
-    return None

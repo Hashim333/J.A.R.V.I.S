@@ -16,12 +16,12 @@ from executor.registry import Registry
 class MockHandler:
     """A mock handler for testing the Executor's dispatch logic."""
 
-    def __init__(self, should_raise: bool = False, return_value: str = "ok"):
+    def __init__(self, should_raise: bool = False, return_value: dict | None = None):
         self.should_raise = should_raise
-        self.return_value = return_value
+        self.return_value = return_value or {"success": True, "message": "ok"}
         self.called_with_step = None
 
-    def run(self, step: Step, **kwargs: Any) -> str:
+    def run(self, step: Step, **kwargs: Any) -> dict:
         self.called_with_step = step
         if self.should_raise:
             raise RuntimeError("Handler failed as requested.")
@@ -50,7 +50,7 @@ class TestExecutor(unittest.TestCase):
         response = self.executor.execute(plan)
 
         self.assertTrue(response.success)
-        self.assertEqual(response.message, "Step 0 completed.")
+        self.assertEqual(response.message, "ok")
         self.assertIsNone(response.error)
         self.assertIsNotNone(handler.called_with_step)
         self.assertEqual(handler.called_with_step.target, "test_target")
@@ -102,7 +102,7 @@ class TestExecutor(unittest.TestCase):
         response = self.executor.execute(plan)
 
         self.assertFalse(response.success)
-        self.assertEqual(response.message, "Unknown command: 'do nothing'.")
+        self.assertEqual(response.message, "I don't know how to do that yet.")
 
 
 class TestRegistry(unittest.TestCase):

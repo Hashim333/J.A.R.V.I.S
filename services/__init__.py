@@ -14,16 +14,19 @@ and never imports from it.
 
 from services.base_service import BaseService, ServiceStatus
 from services.service_manager import ServiceManager
-from services.listener_service import ListenerService
 from services.wake_word_service import WakeWordService
-from services.conversation_manager import ConversationManager, ConversationState
+from services.conversation_manager import ConversationManager, ConversationState, is_exit_command
+from services.conversation_owner import ConversationOwner
+from services.shutdown_manager import ShutdownManager
 
 __all__ = [
     "BaseService",
     "ServiceStatus",
     "ServiceManager",
-    "ListenerService",
     "WakeWordService",
     "ConversationManager",
     "ConversationState",
+    "ConversationOwner",
+    "is_exit_command",
+    "ShutdownManager",
 ]

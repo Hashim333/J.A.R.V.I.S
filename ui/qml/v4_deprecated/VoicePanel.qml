@@ -17,10 +17,10 @@ Item {
     readonly property real barWidth: 3
     readonly property real barSpacing: 5
 
-    // Timer-driven animation tick for waveform
+    // Timer-driven animation tick for waveform (smoother at 60fps)
     property real animTick: 0
     Timer {
-        interval: 32
+        interval: 50
         running: true
         repeat: true
         onTriggered: { root.animTick = Date.now() }

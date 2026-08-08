@@ -39,6 +39,7 @@ class Settings:
 
     # --- General ---
     debug: bool
+    debug_safe_mode: bool
 
     # --- Voice ---
     voice_enabled: bool
@@ -59,6 +60,16 @@ class Settings:
     mic_agc_target_level: float
     mic_noise_gate_enabled: bool
     mic_noise_gate_threshold: float
+
+    # --- Speech recognition (Faster-Whisper) ---
+    whisper_model: str
+    whisper_language: str
+    whisper_threads: int
+
+    # --- Wake word (Porcupine, optional) ---
+    picovoice_access_key: str
+    porcupine_keyword: str
+    porcupine_keyword_path: str
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +165,15 @@ def validate_config(s: Settings) -> list[str]:
             f"Must be between 0.001 and 0.5."
         )
 
+    if not s.whisper_model:
+        msgs.append("JARVIS_WHISPER_MODEL must not be empty (e.g. 'base').")
+
+    if s.picovoice_access_key and not s.porcupine_keyword and not s.porcupine_keyword_path:
+        msgs.append(
+            "Porcupine enabled but neither JARVIS_PORCUPINE_KEYWORD nor "
+            "JARVIS_PORCUPINE_KEYWORD_PATH is set."
+        )
+
     return msgs
 
 
@@ -192,9 +212,12 @@ def print_config_summary(s: Settings) -> None:
         f"  Ollama Model:     {s.model}",
         f"  Ollama Timeout:   {s.timeout}s",
         f"  Debug:            {'Yes' if s.debug else 'No'}",
+        f"  Debug Safe Mode:  {'On' if s.debug_safe_mode else 'Off'}",
         f"  Mic Sensitivity:  {s.mic_sensitivity}",
         f"  Mic AGC:          {'On' if s.mic_agc_enabled else 'Off'} (target: {s.mic_agc_target_level})",
         f"  Mic Noise Gate:   {'On' if s.mic_noise_gate_enabled else 'Off'} (threshold: {s.mic_noise_gate_threshold})",
+        f"  Whisper Model:    {s.whisper_model} (lang: {s.whisper_language})",
+        f"  Porcupine:        {'On' if s.picovoice_access_key else 'Off (local wake)'}",
         "",
     ]
     print("\n".join(lines))
@@ -218,6 +241,7 @@ def _load() -> Settings:
         model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
         timeout=int(os.getenv("OLLAMA_TIMEOUT", "30")),
         debug=_bool_env("DEBUG", default=False),
+        debug_safe_mode=_bool_env("DEBUG_SAFE_MODE", default=False),
         voice_enabled=_bool_env("VOICE_ENABLED", default=False),
         voice_provider=_str_env("VOICE_PROVIDER", "system"),
         voice_id=_str_env("VOICE_ID", ""),
@@ -234,6 +258,12 @@ def _load() -> Settings:
         mic_agc_target_level=_float_env("MIC_AGC_TARGET_LEVEL", 0.15),
         mic_noise_gate_enabled=_bool_env("MIC_NOISE_GATE_ENABLED", default=True),
         mic_noise_gate_threshold=_float_env("MIC_NOISE_GATE_THRESHOLD", 0.02),
+        whisper_model=_str_env("JARVIS_WHISPER_MODEL", "base"),
+        whisper_language=_str_env("JARVIS_WHISPER_LANG", "en"),
+        whisper_threads=int(os.getenv("JARVIS_WHISPER_THREADS", "0") or "0"),
+        picovoice_access_key=_str_env("JARVIS_PICOVOICE_ACCESS_KEY", ""),
+        porcupine_keyword=_str_env("JARVIS_PORCUPINE_KEYWORD", "jarvis"),
+        porcupine_keyword_path=_str_env("JARVIS_PORCUPINE_KEYWORD_PATH", ""),
     )
 
     global _CACHED_DIAGNOSTICS
@@ -259,6 +289,7 @@ OLLAMA_BASE_URL: str = settings.ollama_base_url
 OLLAMA_MODEL: str = settings.model
 OLLAMA_TIMEOUT: int = settings.timeout
 DEBUG: bool = settings.debug
+DEBUG_SAFE_MODE: bool = settings.debug_safe_mode
 VOICE_ENABLED: bool = settings.voice_enabled
 VOICE_PROVIDER: str = settings.voice_provider
 VOICE_ID: str = settings.voice_id
@@ -275,3 +306,9 @@ MIC_AGC_ENABLED: bool = settings.mic_agc_enabled
 MIC_AGC_TARGET_LEVEL: float = settings.mic_agc_target_level
 MIC_NOISE_GATE_ENABLED: bool = settings.mic_noise_gate_enabled
 MIC_NOISE_GATE_THRESHOLD: float = settings.mic_noise_gate_threshold
+WHISPER_MODEL: str = settings.whisper_model
+WHISPER_LANGUAGE: str = settings.whisper_language
+WHISPER_THREADS: int = settings.whisper_threads
+PICOVOICE_ACCESS_KEY: str = settings.picovoice_access_key
+PORCUPINE_KEYWORD: str = settings.porcupine_keyword
+PORCUPINE_KEYWORD_PATH: str = settings.porcupine_keyword_path

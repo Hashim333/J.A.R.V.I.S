@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import winreg
 from dataclasses import dataclass, field
@@ -955,3 +956,24 @@ class ApplicationRegistry:
     @property
     def count(self) -> int:
         return len(self._apps)
+
+
+# ---------------------------------------------------------------------------
+# Process-wide shared registry
+# ---------------------------------------------------------------------------
+# Construction runs a full disk scan (Start Menu, Desktop, Program Files,
+# registry, PATH) which takes 2-10 seconds.  Every `ApplicationRegistry()`
+# with auto_discover=True repeats that scan.  Callers that only need to look
+# up / search should use the shared instance below so the scan runs once.
+_shared_registry: "ApplicationRegistry | None" = None
+_shared_registry_lock = threading.Lock()
+
+
+def get_application_registry() -> "ApplicationRegistry":
+    """Return the process-wide ApplicationRegistry, discovering it once."""
+    global _shared_registry
+    if _shared_registry is None:
+        with _shared_registry_lock:
+            if _shared_registry is None:
+                _shared_registry = ApplicationRegistry()
+    return _shared_registry

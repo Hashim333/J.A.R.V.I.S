@@ -92,6 +92,34 @@ class Parser:
     _SEARCH_VERBS = ("search", "look up", "find", "google", "search for")
     _PLAY_VERBS = ("play", "play me", "play some")
 
+    # Media / playback control phrases (matched against the raw utterance so
+    # filler words like "the" and "like" do not break them).
+    _MEDIA_PAUSE = ("pause", "pause the video", "pause video", "pause the music",
+                    "pause music", "pause the song", "pause song", "pause playback",
+                    "pause it", "stop the video", "stop video", "stop the music",
+                    "stop music", "stop the song", "stop song", "stop playback", "stop it")
+    _MEDIA_RESUME = ("resume", "resume the video", "resume video", "resume the music",
+                     "resume music", "resume the song", "resume song", "resume playback",
+                     "resume playing", "keep playing", "continue playing", "play again")
+    _MEDIA_NEXT = ("play next", "play the next video", "play the next song",
+                   "next video", "next song", "skip to next", "skip to the next video",
+                   "skip to the next song", "next")
+    _MEDIA_PREVIOUS = ("play previous", "play the previous video", "play the previous song",
+                       "previous video", "previous song", "previous")
+    _SKIP_AD = ("skip ad", "skip the ad", "skip this ad", "skip advertisement",
+                "skip the advertisement", "skip ads")
+    _LIKE_VIDEO = ("like this video", "like the video", "like this song", "like the song",
+                   "like this music", "like the music", "thumbs up", "give a thumbs up")
+    _SUBSCRIBE = ("subscribe", "subscribe to this channel", "subscribe to the channel",
+                  "subscribe to channel", "subscribe this channel", "subscribe to this video")
+    _CONTINUE_WATCHING = ("continue watching", "resume watching", "keep watching",
+                          "continue where i left off", "resume where i left off",
+                          "continue the video", "continue the show")
+    _SCROLL_PAGE = ("scroll down", "scroll up", "scroll to bottom", "scroll to top",
+                    "scroll down the page", "scroll up the page", "page down", "page up",
+                    "scroll down a bit", "scroll up a bit", "scroll down a little",
+                    "scroll up a little", "scroll a bit")
+
     # All command verbs combined for multi-command detection
     _ALL_COMMAND_VERBS: frozenset[str] = frozenset(
         {v for verbs in (_OPEN_VERBS, _CLOSE_VERBS, _FOCUS_VERBS, _RESTART_VERBS, _MINIMIZE_VERBS, _MAXIMIZE_VERBS, _RESTORE_VERBS, _SEARCH_VERBS) for v in verbs}
@@ -108,8 +136,36 @@ class Parser:
     _SET_VOLUME_PATTERN = re.compile(r"set volume to\s+(\d+)")
     _SCREENSHOT = ("take screenshot", "capture screen", "screenshot", "take a screenshot", "capture screenshot")
     _LOCK = ("lock", "lock computer", "lock workstation")
-    _SHUTDOWN = ("shutdown", "shut down", "shut down the computer", "power off", "turn off")
-    _RESTART = ("restart", "reboot", "restart computer", "reboot computer")
+    _SHUTDOWN_WINDOWS = (
+        "shutdown computer", "shut down computer",
+        "shutdown my computer", "shut down my computer",
+        "shutdown the computer", "shut down the computer",
+        "shutdown windows", "shut down windows",
+        "shutdown system", "shut down system",
+        "power off computer", "power off my computer",
+        "power off pc", "turn off computer",
+        "turn off my computer", "turn off pc",
+        "switch off computer", "switch off my computer",
+        "power off windows", "shutdown pc", "shut down pc",
+        "turn off my pc", "shutdown my pc", "shut down my pc", "power off my pc", "switch off my pc",
+    )
+    _SHUTDOWN_REST = ("computer", "the computer", "my computer", "the system", "system", "pc", "my pc", "workstation", "down", "windows")
+    _SHUTDOWN_BARE = ("shutdown", "shut down", "power off", "turn off", "switch off")
+
+    _SHUTDOWN_JARVIS = (
+        "shutdown jarvis", "shut down jarvis",
+        "close jarvis", "exit jarvis", "quit jarvis",
+        "power off jarvis",
+    )
+
+    _RESTART = (
+        "restart", "reboot", "restart computer", "reboot computer",
+        "restart my computer", "reboot my computer",
+        "restart pc", "reboot pc", "restart my pc", "reboot my pc",
+        "restart windows", "reboot windows",
+        "restart the computer", "reboot the computer",
+        "restart system", "reboot system",
+    )
     _SLEEP = ("sleep", "suspend", "sleep computer", "put computer to sleep")
 
     # System operations
@@ -124,7 +180,7 @@ class Parser:
         re.IGNORECASE,
     )
     _FORMAT_DRIVE_VERBS = ("format", "format drive", "format disk")
-    _KILL_PROCESS_VERBS = ("kill", "kill process", "stop process", "end task")
+    _KILL_PROCESS_VERBS = ("kill process", "stop process", "end task")
     _BRIGHTNESS_SET = ("set brightness", "change brightness")
     _BRIGHTNESS_UP = ("increase brightness", "raise brightness", "brightness up")
     _BRIGHTNESS_DOWN = ("decrease brightness", "lower brightness", "brightness down")
@@ -299,9 +355,14 @@ class Parser:
         {
             "please", "kindly", "can you", "could you", "would you",
             "a", "the", "an", "jarvis", "hey jarvis", "ok jarvis",
-            "i want", "i want to", "i would like to", "i need to",
+            "i want", "i want to", "i would like to", "i need", "i need to",
             "can", "could", "would", "will", "shall", "do", "does",
             "just", "like", "maybe", "perhaps",
+            "actually", "simply", "you know", "i guess",
+            "can you please", "could you please", "would you please",
+            "will you please", "kindly please", "just please",
+            "um", "uh", "uhh", "hmm", "er", "erm",
+            "i want you to", "i need you to", "could i", "can i",
         }
     )
 
@@ -332,7 +393,7 @@ class Parser:
 
     def parse(self, text: str) -> ParsedCommand:
         normalized = self._normalize(text)
-        logger.info("Parser input=%r normalized=%r", text, normalized)
+        logger.debug("Parser input=%r normalized=%r", text, normalized)
         if not normalized:
             parsed = self._unknown(text)
             logger.info("Parser output intent=%s entities=%r", parsed.intent, parsed.entities)
@@ -345,7 +406,7 @@ class Parser:
             # If nothing matched but it starts with "open", try website
             parsed = self._try_website(normalized, text)
         parsed = parsed or self._unknown(text)
-        logger.info(
+        logger.debug(
             "Parser output intent=%s confidence=%.2f entities=%r",
             parsed.intent, parsed.confidence, parsed.entities,
         )
@@ -406,18 +467,53 @@ class Parser:
             if normalized.startswith(phrase):
                 return ParsedCommand(raw_text=raw_text, intent="cancel_shutdown", entities={})
 
-        # System commands
-        for pattern, intent, entity_fn in [
-            (self._LOCK, "lock", lambda m: {}),
-            (self._SHUTDOWN, "shutdown", lambda m: {}),
-            (self._RESTART, "restart", lambda m: {}),
-            (self._SLEEP, "sleep", lambda m: {}),
-        ]:
-            for phrase in pattern:
-                if normalized.startswith(phrase):
-                    rest = normalized[len(phrase):].strip()
-                    if not rest or rest in ("computer", "the computer", "the system", "system", "pc", "workstation", "down"):
-                        return ParsedCommand(raw_text=raw_text, intent=intent, entities={})
+        # --- Shutdown / Restart / Lock / Sleep ---
+        # Shutdown JARVIS (checked before bare shutdown)
+        # Check raw text first (preserves "jarvis" before fillers strip it)
+        raw_clean = re.sub(r"[^\w\s]", "", raw_text).strip().casefold()
+        for phrase in self._SHUTDOWN_JARVIS:
+            if raw_clean == phrase or raw_clean.startswith(phrase):
+                return ParsedCommand(raw_text=raw_text, intent="close_jarvis", entities={})
+        # Also check normalized (catches cases where jarvis survives)
+        for phrase in self._SHUTDOWN_JARVIS:
+            if normalized == phrase or normalized.startswith(phrase):
+                return ParsedCommand(raw_text=raw_text, intent="close_jarvis", entities={})
+
+        # Shutdown Windows (explicit computer / system / pc)
+        for phrase in self._SHUTDOWN_WINDOWS:
+            if normalized == phrase or normalized.startswith(phrase):
+                rest = normalized[len(phrase):].strip()
+                if not rest or rest in self._SHUTDOWN_REST:
+                    return ParsedCommand(raw_text=raw_text, intent="shutdown_windows", entities={})
+
+        # Bare shutdown / power off — ambiguous: ask JARVIS or Windows
+        for phrase in self._SHUTDOWN_BARE:
+            if normalized == phrase:
+                # Exactly "shutdown" / "power off" etc. with no qualifier
+                return ParsedCommand(
+                    raw_text=raw_text,
+                    intent="ambiguous",
+                    entities={
+                        "app_phrase": phrase,
+                        "question": "Do you want me to close JARVIS or shut down your computer?",
+                        "alternatives": ["close_jarvis", "shutdown_windows"],
+                    },
+                )
+
+        # Restart / Reboot
+        for phrase in self._RESTART:
+            if normalized.startswith(phrase):
+                rest = normalized[len(phrase):].strip()
+                if not rest or rest in ("computer", "my computer", "the computer", "pc", "windows", "system"):
+                    return ParsedCommand(raw_text=raw_text, intent="restart", entities={})
+
+        # Lock / Sleep
+        for phrase in self._LOCK:
+            if normalized == phrase or normalized.startswith(phrase):
+                return ParsedCommand(raw_text=raw_text, intent="lock", entities={})
+        for phrase in self._SLEEP:
+            if normalized == phrase or normalized.startswith(phrase):
+                return ParsedCommand(raw_text=raw_text, intent="sleep", entities={})
 
         # Screenshot
         for phrase in self._SCREENSHOT:
@@ -443,6 +539,13 @@ class Parser:
         for phrase in self._MUTE:
             if phrase in normalized:
                 return ParsedCommand(raw_text=raw_text, intent="mute_volume", entities={})
+
+        # Media / playback control: pause, resume, next, skip ad, like,
+        # subscribe, continue watching, scroll.  Matched before search/play
+        # so "play next" / "play again" never fall through to a song search.
+        media_result = self._parse_media(normalized, raw_text)
+        if media_result:
+            return media_result
 
         # Close all applications
         if normalized in {"close all applications", "close everything", "close all windows", "close all apps"}:
@@ -488,6 +591,22 @@ class Parser:
         app_result = self._parse_app_command(normalized, raw_text)
         if app_result:
             return app_result
+
+        # Single-word fallback: if normalized text is just a known
+        # app/website name (e.g. "chrome" after removing "i need"), treat as open
+        if " " not in normalized:
+            if normalized in self._KNOWN_WEBSITES:
+                return ParsedCommand(
+                    raw_text=raw_text,
+                    intent="open_website",
+                    entities={"website": normalized, "url": self._KNOWN_WEBSITES[normalized]},
+                )
+            if normalized in self._APP_SYNONYMS:
+                return ParsedCommand(
+                    raw_text=raw_text,
+                    intent="open_app",
+                    entities={"app_name": self._APP_SYNONYMS[normalized], "original_app": normalized},
+                )
 
         return None
 
@@ -535,6 +654,89 @@ class Parser:
         return None
 
     # ------------------------------------------------------------------
+    # Media / playback parsing
+    # ------------------------------------------------------------------
+
+    def _parse_media(self, normalized: str, raw_text: str) -> ParsedCommand | None:
+        """Parse playback-control commands (pause, next, skip ad, like, ...).
+
+        Matched against the raw utterance (filler words stripped) because
+        ``_normalize`` removes words like "the" and "like" that appear in
+        these phrases.
+        """
+        clean = re.sub(r"[^\w\s]", "", raw_text).casefold()
+        clean = " ".join(clean.split())
+
+        # Continue watching must be checked before resume so "resume
+        # watching" maps to continue_watching and "resume" maps to resume.
+        for phrase in self._CONTINUE_WATCHING:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="continue_watching", entities={})
+
+        for phrase in self._MEDIA_PAUSE:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="media_pause", entities={})
+
+        for phrase in self._MEDIA_RESUME:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="media_resume", entities={})
+
+        for phrase in self._MEDIA_NEXT:
+            if phrase == "next":
+                if clean == "next" or clean == "play next":
+                    return ParsedCommand(raw_text=raw_text, intent="media_next", entities={})
+                continue
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="media_next", entities={})
+
+        for phrase in self._MEDIA_PREVIOUS:
+            if phrase == "previous":
+                if clean == "previous" or clean == "play previous":
+                    return ParsedCommand(raw_text=raw_text, intent="media_previous", entities={})
+                continue
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="media_previous", entities={})
+
+        for phrase in self._SKIP_AD:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="skip_ad", entities={})
+
+        for phrase in self._LIKE_VIDEO:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="like_video", entities={})
+
+        for phrase in self._SUBSCRIBE:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="subscribe_channel", entities={})
+
+        for phrase in self._SCROLL_PAGE:
+            if self._media_match(clean, phrase):
+                if "bottom" in clean:
+                    direction = "bottom"
+                elif "top" in clean:
+                    direction = "top"
+                elif "up" in clean:
+                    direction = "up"
+                else:
+                    direction = "down"
+                return ParsedCommand(
+                    raw_text=raw_text,
+                    intent="scroll_page",
+                    entities={"direction": direction},
+                )
+
+        return None
+
+    @staticmethod
+    def _media_match(clean: str, phrase: str) -> bool:
+        """True when *phrase* is the whole utterance or its prefix."""
+        if clean == phrase:
+            return True
+        if clean.startswith(phrase + " "):
+            return True
+        return False
+
+    # ------------------------------------------------------------------
     # Play music parsing
     # ------------------------------------------------------------------
 
@@ -560,6 +762,13 @@ class Parser:
                         raw_text=raw_text,
                         intent="open_app",
                         entities={"app_name": app_name, "original_app": rest},
+                    )
+                # "play first result" → reuse the open results page
+                if rest in ("first result", "first video", "top result"):
+                    return ParsedCommand(
+                        raw_text=raw_text,
+                        intent="play_music",
+                        entities={"query": "", "provider": "youtube", "first_result": True},
                     )
                 # Default: play_music
                 return ParsedCommand(
@@ -1190,6 +1399,13 @@ class Parser:
                 app_phrase = normalized[len(verb):].strip()
                 if not app_phrase:
                     continue
+                if app_phrase in ("this", "this application", "this app", "this window", "current application"):
+                    # "close this" — needs context to resolve
+                    return ParsedCommand(
+                        raw_text=raw_text,
+                        intent="close_app",
+                        entities={"app_name": "", "original_app": app_phrase, "needs_context": True},
+                    )
                 ambiguous = self._is_ambiguous(app_phrase)
                 if ambiguous:
                     return ParsedCommand(

@@ -50,6 +50,10 @@ class VoicePlayer:
         self._channels: int = _DEFAULT_CHANNELS
         self.on_playback_started: Callable[[], None] | None = None
         self.on_playback_finished: Callable[[], None] | None = None
+        # Echo-reference hook: called with (pcm_chunk, sample_rate) for every
+        # chunk written to the speakers, so the full-duplex echo canceller
+        # can subtract JARVIS's own voice from the captured microphone.
+        self.on_chunk_written: Callable[[bytes, int], None] | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,12 +98,17 @@ class VoicePlayer:
         self._stop_event.set()
         self._pause_event.clear()
 
+        # Wait for the play worker to leave stream.write() BEFORE closing the
+        # stream.  Closing a PyAudio stream while another thread is blocked
+        # inside write() is a PortAudio thread-safety violation and can
+        # deadlock the whole process.
+        thread = self._play_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
         with self._lock:
             self._close_stream()
             self._audio_data = b""
-
-        if self._play_thread is not None and self._play_thread.is_alive():
-            self._play_thread.join(timeout=1.0)
 
         self._play_thread = None
         logger.debug("VoicePlayer: stopped")
@@ -173,6 +182,12 @@ class VoicePlayer:
                     break
 
                 offset += len(chunk)
+
+                if self.on_chunk_written is not None:
+                    try:
+                        self.on_chunk_written(chunk, self._sample_rate)
+                    except Exception as exc:
+                        logger.warning("chunk_written callback failed: %s", exc)
 
         finally:
             self._close_stream()

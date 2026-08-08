@@ -81,6 +81,17 @@ class TestVoiceEngine(unittest.TestCase):
         self.assertTrue(result)
         self.mock_manager.speak.assert_called_once_with("Hello", priority=False)
 
+    def test_confirm_barge_in_ignores_weak_speech(self) -> None:
+        """Barge-in should not interrupt when speech is too short or too quiet."""
+        self.engine._barge_in_pending = True
+        self.engine._barge_in_started_at = time.monotonic() - 0.2
+        self.engine._latest_audio_level = 0.05
+        self.engine._voice_manager = self.mock_manager
+
+        self.engine._confirm_barge_in()
+
+        self.mock_manager.stop.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # VoiceSelectionManager Smart Parsing Tests

@@ -87,6 +87,7 @@ class Registry:
             "browser_search",
             "open_website",
             "search",
+            "click_first_video",
             "new_tab",
             "close_current_tab",
             "close_specific_tab",
@@ -102,6 +103,19 @@ class Registry:
             "reload",
             "back",
             "forward",
+            # Media / playback control
+            "youtube_state",
+            "youtube_pause",
+            "youtube_resume",
+            "youtube_play_next",
+            "youtube_play_previous",
+            "youtube_skip_ad",
+            "youtube_like",
+            "youtube_subscribe",
+            "youtube_continue_watching",
+            "scroll_page",
+            "get_page_state",
+            "get_selected_text",
         ):
             self.register(action, browser_handler)
 

@@ -12,7 +12,7 @@ Window {
 
     // ── Bridge properties ─────────────────────────────────────────────
     property string currentMode: (typeof bridge !== "undefined" && bridge) ? bridge.coreState : "idle"
-    property string subtitleText: "Yes Hashim, I'm listening. How can I help you?"
+    property string subtitleText: "Yes, sir. I'm listening. How can I help you?"
     property real micLevel: 0.35
     property real assistantLevel: 0.28
     property real cpu: 24
@@ -47,7 +47,7 @@ Window {
     Connections {
         target: typeof bridge !== "undefined" ? bridge : null
         function onCoreStateChanged(m) { root.currentMode = m }
-        function onSubtitleChanged(t) { root.subtitleText = t && t.length ? t : "Yes Hashim, I'm listening. How can I help you?" }
+        function onSubtitleChanged(t) { root.subtitleText = t && t.length ? t : "Yes, sir. I'm listening. How can I help you?" }
         function onMicEnergyChanged(e) { root.micLevel = Math.max(0.05, e) }
         function onAssistantEnergyChanged(e) { root.assistantLevel = Math.max(0.05, e) }
         function onCpuUsageChanged(v) { root.cpu = v }
@@ -564,96 +564,30 @@ Window {
                 color: Qt.rgba(1, 0.55, 0.1, 0.05)
             }
 
-            // ── Core State ───────────────────────────────────────────
+            // ── AI Core States ──────────────────────────────────────
             Text {
                 anchors { top: parent.top; topMargin: Math.round(84 * s); left: parent.left; leftMargin: Math.round(18 * s) }
-                text: "CORE STATE"
+                text: "AI CORE STATES"
                 color: "#776655"
                 font { pixelSize: Math.round(7 * s); letterSpacing: 3; family: "Segoe UI" }
             }
 
-            Rectangle {
+            AiCoreStates {
                 anchors { top: parent.top; topMargin: Math.round(100 * s); left: parent.left; leftMargin: Math.round(16 * s); right: parent.right; rightMargin: Math.round(16 * s) }
-                height: Math.round(52 * s)
-                radius: Math.round(8 * s)
-                color: Qt.rgba(255, 255, 255, 0.03)
-                border.width: 1
-                border.color: Qt.rgba(1, 0.55, 0.1, 0.1)
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: parent.radius
-                    color: "transparent"
-                    border.width: 1
-                    border.color: Qt.rgba(1, 0.55, 0.1, 0.04)
-                    opacity: 0.5
-                }
-
-                Row {
-                    anchors { left: parent.left; leftMargin: Math.round(12 * s); verticalCenter: parent.verticalCenter }
-                    spacing: Math.round(10 * s)
-
-                    Rectangle {
-                        width: Math.round(8 * s); height: width; radius: width / 2
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: root.currentMode === "idle" ? "#666" :
-                               root.currentMode === "listening" ? "#33aaff" :
-                               root.currentMode === "thinking" ? "#ffd700" :
-                               root.currentMode === "speaking" ? "#ff8c1a" : "#666"
-                        Behavior on color { ColorAnimation { duration: 300 } }
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: parent.width * 2.5
-                            height: width
-                            radius: width / 2
-                            color: parent.color
-                            opacity: 0.2
-                        }
-                    }
-
-                    Column {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Math.round(2 * s)
-                        Text {
-                            text: root.currentMode.charAt(0).toUpperCase() + root.currentMode.slice(1)
-                            color: "#e0d5ca"
-                            font { pixelSize: Math.round(11 * s); bold: true; family: "Segoe UI" }
-                        }
-                        Text {
-                            text: root.modelName
-                            color: "#887766"
-                            font { pixelSize: Math.round(8 * s); family: "Consolas" }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    anchors { right: parent.right; rightMargin: Math.round(8 * s); verticalCenter: parent.verticalCenter }
-                    height: Math.round(20 * s); width: Math.round(60 * s)
-                    radius: Math.round(4 * s)
-                    color: Qt.rgba(1, 0.55, 0.1, 0.06)
-                    border.width: 1
-                    border.color: Qt.rgba(1, 0.55, 0.1, 0.08)
-                    Text {
-                        anchors.centerIn: parent
-                        text: root.provider
-                        color: "#aa8866"
-                        font { pixelSize: Math.round(7 * s); family: "Consolas" }
-                        elide: Text.ElideRight
-                    }
-                }
+                currentMode: root.currentMode
+                scale: s
             }
 
             // ── Quick Status ─────────────────────────────────────────
             Text {
-                anchors { top: parent.top; topMargin: Math.round(168 * s); left: parent.left; leftMargin: Math.round(18 * s) }
+                anchors { top: parent.top; topMargin: Math.round(310 * s); left: parent.left; leftMargin: Math.round(18 * s) }
                 text: "QUICK STATUS"
                 color: "#776655"
                 font { pixelSize: Math.round(7 * s); letterSpacing: 3; family: "Segoe UI" }
             }
 
             Column {
-                anchors { top: parent.top; topMargin: Math.round(184 * s); left: parent.left; leftMargin: Math.round(16 * s); right: parent.right; rightMargin: Math.round(16 * s) }
+                anchors { top: parent.top; topMargin: Math.round(326 * s); left: parent.left; leftMargin: Math.round(16 * s); right: parent.right; rightMargin: Math.round(16 * s) }
                 spacing: Math.round(6 * s)
 
                 component StatusCard: Rectangle {
@@ -791,7 +725,7 @@ Window {
                 property color previewAccent: "#ff8c1a"
 
                 height: bottomPreviewH - Math.round(8 * s)
-                width: Math.round(100 * s)
+                width: Math.round(130 * s)
                 radius: Math.round(6 * s)
                 color: mousePrev.containsMouse ? Qt.rgba(1, 0.55, 0.1, 0.06) : Qt.rgba(255, 255, 255, 0.02)
                 border.width: 1
@@ -833,11 +767,11 @@ Window {
                 }
             }
 
-            PreviewItem { previewLabel: "ALWAYS ACCESSIBLE"; previewIcon: "\u25C9"; previewAccent: "#ff8c1a" }
-            PreviewItem { previewLabel: "CHROME"; previewIcon: "\u25C8"; previewAccent: "#33aaff" }
-            PreviewItem { previewLabel: "VS CODE"; previewIcon: "\u25A3"; previewAccent: "#00ff88" }
-            PreviewItem { previewLabel: "FLOATING ORB"; previewIcon: "\u25CE"; previewAccent: "#ffd700" }
-            PreviewItem { previewLabel: "TASKBAR"; previewIcon: "\u25AC"; previewAccent: "#ff8c1a" }
+            PreviewItem { previewLabel: "ADAPTIVE UI"; previewIcon: "\u25C9"; previewAccent: "#ff8c1a" }
+            PreviewItem { previewLabel: "REAL-TIME VOICE MATCH"; previewIcon: "\u266A"; previewAccent: "#33aaff" }
+            PreviewItem { previewLabel: "SMOOTH 60 FPS"; previewIcon: "\u25A3"; previewAccent: "#00ff88" }
+            PreviewItem { previewLabel: "NO CLUTTER"; previewIcon: "\u25CE"; previewAccent: "#ffd700" }
+            PreviewItem { previewLabel: "PREMIUM & FUTURISTIC"; previewIcon: "\u2606"; previewAccent: "#ff8c1a" }
         }
 
         Item {

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import audioop
 
 import vosk
@@ -36,60 +37,18 @@ class LocalWakeWordDetector:
 
     @staticmethod
     def _ensure_16khz(audio_bytes: bytes, source_rate: int) -> bytes:
-        input_duration_ms = (
-            len(audio_bytes)
-            / (source_rate * LocalWakeWordDetector._SAMPLE_WIDTH)
-            * 1000
-        )
-        if source_rate == LocalWakeWordDetector._VOSK_SAMPLE_RATE:
-            logger.info(
-                "Vosk PCM input already normalized: sample_rate=%d Hz, "
-                "channels=%d, sample_width=%d bytes, bytes=%d, "
-                "expected_duration=%.0f ms, bytes_per_second=%d",
-                source_rate,
-                LocalWakeWordDetector._CHANNELS,
+        if source_rate != LocalWakeWordDetector._VOSK_SAMPLE_RATE:
+            result_bytes, _ = audioop.ratecv(
+                audio_bytes,
                 LocalWakeWordDetector._SAMPLE_WIDTH,
-                len(audio_bytes),
-                input_duration_ms,
-                source_rate * LocalWakeWordDetector._SAMPLE_WIDTH,
+                LocalWakeWordDetector._CHANNELS,
+                source_rate,
+                LocalWakeWordDetector._VOSK_SAMPLE_RATE,
+                None,
             )
-            return audio_bytes
+            return result_bytes
 
-        logger.warning(
-            "Resampling Vosk PCM from %d Hz to %d Hz: channels=%d, "
-            "sample_width=%d bytes, input=%d bytes, expected_duration=%.0f ms",
-            source_rate,
-            LocalWakeWordDetector._VOSK_SAMPLE_RATE,
-            LocalWakeWordDetector._CHANNELS,
-            LocalWakeWordDetector._SAMPLE_WIDTH,
-            len(audio_bytes),
-            input_duration_ms,
-        )
-        result_bytes, _ = audioop.ratecv(
-            audio_bytes,
-            LocalWakeWordDetector._SAMPLE_WIDTH,
-            LocalWakeWordDetector._CHANNELS,
-            source_rate,
-            LocalWakeWordDetector._VOSK_SAMPLE_RATE,
-            None,
-        )
-        output_duration_ms = (
-            len(result_bytes)
-            / (
-                LocalWakeWordDetector._VOSK_SAMPLE_RATE
-                * LocalWakeWordDetector._SAMPLE_WIDTH
-            )
-            * 1000
-        )
-        logger.info(
-            "Resampled Vosk PCM: %d bytes -> %d bytes, "
-            "expected_duration %.0f ms -> %.0f ms",
-            len(audio_bytes),
-            len(result_bytes),
-            input_duration_ms,
-            output_duration_ms,
-        )
-        return result_bytes
+        return audio_bytes
 
     def contains_wake_word(self, audio_bytes: bytes, sample_rate: int = 16000) -> bool:
         try:
@@ -116,51 +75,35 @@ class LocalWakeWordDetector:
             last_500_bytes_start = max(0, len(audio_bytes) - int(500 * bytes_per_ms))
             first_500_preserved = duration_ms >= 500.0
             last_500_preserved = duration_ms >= 500.0
-            logger.info(
-                "Segment detail: total=%d bytes (%.0f ms), "
-                "first_500ms=%s (%d bytes offset=0), "
-                "last_500ms=%s (%d bytes offset=%d)",
-                len(audio_bytes), duration_ms,
-                first_500_preserved, first_500_bytes,
-                last_500_preserved, int(500 * bytes_per_ms), last_500_bytes_start,
-            )
-
             pcm_bytes = self._ensure_16khz(audio_bytes, sample_rate)
-            vosk_duration_ms = (
-                len(pcm_bytes)
-                / (self._VOSK_SAMPLE_RATE * self._SAMPLE_WIDTH)
-                * 1000
-            )
 
-            logger.info(
-                "Vosk recognizer PCM: sample_rate=%d Hz, channels=%d, "
-                "sample_width=%d bytes, bytes=%d, bytes_per_second=%d, "
-                "expected_duration=%.0f ms",
-                self._VOSK_SAMPLE_RATE,
-                self._CHANNELS,
-                self._SAMPLE_WIDTH,
-                len(pcm_bytes),
-                self._VOSK_SAMPLE_RATE * self._SAMPLE_WIDTH * self._CHANNELS,
-                vosk_duration_ms,
-            )
-
-            # Grammar: ONLY "jarvis" — no "[unk]".  This prevents Vosk from
-            # actively recognising unknown speech as the literal token "[unk]".
             recognizer = vosk.KaldiRecognizer(self._model, self._VOSK_SAMPLE_RATE, '["jarvis"]')
+            start_ns = time.perf_counter_ns()
             recognizer.AcceptWaveform(pcm_bytes)
             result = json.loads(recognizer.FinalResult())
             text = result.get("text", "").casefold()
+            elapsed_ms = (time.perf_counter_ns() - start_ns) / 1e6
 
-            logger.info(
-                "Vosk heard: %r (audio: %d bytes, %.0f ms at %d Hz)",
-                text, len(pcm_bytes), vosk_duration_ms, self._VOSK_SAMPLE_RATE,
+            logger.debug("Vosk heard: %r (%.1f ms for %d bytes)",
+                         text, elapsed_ms, len(pcm_bytes))
+
+            # Accept the wake phrase when it leads the utterance — this is
+            # what lets a single "jarvis, open chrome" count as a full
+            # command (wake + command) instead of needing a second wake.
+            # Partial matches, "[unk]", and empty text are still rejected.
+            tokens = text.split()
+            if not tokens or "[unk]" in tokens:
+                logger.debug(
+                    "contains_wake_word REJECT: tokens=%r (empty or [unk])",
+                    tokens,
+                )
+                return False
+            matched = "jarvis" in tokens[:2]
+            logger.debug(
+                "contains_wake_word DECISION: matched=%s tokens=%r",
+                matched, tokens,
             )
-
-            print(f"RAW VOSK TEXT = {text!r}")
-
-            # Strict equality — only "jarvis" (case-insensitive) is accepted.
-            # "[unk]", partial matches, and empty text are all rejected.
-            return text == self._WAKE_PHRASE
+            return matched
         except Exception as exc:
             logger.error("Vosk recognition failed: %s", exc, exc_info=True)
             return False

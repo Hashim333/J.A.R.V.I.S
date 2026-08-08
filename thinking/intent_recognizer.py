@@ -13,6 +13,15 @@ _INTENT_CATEGORIES: dict[str, str] = {
     "search": "information",
     "play_music": "playback",
     "play_video": "playback",
+    "media_pause": "playback",
+    "media_resume": "playback",
+    "media_next": "playback",
+    "media_previous": "playback",
+    "skip_ad": "playback",
+    "like_video": "playback",
+    "subscribe_channel": "playback",
+    "continue_watching": "playback",
+    "scroll_page": "navigation",
     "focus_app": "navigation",
     "type_text": "input",
     "hotkey": "input",
@@ -100,7 +109,7 @@ class IntentRecognizer:
 
     @staticmethod
     def _is_destructive(intent: str, entities: dict[str, Any]) -> bool:
-        if intent in ("close_app", "hotkey"):
+        if intent in ("close_app", "hotkey", "close_jarvis", "shutdown_windows", "restart", "shutdown", "delete_file", "format_drive", "kill_process", "close_all_apps"):
             return True
         if intent == "open_app" and entities.get("force_restart"):
             return True
@@ -136,4 +145,21 @@ class IntentRecognizer:
         if intent == "close_app":
             app = entities.get("app_name", "unknown")
             return f"User wants to close '{app}'"
+        if intent == "close_jarvis":
+            return "User wants to shut down JARVIS"
+        if intent == "shutdown_windows":
+            return "User wants to shut down Windows"
+        if intent == "restart":
+            return "User wants to restart Windows"
+        if intent == "delete_file":
+            file_query = entities.get("file_query", "")
+            return f"User wants to delete '{file_query}'"
+        if intent == "format_drive":
+            drive = entities.get("drive", "")
+            return f"User wants to format drive '{drive}'"
+        if intent == "kill_process":
+            proc = entities.get("process", "")
+            return f"User wants to kill process '{proc}'"
+        if intent == "close_all_apps":
+            return "User wants to close all open applications"
         return f"User intent is '{intent}' (category: {category})"

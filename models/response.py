@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from models.task_result import TaskResult
+
 
 @dataclass(frozen=True)
 class Response:
@@ -31,6 +33,14 @@ class Response:
                  can always safely do response.data.get(...) without a
                  None check.
         error:   Error description if success is False, otherwise None.
+        task_result: Canonical outcome classification.
+        diagnostic:  Structured failure report (None on SUCCESS).
+        confidence:  0..1 confidence in the intent/entities that drove
+                     this response. ``None`` when not produced by the
+                     reasoning layer.
+        speech_confidence: 0..1 confidence of the ASR transcript that
+                     produced this request. ``None`` for typed input.
+        reasoning:   Human-readable trace of why this response was chosen.
     """
 
     success: bool
@@ -40,3 +50,8 @@ class Response:
     needs_clarification: bool = False
     clarification_question: str = ""
     alternatives: list[str] = field(default_factory=list)
+    task_result: TaskResult = TaskResult.SUCCESS
+    diagnostic: Any = None
+    confidence: float | None = None
+    speech_confidence: float | None = None
+    reasoning: str = ""

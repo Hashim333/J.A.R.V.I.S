@@ -1,25 +1,24 @@
 """
-run.py
+run.py — JARVIS application bootstrap.
 
-JARVIS — desktop UI entry point.
+This module ONLY initializes services and starts the application.  It does
+NOT own conversation logic.
 
-Launches the full-screen QML interface as the primary interaction mode.
-The terminal displays debug logs only.
-
-Usage:
-    python run.py                    # normal desktop UI mode
-    python run.py <command>          # execute a single command and exit
+The single conversation owner is :class:`services.conversation_owner.
+ConversationOwner`, which owns Wake, Listening, Speech Recognition, Intent
+Processing, Execution, Speaking and Sleep Mode.  All conversation state
+transitions live in exactly one place — the ConversationOwner driving the
+:class:`services.conversation_manager.ConversationManager` state machine.
 """
-
 from __future__ import annotations
 
 import logging
-from config.settings import settings
 import queue
-import re
 import sys
 import threading
 import time
+
+from config.settings import settings
 from brain import Brain
 from brain.parser import Parser
 from brain.planner import Planner
@@ -28,13 +27,33 @@ from executor.executor import Executor
 from verification.task_verifier import TaskVerifier
 from automation.registry import Registry
 from automation.handlers import AppsHandler, BrowserHandler, MouseHandler, KeyboardHandler
+from automation.browser_service import stop_browser_service
+from tasks.task_manager import TaskManager
+from intelligence.world_state import WorldStateService
+from world_model import WorldModel
+from system_awareness import SystemAwarenessService
 from response.manager import ResponseManager
-from services import ServiceManager, WakeWordService, ListenerService, ConversationManager, ConversationState
+from thinking.reasoner import Reasoner
+from working_memory import WorkingMemory
+from skills.manager import SkillManager
+from services import (
+    ServiceManager, WakeWordService,
+    ConversationManager, ShutdownManager,
+)
+from services.conversation_owner import ConversationOwner
 from voice.microphone_stream import MicrophoneStream
-from voice.pipeline import VoiceConversationPipeline
+from voice.microphone_processor import MicrophoneProcessor
+from voice.duplex import DuplexVoiceSession
+from voice.whisper_stt import preload_model
 from voice.manager import VoiceManager
 from voice.engine import VoiceEngine
 from ui.app import JarvisApp
+from monitoring.watchdog import WatchdogManager
+from monitoring.instrumentation import (
+    install as install_diag,
+    register_queue,
+    ui_tick,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,302 +61,19 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("run")
+logging.getLogger("voice.microphone_stream").setLevel(logging.WARNING)
 
 DEBUG = settings.debug
 
-_WAKE_PHRASE = "jarvis"
-_WAKE_PATTERN = re.compile(rf'\b{re.escape(_WAKE_PHRASE)}\b', re.IGNORECASE)
-
-
-def _strip_wake_word(text: str) -> str | None:
-    stripped = _WAKE_PATTERN.sub("", text)
-    stripped = re.sub(r"\s+", " ", stripped).strip()
-    if not stripped:
-        return None
-    return stripped
-
-
-def _report_service_results(action: str, results: dict[str, str]) -> None:
-    failures = {name: outcome for name, outcome in results.items() if outcome != "ok"}
-    if not failures:
-        return
-    logger.warning("Issues while running %s on services:", action)
-    for name, outcome in failures.items():
-        logger.warning("  %s: %s", name, outcome)
-
-
-def _on_backend_error(bridge, microphone_stream, service_manager, exc):
-    """Log a backend error and communicate it to the UI."""
-    logger.error("Backend error: %s", exc, exc_info=True)
-    try:
-        bridge.set_core_state("error")
-        bridge.show_subtitle("An error occurred — check the logs.")
-    except Exception:
-        pass
-
-
-def _present_response(
-    bridge, response_manager, response, voice_engine, microphone_stream=None
-) -> None:
-    """Show a response on the UI and speak it via voice engine.
-    
-    Mic muting during TTS playback is handled automatically by
-    VoicePlayer lifecycle callbacks (wired in main()), so the mic
-    stays muted for the entire playback duration plus a 200ms cooldown."""
-    subtitle = response_manager.console_text(response)
-    bridge.show_subtitle(subtitle)
-    if response_manager._voice_enabled:
-        message = response_manager.voice_text(response)
-        if message:
-            try:
-                voice_engine.speak(message)
-            except Exception:
-                pass
-
-
-def _backend_loop(
-    bridge,
-    command_queue,
-    wake_word_detected,
-    brain,
-    context_manager,
-    response_manager,
-    listener_service,
-    wake_word_service,
-    conversation_manager,
-    voice_engine,
-    pipeline,
-    microphone_stream,
-    service_manager,
-    ui_app,
-):
-    """Backend processing loop — runs in a background thread."""
-    logger.info("Backend loop started")
-
-    _report_service_results("initialize", service_manager.initialize_all())
-    _report_service_results("start", service_manager.start_all())
-
-    bridge.set_core_state("idle")
-    bridge.set_internet_status(True)
-    bridge.set_mic_status(True)
-    bridge.set_speaker_status(True)
-    bridge.set_provider("Ollama")
-    bridge.set_model(settings.model)
-
-    logger.info("Backend ready — wake word and text input active")
-
-    try:
-        while True:
-            # ================================================================
-            # Text commands
-            # ================================================================
-            try:
-                command = command_queue.get_nowait()
-
-                if command.casefold() in {"exit", "quit"}:
-                    logger.info("Shutdown requested via text command")
-                    break
-                if command.casefold() == "help":
-                    bridge.show_subtitle(
-                        "Commands: help, exit | open/close <app> | "
-                        "search <q> on <site>"
-                    )
-                    continue
-
-                if conversation_manager.is_sleep_command(command):
-                    if conversation_manager.state == ConversationState.ACTIVE_CONVERSATION:
-                        conversation_manager.transition_to_standby(reason="sleep command")
-                        bridge.set_core_state("idle")
-                        bridge.show_subtitle("Sleeping — wake me with 'JARVIS' or type a command.")
-                    else:
-                        bridge.show_subtitle("Already in standby mode.")
-                    continue
-
-                logger.info("Processing text command: '%s'", command)
-                bridge.set_core_state("thinking")
-                bridge.set_current_task(command)
-                response = brain.process(command)
-                bridge.set_current_task("")
-
-                _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-
-                if getattr(response, "needs_clarification", False):
-                    if brain.pending_clarification_exists:
-                        bridge.show_subtitle(response.clarification_question or response.message)
-                        try:
-                            answer = input("> ")
-                        except (KeyboardInterrupt, EOFError):
-                            answer = ""
-                        if answer.strip():
-                            bridge.set_core_state("thinking")
-                            response = brain.resolve_context(answer.strip())
-                            _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-                        else:
-                            bridge.show_subtitle("Action cancelled.")
-                    elif ("Are you sure" in (response.clarification_question or "")
-                          or "confirm" in (response.message or "").casefold()):
-                        bridge.show_subtitle(response.clarification_question or "Are you sure?")
-                        try:
-                            answer = input("> ")
-                        except (KeyboardInterrupt, EOFError):
-                            answer = ""
-                        if answer.strip().casefold() in ("yes", "y", "confirm", "do it", "go ahead"):
-                            logger.info("User confirmed, re-processing command")
-                            bridge.set_core_state("thinking")
-                            response = brain.process(command, confirmed=True)
-                            _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-                        else:
-                            bridge.show_subtitle("Action cancelled.")
-
-                if conversation_manager.state == ConversationState.STANDBY:
-                    conversation_manager.transition_to_active()
-                else:
-                    conversation_manager.reset_activity()
-
-                bridge.set_core_state("idle")
-                continue
-
-            except queue.Empty:
-                pass
-
-            # ================================================================
-            # Voice commands (state-dependent)
-            # ================================================================
-            if conversation_manager.state == ConversationState.STANDBY:
-                if wake_word_detected.is_set():
-                    bridge.wakeActive = True
-                    bridge.set_core_state("listening")
-                    bridge.show_subtitle("Listening...")
-
-                    command_text = pipeline.wait_for_command(wake_word_detected)
-
-                    bridge.wakeActive = False
-
-                    if command_text:
-                        stripped = _strip_wake_word(command_text) or command_text
-                        bridge.set_core_state("thinking")
-                        bridge.set_current_task(stripped)
-                        logger.info("Processing voice command: '%s'", stripped)
-                        response = brain.process(stripped)
-                        bridge.set_current_task("")
-
-                        _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-
-                        if getattr(response, "needs_clarification", False):
-                            if brain.pending_clarification_exists:
-                                bridge.show_subtitle(response.clarification_question or response.message)
-                                confirm_result = listener_service.listen_for_command(timeout=8.0)
-                                if confirm_result.success and confirm_result.text:
-                                    bridge.set_core_state("thinking")
-                                    answer = confirm_result.text.strip()
-                                    response = brain.resolve_context(answer)
-                                    _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-                                else:
-                                    bridge.show_subtitle("Action cancelled.")
-                            elif "Are you sure" in (response.clarification_question or ""):
-                                bridge.show_subtitle(response.clarification_question or "Say 'yes' to confirm.")
-                                confirm_result = listener_service.listen_for_command(timeout=5.0)
-                                if confirm_result.success and confirm_result.text:
-                                    answer = confirm_result.text.strip().casefold()
-                                    if answer in ("yes", "y", "confirm", "do it", "go ahead"):
-                                        logger.info("Voice confirmation received")
-                                        bridge.set_core_state("thinking")
-                                        response = brain.process(stripped, confirmed=True)
-                                        _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-
-                        bridge.set_core_state("speaking")
-                        conversation_manager.transition_to_active()
-                    else:
-                        bridge.show_subtitle("Could not understand command.")
-                        logger.warning("Voice command failed after all retries")
-                        wake_word_service.reset_for_wake()
-                        bridge.set_core_state("idle")
-                        bridge.show_subtitle("Say 'JARVIS' or type a command.")
-
-            elif conversation_manager.state == ConversationState.ACTIVE_CONVERSATION:
-                if conversation_manager.is_expired:
-                    conversation_manager.transition_to_standby(reason="timeout")
-                    bridge.set_core_state("idle")
-                    bridge.show_subtitle("Conversation timed out. Say 'JARVIS' or type a command.")
-                    continue
-
-                if voice_engine.is_speaking:
-                    logger.info("BARGE-IN: Interrupting speech to listen for next command")
-                    voice_engine.interrupt()
-
-                listen_to = min(5.0, max(1.0, conversation_manager.remaining_time))
-                logger.info("Listening for command (state=ACTIVE_CONVERSATION, timeout=%.1f)", listen_to)
-                bridge.set_core_state("listening")
-                bridge.show_subtitle("Listening...")
-                result = listener_service.listen_for_command(timeout=listen_to)
-
-                if result.success and result.text:
-                    if conversation_manager.is_sleep_command(result.text):
-                        bridge.show_subtitle("Sleeping — wake me with 'JARVIS'.")
-                        conversation_manager.transition_to_standby(reason="sleep command")
-                        bridge.set_core_state("idle")
-                        continue
-
-                    stripped = _strip_wake_word(result.text) or result.text
-                    bridge.set_core_state("thinking")
-                    bridge.set_current_task(stripped)
-                    logger.info("Processing conversation command: '%s'", stripped)
-                    response = brain.process(stripped)
-                    bridge.set_current_task("")
-
-                    _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-
-                    if getattr(response, "needs_clarification", False):
-                        if brain.pending_clarification_exists:
-                            bridge.show_subtitle(response.clarification_question or response.message)
-                            confirm_result = listener_service.listen_for_command(timeout=8.0)
-                            if confirm_result.success and confirm_result.text:
-                                bridge.set_core_state("thinking")
-                                answer = confirm_result.text.strip()
-                                response = brain.resolve_context(answer)
-                                _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-                            else:
-                                bridge.show_subtitle("Action cancelled.")
-                        elif "Are you sure" in (response.clarification_question or ""):
-                            bridge.show_subtitle(response.clarification_question or "Say 'yes' to confirm.")
-                            confirm_result = listener_service.listen_for_command(timeout=5.0)
-                            if confirm_result.success and confirm_result.text:
-                                answer = confirm_result.text.strip().casefold()
-                                if answer in ("yes", "y", "confirm", "do it", "go ahead"):
-                                    logger.info("Voice confirmation received")
-                                    bridge.set_core_state("thinking")
-                                    response = brain.process(stripped, confirmed=True)
-                                    _present_response(bridge, response_manager, response, voice_engine, microphone_stream)
-
-                    bridge.set_core_state("speaking")
-                    conversation_manager.reset_activity()
-                else:
-                    if conversation_manager.is_expired:
-                        conversation_manager.transition_to_standby(reason="timeout")
-                        bridge.set_core_state("idle")
-                        bridge.show_subtitle("Conversation timed out. Say 'JARVIS' or type a command.")
-
-            time.sleep(0.05)
-
-    except Exception as exc:
-        _on_backend_error(bridge, microphone_stream, service_manager, exc)
-    finally:
-        logger.info("Backend loop shutting down")
-        try:
-            bridge.set_core_state("offline")
-        except Exception:
-            pass
-        _report_service_results("shutdown", service_manager.shutdown_all())
-        microphone_stream.shutdown()
-        logger.info("Backend shut down")
-        try:
-            ui_app._quit()
-        except Exception:
-            pass
+# Automatic Sleep: the conversation stays engaged for follow-ups and only
+# returns to Wake Mode after this many seconds of true silence (Requirement
+# #9).  A pending confirmation is still "conversation", so the confirmation
+# timeout is deliberately shorter.
+_CONVERSATION_AUTO_SLEEP_SECONDS = 30.0
+_CONVERSATION_CONFIRMATION_TIMEOUT_SECONDS = 15.0
 
 
 def main() -> None:
-    # --- Single command mode ---
     if len(sys.argv) > 1:
         parser = Parser()
         planner = Planner()
@@ -346,19 +82,34 @@ def main() -> None:
         executor = Executor(registry)
         context_manager = ContextManager()
         task_verifier = TaskVerifier()
-        brain = Brain(parser, planner, executor, context_manager=context_manager, task_verifier=task_verifier)
+        world_model = WorldModel()
+        world_state = WorldStateService(world_model=world_model, context_manager=context_manager)
+        world_state.start()
+        system_awareness = SystemAwarenessService(world_model=world_model)
+        system_awareness.start()
+        working_memory = WorkingMemory()
+        working_memory.start()
+        reasoner = Reasoner()
+        skill_manager = SkillManager()
+        brain = Brain(parser, planner, executor, context_manager=context_manager,
+                      task_verifier=task_verifier, world_state=world_state,
+                      reasoner=reasoner, working_memory=working_memory,
+                      system_awareness=system_awareness,
+                      skill_manager=skill_manager)
         command = " ".join(sys.argv[1:])
-        print(f"Executing single command: '{command}'")
+        print(f"Executing: '{command}'")
         response = brain.process(command)
         if response.needs_clarification and brain.pending_clarification_exists:
             print(f"\n{response.clarification_question or response.message}")
             answer = input("> ").strip()
             if answer:
                 response = brain.resolve_context(answer)
+        system_awareness.stop()
+        world_state.stop()
+        working_memory.stop()
         response_manager.present_console(response)
         return
 
-    # --- Create backend components ---
     parser = Parser()
     planner = Planner()
     registry = Registry()
@@ -366,14 +117,15 @@ def main() -> None:
     command_queue = queue.Queue()
     wake_word_detected = threading.Event()
 
-    microphone_stream = MicrophoneStream(
-        chunk_size=1024,
-        sample_rate=16000,
-    )
+    register_queue("command_queue", command_queue)
 
-    listener_service = ListenerService(
-        microphone_stream=microphone_stream,
-    )
+    context_manager = ContextManager()
+    world_model = WorldModel()
+    world_state = WorldStateService(world_model=world_model, context_manager=context_manager)
+    system_awareness = SystemAwarenessService(world_model=world_model)
+
+    microphone_stream = MicrophoneStream(chunk_size=1024, sample_rate=16000)
+
     wake_word_service = WakeWordService(
         wake_word_detected_event=wake_word_detected,
         microphone_stream=microphone_stream,
@@ -383,28 +135,56 @@ def main() -> None:
     voice_engine = VoiceEngine(
         voice_manager=voice_manager,
         microphone_stream=microphone_stream,
-        on_barge_in=lambda: logger.info("BARGE-IN detected in conversation"),
+        on_barge_in=lambda: logger.info("Barge-in detected"),
     )
     response_manager._voice_engine = voice_engine
 
-    # Wire VoicePlayer callbacks to mute mic during TTS playback
-    # This prevents the echo feedback loop where the assistant's own
-    # TTS output is captured by the mic, re-transcribed, and re-processed.
+    register_queue("tts_queue", lambda: voice_manager.queue_size)
+
+    # ── Full-duplex voice session ────────────────────────────────────
+    # Owns the single microphone consumer and routes every chunk through
+    # echo cancellation -> adaptive noise suppression -> wake / capture /
+    # barge-in VADs and streaming STT.
+    duplex_session = DuplexVoiceSession(sample_rate=16000)
+
+    # Warm the shared Faster-Whisper model on a background thread so the first
+    # capture is never stalled by the one-time model download/load.
+    preload_model()
+
+    def _on_barge_in() -> None:
+        """User interrupted JARVIS's speech — stop TTS and get ready to hear them."""
+        logger.info("Barge-in: user interrupted speech")
+        try:
+            voice_engine.interrupt(reason="duplex_barge_in")
+        except Exception as exc:
+            logger.error("Barge-in interrupt failed: %s", exc, exc_info=True)
+
+    duplex_session.on_barge_in = _on_barge_in
+    wake_word_service.set_session(duplex_session)
+    voice_engine.set_duplex_session(duplex_session)
+
     try:
         player = voice_manager.provider.player
-        player.on_playback_started = microphone_stream.mute
-        player.on_playback_finished = microphone_stream.unmute
-        logger.info("Echo prevention: mic will mute during TTS playback")
     except AttributeError:
-        logger.warning(
-            "Echo prevention not available: provider does not expose a player"
-        )
+        player = None
+    if player is not None and hasattr(player, "on_chunk_written"):
+        # Full-duplex echo cancellation: feed back the exact PCM written to
+        # the speakers so JARVIS's own voice is cancelled from the mic.  This
+        # replaces mic-mute, which would block instant barge-in.
+        player.on_chunk_written = duplex_session.feed_playback_reference
+        logger.info("Full-duplex echo cancellation active (playback reference fed)")
+    else:
+        # No PCM reference available (e.g. system SAPI provider) — fall back
+        # to the old mic-mute echo prevention.
+        if player is not None:
+            player.on_playback_started = microphone_stream.mute
+            player.on_playback_finished = microphone_stream.unmute
+        logger.info("Echo prevention active (mic-mute fallback, no PCM reference)")
 
     def _voice_input() -> str | None:
         if voice_engine.is_speaking:
-            logger.info("BARGE-IN: Interrupting speech to listen")
             voice_engine.interrupt()
-        result = listener_service.listen_for_command()
+        result = duplex_session.capture_command(timeout=15.0)
         return result.text if result.success else None
 
     apps_handler = AppsHandler()
@@ -415,6 +195,19 @@ def main() -> None:
     registry.register("close_app", apps_handler)
     registry.register("open_website", browser_handler)
     registry.register("search", browser_handler)
+    registry.register("click_first_video", browser_handler)
+    registry.register("youtube_state", browser_handler)
+    registry.register("youtube_pause", browser_handler)
+    registry.register("youtube_resume", browser_handler)
+    registry.register("youtube_play_next", browser_handler)
+    registry.register("youtube_play_previous", browser_handler)
+    registry.register("youtube_skip_ad", browser_handler)
+    registry.register("youtube_like", browser_handler)
+    registry.register("youtube_subscribe", browser_handler)
+    registry.register("youtube_continue_watching", browser_handler)
+    registry.register("scroll_page", browser_handler)
+    registry.register("get_page_state", browser_handler)
+    registry.register("get_selected_text", browser_handler)
     registry.register("move_mouse", mouse_handler)
     registry.register("left_click", mouse_handler)
     registry.register("right_click", mouse_handler)
@@ -424,89 +217,225 @@ def main() -> None:
     registry.register("hotkey", keyboard_handler)
 
     executor = Executor(registry, voice_input=_voice_input)
-    context_manager = ContextManager()
     task_verifier = TaskVerifier()
-    brain = Brain(parser, planner, executor, context_manager=context_manager, task_verifier=task_verifier)
+    working_memory = WorkingMemory()
+    working_memory.start()
+    reasoner = Reasoner()
+    skill_manager = SkillManager()
+    brain = Brain(parser, planner, executor, context_manager=context_manager,
+                  task_verifier=task_verifier, world_state=world_state,
+                  reasoner=reasoner, working_memory=working_memory,
+                  system_awareness=system_awareness,
+                  skill_manager=skill_manager)
 
     service_manager = ServiceManager()
-    service_manager.register("listener", listener_service)
     service_manager.register("wake_word", wake_word_service)
 
-    pipeline = VoiceConversationPipeline(
-        listener_service=listener_service,
-        voice_manager=voice_manager,
-        microphone_stream=microphone_stream,
-        max_retries=3,
-        capture_timeout=10.0,
-    )
+    world_state.start()
+    system_awareness.start()
+    logger.info("World state service started")
+    logger.info("System awareness service started")
 
     conversation_manager = ConversationManager(
+        activity_timeout=_CONVERSATION_AUTO_SLEEP_SECONDS,
+        confirmation_timeout=_CONVERSATION_CONFIRMATION_TIMEOUT_SECONDS,
         wake_word_service=wake_word_service,
-        listener_service=listener_service,
-        activity_timeout=30.0,
-        selection_timeout=30.0,
     )
 
-    # --- Start microphone ---
-    logger.info("Starting microphone stream...")
+    shutdown_manager = ShutdownManager()
+    task_manager = TaskManager(default_deadline=30.0)
+
+    # Route the continuous mic feed into the full-duplex session (wake word,
+    # capture, and barge-in all consume the echo-cancelled, denoised signal).
+    microphone_stream.set_consumer(duplex_session.process_chunk)
+
+    # Wire the configured AGC / noise gate / sensitivity / normalization into
+    # the live pipeline.  The processor's start()/shutdown() follow the
+    # stream lifecycle automatically (microphone_stream.start()/shutdown()).
+    microphone_stream.set_processor(
+        MicrophoneProcessor(
+            sample_rate=16000,
+            sensitivity=settings.mic_sensitivity,
+            agc_enabled=settings.mic_agc_enabled,
+            agc_target_level=settings.mic_agc_target_level,
+            noise_gate_enabled=settings.mic_noise_gate_enabled,
+            noise_gate_threshold=settings.mic_noise_gate_threshold,
+        )
+    )
+    logger.info(
+        "MicrophoneProcessor wired: sensitivity=%s agc=%s target=%.3f "
+        "noise_gate=%s threshold=%.3f",
+        settings.mic_sensitivity,
+        settings.mic_agc_enabled,
+        settings.mic_agc_target_level,
+        settings.mic_noise_gate_enabled,
+        settings.mic_noise_gate_threshold,
+    )
+
+    logger.info("Starting microphone...")
     try:
         microphone_stream.start()
     except Exception as exc:
         logger.warning("Microphone could not be started: %s", exc)
 
-    # --- Create the desktop UI ---
     try:
         ui_app = JarvisApp()
     except Exception as exc:
         logger.critical("Failed to create UI: %s", exc, exc_info=True)
-        print(f"ERROR: Could not launch the desktop interface: {exc}")
-        print("Falling back to console mode is not supported.")
+        print(f"ERROR: Could not launch UI: {exc}")
         sys.exit(1)
+
+    install_diag()
+
+    try:
+        from PySide6.QtCore import QTimer
+        _diag_timer = QTimer()
+        _diag_timer.timeout.connect(ui_tick)
+        _diag_timer.start(1000)
+    except Exception:
+        pass
+
+    from monitoring.instrumentation import enabled as _diag_enabled
+    if _diag_enabled():
+        try:
+            from ui.monitor import UIMonitor
+            _ui_monitor = UIMonitor(ui_app.app, ui_app.bridge)
+            _ui_monitor.install()
+            logger.info("UIMonitor installed (diag mode)")
+        except Exception as exc:
+            logger.warning("UIMonitor install failed: %s", exc)
 
     bridge = ui_app.bridge
 
-    # --- Text input thread (stdin for debug) ---
+    watchdog_manager = WatchdogManager()
+    shutdown_event = threading.Event()
+    _shutdown_in_progress = threading.Event()
+
+    # ── The single conversation owner ────────────────────────────────
+    # Owns Wake, Listening, Speech Recognition, Intent Processing,
+    # Execution, Speaking and Sleep Mode.  run.py does NOT own any
+    # conversation logic.
+    conversation_owner = ConversationOwner(
+        conversation_manager=conversation_manager,
+        bridge=bridge,
+        brain=brain,
+        task_manager=task_manager,
+        response_manager=response_manager,
+        voice_engine=voice_engine,
+        wake_word_service=wake_word_service,
+        microphone_stream=microphone_stream,
+        duplex_session=duplex_session,
+        command_queue=command_queue,
+        wake_word_detected=wake_word_detected,
+        watchdog_manager=watchdog_manager,
+        service_manager=service_manager,
+        shutdown_in_progress=_shutdown_in_progress,
+        shutdown_event=shutdown_event,
+    )
+
     def _text_input_loop():
         while True:
             try:
                 line = input()
             except (KeyboardInterrupt, EOFError):
+                _shutdown_in_progress.set()
                 command_queue.put("exit")
                 break
             line = line.strip()
             if line:
+                from brain.intent_normalizer import Intent, normalize as normalize_intent
+                if normalize_intent(line) == Intent.EXIT:
+                    _shutdown_in_progress.set()
                 command_queue.put(line)
 
     input_thread = threading.Thread(target=_text_input_loop, daemon=True)
     input_thread.start()
 
-    # --- Start backend thread ---
     backend_thread = threading.Thread(
-        target=_backend_loop,
-        args=(
-            bridge,
-            command_queue,
-            wake_word_detected,
-            brain,
-            context_manager,
-            response_manager,
-            listener_service,
-            wake_word_service,
-            conversation_manager,
-            voice_engine,
-            pipeline,
-            microphone_stream,
-            service_manager,
-            ui_app,
-        ),
+        target=conversation_owner.run,
         daemon=True,
     )
     backend_thread.start()
+    shutdown_manager.register_thread(backend_thread)
 
-    # --- Run the Qt event loop (blocks until UI exits) ---
+    # ── Backend liveness heartbeat ────────────────────────────────────
+    # The owner loop blocks inside brain.process() for up to 120s per
+    # command, so a dedicated thread keeps the UI heartbeat fresh while the
+    # process is alive. If the owner thread dies, this thread stops and
+    # the UI flips to "Core Offline" within a couple of seconds.
+    def _heartbeat_loop() -> None:
+        while backend_thread.is_alive() and not _shutdown_in_progress.is_set():
+            try:
+                bridge.set_backend_heartbeat()
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    threading.Thread(target=_heartbeat_loop, name="backend-heartbeat", daemon=True).start()
+
+    # ── Shutdown hooks ────────────────────────────────────────────────
+    # Stopped in bounded phases so resources are released even if a
+    # component misbehaves during exit.
+    shutdown_manager.on("stop_wake_word", wake_word_service.stop)
+    shutdown_manager.on("stop_conversation", voice_engine.cancel_all)
+    shutdown_manager.on("stop_system_awareness", system_awareness.stop)
+    shutdown_manager.on("stop_world_state", world_state.stop)
+    shutdown_manager.on("stop_working_memory", working_memory.stop)
+    shutdown_manager.on("stop_watchdogs", watchdog_manager.stop_all)
+    shutdown_manager.on(
+        "stop_browser_service",
+        lambda: stop_browser_service(),
+    )
+    shutdown_manager.on(
+        "join_worker_threads", lambda: voice_engine.shutdown(),
+    )
+
+    def _signal_backend_shutdown():
+        """Signal the owner loop to exit by posting an EXIT command."""
+        if _shutdown_in_progress.is_set():
+            return
+        _shutdown_in_progress.set()
+        command_queue.put("exit")
+        logger.debug("Backend shutdown signaled")
+
+    # Bounded shutdown runs on a worker thread so the GUI thread is never
+    # blocked for the full multi-phase teardown (which would show the window
+    # as "Not Responding" during exit).  main() joins it after the event loop.
+    shutdown_thread: threading.Thread | None = None
+
+    def _run_bounded_shutdown():
+        try:
+            shutdown_manager.shutdown()
+        except Exception as exc:
+            logger.error("Shutdown worker failed: %s", exc, exc_info=True)
+
+    def _on_about_to_quit():
+        """UI is closing — stop the owner, then run bounded shutdown."""
+        nonlocal shutdown_thread
+        logger.info("UI closing — shutting down")
+        try:
+            task_manager.cancel_active("app shutdown")
+        except Exception as exc:
+            logger.error("Shutdown task cancel failed: %s", exc)
+        brain.cancel_current()
+        _signal_backend_shutdown()
+        if shutdown_thread is None or not shutdown_thread.is_alive():
+            shutdown_thread = threading.Thread(
+                target=_run_bounded_shutdown,
+                name="shutdown-worker",
+                daemon=True,
+            )
+            shutdown_thread.start()
+
+    ui_app.app.aboutToQuit.connect(_on_about_to_quit)
+
     logger.info("JARVIS desktop UI starting")
     exit_code = ui_app.run()
     logger.info("UI exited with code %d", exit_code)
+    shutdown_event.set()
+    if shutdown_thread is not None and shutdown_thread.is_alive():
+        shutdown_thread.join(timeout=12.0)
+    watchdog_manager.stop_all()
     sys.exit(exit_code)
 
 

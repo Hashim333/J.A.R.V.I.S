@@ -14,8 +14,10 @@ no cloud calls, no data leaves the device.
 from __future__ import annotations
 
 import logging
+import time
 
 from voice.local_wake_word import LocalWakeWordDetector
+from voice.porcupine_wake import PorcupineWakeWord
 from voice.vad import VAD
 
 logger = logging.getLogger(__name__)
@@ -25,7 +27,11 @@ class WakeWordDetector:
     """
     Detects the wake phrase in a continuous audio stream.
 
-    Architecture: MicrophoneStream -> WakeWordDetector -> VAD -> Vosk
+    When a Picovoice access key is configured, Porcupine spots the keyword
+    frame-by-frame (no VAD segmentation needed).  Otherwise the classic
+    architecture is used:
+
+        MicrophoneStream -> WakeWordDetector -> VAD -> Vosk (local)
     """
 
     # Pre-roll: 640ms of 16-bit 16kHz PCM audio.
@@ -72,7 +78,9 @@ class WakeWordDetector:
             self._MAX_CAPTURE_BYTES / self._bytes_per_ms,
         )
 
-        # Local Vosk detector — entirely offline
+        # Porcupine first (needs a Picovoice access key); the local Vosk
+        # detector is the offline fallback.
+        self._porcupine = PorcupineWakeWord()
         self._local_detector = LocalWakeWordDetector()
 
         self._vad = VAD(
@@ -86,6 +94,7 @@ class WakeWordDetector:
         self._is_capturing = False
         self._audio_buffer = bytearray()
         self._rolling_buffer = bytearray()
+        self._porcupine.reset()
         self._vad.reset()
         logger.info("WakeWordDetector reset")
 
@@ -93,6 +102,17 @@ class WakeWordDetector:
         """Process an audio chunk: update rolling buffer, capture if speaking, feed VAD."""
         if self._done:
             return
+
+        logger.debug(
+            "process_audio ENTRY: chunk_bytes=%d, rolling=%d (%.0f ms), "
+            "capturing=%s, capture_buf=%d (%.0f ms)",
+            len(audio_chunk),
+            len(self._rolling_buffer),
+            len(self._rolling_buffer) / self._bytes_per_ms,
+            self._is_capturing,
+            len(self._audio_buffer),
+            len(self._audio_buffer) / self._bytes_per_ms,
+        )
 
         self._rolling_buffer.extend(audio_chunk)
         if len(self._rolling_buffer) > self._ROLLING_BUFFER_BYTES:
@@ -104,7 +124,31 @@ class WakeWordDetector:
                 logger.debug("Max capture buffer reached, force-flushing")
                 self._flush_and_keep_capturing()
 
+        if self._porcupine.available:
+            # Frame-level keyword spotting: no VAD segmentation required.
+            if self._porcupine.process_audio(audio_chunk):
+                self._done = True
+                logger.info("Wake word detected via Porcupine")
+                self._fire_wake(
+                    bytes(self._audio_buffer) or bytes(self._rolling_buffer)
+                )
+            return
+
         self._vad.process_audio(audio_chunk)
+
+    def _fire_wake(self, pcm_bytes: bytes) -> None:
+        """Deliver a captured PCM segment as wake-word audio."""
+        if not pcm_bytes:
+            return
+        try:
+            import speech_recognition as sr
+
+            audio_data = sr.AudioData(
+                pcm_bytes, self._sample_rate, self._sample_width,
+            )
+            self._on_wake_word_detected(audio_data)
+        except Exception as exc:
+            logger.error("_fire_wake failed: %s", exc, exc_info=True)
 
     def _flush_and_keep_capturing(self) -> None:
         """Force-check the current buffer without waiting for VAD speech_end."""
@@ -127,14 +171,7 @@ class WakeWordDetector:
             logger.info("Wake word detected via force-flush (%d bytes, %.0f ms)",
                        len(snapshot),
                        len(snapshot) / self._bytes_per_ms)
-            import speech_recognition as sr
-            audio_data = sr.AudioData(
-                snapshot, self._sample_rate, self._sample_width,
-            )
-            try:
-                self._on_wake_word_detected(audio_data)
-            except Exception as exc:
-                logger.error("_on_wake_word_detected callback failed: %s", exc, exc_info=True)
+            self._fire_wake(snapshot)
         else:
             logger.debug("Force-flush: wake word not found (%d bytes), clearing buffer", len(snapshot))
             self._audio_buffer = bytearray()
@@ -151,7 +188,7 @@ class WakeWordDetector:
                 len(self._rolling_buffer),
                 len(self._rolling_buffer) / self._bytes_per_ms,
             )
-            logger.info("Speech started")
+            logger.debug("Speech started")
         except Exception as exc:
             logger.error("_on_speech_started failed: %s", exc, exc_info=True)
 
@@ -174,6 +211,7 @@ class WakeWordDetector:
         _log_segment(buf_bytes, self._bytes_per_ms, "VAD speech end")
 
         # Transcribe locally via Vosk — no cloud call.
+        start_ns = time.perf_counter_ns()
         try:
             wake_found = self._local_detector.contains_wake_word(
                 buf_bytes, self._sample_rate,
@@ -182,6 +220,11 @@ class WakeWordDetector:
             logger.error("contains_wake_word failed in speech end: %s", exc, exc_info=True)
             self._audio_buffer = bytearray()
             return
+        elapsed_ms = (time.perf_counter_ns() - start_ns) / 1e6
+        logger.debug(
+            "VAD speech end: contains_wake_word=%s (%.1f ms, %d bytes)",
+            wake_found, elapsed_ms, len(buf_bytes),
+        )
 
         if wake_found:
             self._done = True
@@ -191,22 +234,12 @@ class WakeWordDetector:
                 len(buf_bytes) / self._bytes_per_ms,
             )
 
-            import speech_recognition as sr
-
-            audio_data = sr.AudioData(
-                bytes(self._audio_buffer),
-                self._sample_rate,
-                self._sample_width,
-            )
-            try:
-                self._on_wake_word_detected(audio_data)
-            except Exception as exc:
-                logger.error("_on_wake_word_detected callback failed: %s", exc, exc_info=True)
+            self._fire_wake(buf_bytes)
         else:
             logger.debug("VAD speech end: wake word not found (%d bytes)", len(self._audio_buffer))
 
         self._audio_buffer = bytearray()
-        logger.info("Speech ended")
+        logger.debug("Speech ended")
 
 
 def _log_segment(audio_bytes: bytes, bytes_per_ms: float, tag: str) -> None:
@@ -218,10 +251,8 @@ def _log_segment(audio_bytes: bytes, bytes_per_ms: float, tag: str) -> None:
     # Offset to start of last 500ms in the buffer
     last_500_offset = max(0, len(audio_bytes) - int(500 * bytes_per_ms))
 
-    logger.info(
-        "[%s] total_bytes=%d, total_duration=%.0f ms, "
-        "first_500ms_preserved=%s (offset=0), "
-        "last_500ms_preserved=%s (offset=%d bytes = %.0f ms from end)",
+    logger.debug(
+        "[%s] total_bytes=%d, total_duration=%.0f ms",
         tag,
         len(audio_bytes),
         total_ms,

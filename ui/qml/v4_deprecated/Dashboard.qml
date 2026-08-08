@@ -25,6 +25,9 @@ Item {
     property real gpuUsage: 0
     property string currentTask: ""
     property string sidebarSection: "conversation"
+    readonly property real layoutScale: Math.max(0.74, Math.min(width / 1920, height / 1080))
+    readonly property real sideWidth: width < 1500 ? 218 : 266
+    readonly property real rightWidth: width < 1500 ? 430 : 590
 
     anchors.fill: parent
 
@@ -43,9 +46,9 @@ Item {
             var ctx = getContext("2d")
             if (!ctx) return
             var w = width, h = height
-            var grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w*0.8)
-            grad.addColorStop(0, "#0b0805")
-            grad.addColorStop(0.5, "#030506")
+            var grad = ctx.createRadialGradient(w*0.45, h*0.38, 0, w*0.45, h*0.38, w*0.75)
+            grad.addColorStop(0, "#120804")
+            grad.addColorStop(0.45, "#030608")
             grad.addColorStop(1, "#010101")
             ctx.fillStyle = grad
             ctx.fillRect(0, 0, w, h)
@@ -62,13 +65,13 @@ Item {
             if (!ctx) return
             var w = width, h = height
             var isListening = root.coreMode === "listening"
-            var grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w*0.6)
+            var grad = ctx.createRadialGradient(w*0.45, h*0.38, 0, w*0.45, h*0.38, w*0.55)
             if (isListening) {
                 grad.addColorStop(0, Qt.rgba(0, 0.1, 0.2, 0.3 * root.glowIntensity))
                 grad.addColorStop(0.5, Qt.rgba(0, 0.05, 0.1, 0.1 * root.glowIntensity))
             } else {
-                grad.addColorStop(0, Qt.rgba(0.29, 0.13, 0, 0.3 * root.glowIntensity))
-                grad.addColorStop(0.4, Qt.rgba(0.09, 0.04, 0, 0.1 * root.glowIntensity))
+                grad.addColorStop(0, Qt.rgba(0.9, 0.32, 0, 0.28 * root.glowIntensity))
+                grad.addColorStop(0.4, Qt.rgba(0.28, 0.08, 0, 0.12 * root.glowIntensity))
             }
             grad.addColorStop(1, "transparent")
             ctx.fillStyle = grad
@@ -117,10 +120,14 @@ Item {
             anchors.left: parent.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
+            width: root.sideWidth
             activeSection: root.sidebarSection
             internetOk: root.internetOk
             micOk: root.micOk
             speakerOk: root.speakerOk
+            cpuUsage: root.cpuUsage
+            ramUsage: root.ramUsage
+            gpuUsage: root.gpuUsage
             z: 3
             onSectionClicked: function(section) {
                 root.sidebarSection = section
@@ -132,17 +139,21 @@ Item {
 
         // ── Center Area ──
         Item {
+            id: centerArea
             anchors.left: sidebar.right
             anchors.right: rightPanel.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             clip: true
+            readonly property real coreSize: Math.min(width * 0.82, height * 0.72, root.width < 1500 ? 500 : 760)
 
             // ── AI Core ──
             AiCore {
                 id: aiCore
-                anchors.centerIn: parent
-                anchors.verticalCenterOffset: -20
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                anchors.topMargin: Math.max(12, parent.height * 0.025)
+                baseSize: centerArea.coreSize
                 coreMode: root.coreMode
                 glowIntensity: root.glowIntensity
                 coreColor: root.coreColor
@@ -153,50 +164,72 @@ Item {
 
             // ── Mode Label ──
             Text {
+                id: modeLabel
                 anchors.top: aiCore.bottom
-                anchors.topMargin: 20
+                anchors.topMargin: -Math.max(16, centerArea.coreSize * 0.09)
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: root.coreMode.toUpperCase()
                 font.family: "Segoe UI"
-                font.pixelSize: 10
+                font.pixelSize: root.width < 1500 ? 16 : 24
                 font.bold: true
-                font.letterSpacing: 4
+                font.letterSpacing: 1
                 color: root.coreColor
-                opacity: 0.8
+                opacity: 0.85
                 Behavior on color { ColorAnimation { duration: 400; easing.type: Easing.OutCubic } }
                 Behavior on opacity { NumberAnimation { duration: 400 } }
+            }
+
+            // ── Subtitle text ──
+            Text {
+                id: subtitleLine
+                anchors.top: modeLabel.bottom
+                anchors.topMargin: 10
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: root.subtitleText || "Yes, sir. I'm listening.\nHow can I help you?"
+                font.family: "Segoe UI"
+                font.pixelSize: root.width < 1500 ? 14 : 18
+                lineHeight: 1.25
+                color: "#f1d7bd"
+                opacity: 0.92
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                width: Math.min(520, parent.width * 0.74)
+                Behavior on opacity { NumberAnimation { duration: 300 } }
             }
 
             // ── Voice Waveform ──
             VoicePanel {
                 id: voicePanel
-                anchors.top: aiCore.bottom
-                anchors.topMargin: 50
+                anchors.top: subtitleLine.bottom
+                anchors.topMargin: 18
                 anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.min(560, parent.width * 0.70)
                 coreMode: root.coreMode
                 micEnergy: root.micEnergy
                 assistantEnergy: root.assistantEnergy
                 z: 2
             }
 
-            // ── Subtitle / Conversation Panel ──
+            // ── Conversation History Panel (fixed-height, bottom-anchored) ──
             Conversation {
                 id: conversation
-                anchors.top: voicePanel.bottom
-                anchors.topMargin: 15
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 16
                 anchors.horizontalCenter: parent.horizontalCenter
-                subtitleText: root.subtitleText
-                coreMode: root.coreMode
+                width: Math.min(760, parent.width * 0.78)
+                height: Math.max(124, Math.min(190, parent.height * 0.19))
                 z: 2
             }
+
         }
 
         // ── Right Panel ──
-        RightPanel {
+            RightPanel {
             id: rightPanel
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
+            width: root.rightWidth
             coreMode: root.coreMode
             provider: root.provider
             model: root.model
@@ -212,6 +245,7 @@ Item {
     Footer {
         id: footer
         anchors.bottom: parent.bottom
+        height: root.width < 1500 ? 52 : 64
         micEnergy: root.micEnergy
     }
 
@@ -236,6 +270,9 @@ Item {
         function onBatteryChanged(pct) { /* not displayed yet */ }
         function onWindowModeChanged(mode) { /* not displayed yet */ }
         function onClockChanged(time) { /* header has its own clock */ }
+        function onConversationHistoryChanged() {
+            conversation.refresh()
+        }
     }
 
     // ── Repaint glow canvas when mode changes ──
@@ -246,6 +283,7 @@ Item {
     Component.onCompleted: {
         try {
             root.coreMode = bridge.coreState || "idle"
+            conversation.refresh()
         } catch(e) {}
     }
 }

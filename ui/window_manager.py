@@ -47,6 +47,8 @@ class WindowManager(QObject):
         # Poll timer created but NOT started here — call start() after QML loads
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_foreground)
+        self._last_foreground_hwnd = None
+        self._foreground_debounce_count = 0
 
     # ── Mode management ───────────────────────────────────────────────
 
@@ -75,8 +77,14 @@ class WindowManager(QObject):
     # ── Startup (call after QML is loaded) ────────────────────────────
 
     def start(self) -> None:
-        """Begin foreground polling after a 3 s startup delay."""
-        QTimer.singleShot(3000, lambda: self._poll_timer.start(2000))
+        """Begin foreground polling after a 5 s startup delay."""
+        QTimer.singleShot(5000, lambda: self._poll_timer.start(3000))
+
+    def stop_timers(self) -> None:
+        """Stop the foreground poll timer during shutdown."""
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+            logger.debug("WindowManager: poll timer stopped")
 
     # ── Window references (set by app.py after QML loads) ─────────────
 
@@ -110,7 +118,7 @@ class WindowManager(QObject):
     # ── Auto-behavior ─────────────────────────────────────────────────
 
     def _poll_foreground(self) -> None:
-        """Check foreground app and adjust mode if needed."""
+        """Check foreground app and adjust mode if needed (debounced)."""
         try:
             import ctypes
             user32 = ctypes.windll.user32
@@ -120,6 +128,18 @@ class WindowManager(QObject):
 
             # Skip if it is our own fullscreen window
             if self._own_window_hwnd is not None and hwnd == self._own_window_hwnd:
+                self._last_foreground_hwnd = hwnd
+                self._foreground_debounce_count = 0
+                return
+
+            # Debounce: require 3 consecutive polls with the same hwnd
+            if hwnd == self._last_foreground_hwnd:
+                self._foreground_debounce_count += 1
+            else:
+                self._last_foreground_hwnd = hwnd
+                self._foreground_debounce_count = 0
+                return
+            if self._foreground_debounce_count < 3:
                 return
 
             length = user32.GetWindowTextLengthW(hwnd) + 1
@@ -133,11 +153,11 @@ class WindowManager(QObject):
 
             if self._current_mode == "fullscreen":
                 if is_fullscreen_app:
-                    logger.info("WManager: fullscreen app detected → orb")
+                    logger.debug("WManager: fullscreen app detected → orb")
                     self.set_mode("floating_orb")
             elif self._current_mode == "floating_orb":
                 if is_desktop:
-                    logger.info("WManager: desktop active → fullscreen")
+                    logger.debug("WManager: desktop active → fullscreen")
                     self.set_mode("fullscreen")
         except Exception:
             pass

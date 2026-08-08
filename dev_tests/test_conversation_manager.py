@@ -1,4 +1,4 @@
-"""
+﻿"""
 dev_tests/test_conversation_manager.py
 
 Unit tests for services/conversation_manager.py.
@@ -24,7 +24,6 @@ import unittest
 from unittest.mock import MagicMock
 
 from services.conversation_manager import ConversationManager, ConversationState
-from services.listener_service import ListenerService
 from services.wake_word_service import WakeWordService
 
 
@@ -39,12 +38,6 @@ def _fake_wake_word_service() -> MagicMock:
     return svc
 
 
-def _fake_listener_service() -> MagicMock:
-    svc = MagicMock(spec=ListenerService)
-    svc.listen_for_command = MagicMock()
-    return svc
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -55,7 +48,6 @@ class TestInitialState(unittest.TestCase):
     def setUp(self) -> None:
         self.manager = ConversationManager(
             wake_word_service=_fake_wake_word_service(),
-            listener_service=_fake_listener_service(),
         )
 
     def test_initial_state_is_standby(self) -> None:
@@ -80,7 +72,6 @@ class TestTransitions(unittest.TestCase):
         self.wake = _fake_wake_word_service()
         self.manager = ConversationManager(
             wake_word_service=self.wake,
-            listener_service=_fake_listener_service(),
         )
 
     def test_transition_to_active_changes_state(self) -> None:
@@ -135,7 +126,6 @@ class TestTimeout(unittest.TestCase):
     def setUp(self) -> None:
         self.manager = ConversationManager(
             wake_word_service=_fake_wake_word_service(),
-            listener_service=_fake_listener_service(),
             activity_timeout=0.1,
         )
         self.manager.transition_to_active()
@@ -170,7 +160,6 @@ class TestTimeout(unittest.TestCase):
     def test_custom_timeout(self) -> None:
         mgr = ConversationManager(
             wake_word_service=_fake_wake_word_service(),
-            listener_service=_fake_listener_service(),
             activity_timeout=5.0,
         )
         mgr.transition_to_active()
@@ -223,18 +212,17 @@ class TestLifecycle(unittest.TestCase):
         self.wake = _fake_wake_word_service()
         self.manager = ConversationManager(
             wake_word_service=self.wake,
-            listener_service=_fake_listener_service(),
             activity_timeout=30.0,
         )
 
     def test_text_command_activates_conversation(self) -> None:
-        """Simulate: user types 'open chrome' → system enters conversation mode."""
+        """Simulate: user types 'open chrome' â†’ system enters conversation mode."""
         self.assertEqual(self.manager.state, ConversationState.STANDBY)
         self.manager.transition_to_active()
         self.assertEqual(self.manager.state, ConversationState.ACTIVE_CONVERSATION)
 
     def test_multiple_commands_in_conversation(self) -> None:
-        """Simulate: open chrome → open calculator → open notepad."""
+        """Simulate: open chrome â†’ open calculator â†’ open notepad."""
         self.manager.transition_to_active()
         self.manager.reset_activity()
         self.manager.reset_activity()
@@ -252,7 +240,6 @@ class TestLifecycle(unittest.TestCase):
         """Simulate: 30s of inactivity returns to STANDBY."""
         mgr = ConversationManager(
             wake_word_service=_fake_wake_word_service(),
-            listener_service=_fake_listener_service(),
             activity_timeout=0.05,
         )
         mgr.transition_to_active()
@@ -277,3 +264,4 @@ class TestLifecycle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

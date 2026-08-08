@@ -14,9 +14,14 @@ Item {
     property real glowIntensity: 0.45
     property color coreColor: "#ff8c1a"
 
-    readonly property int particleCount: 800
+    readonly property int particleCount: 260
     readonly property real centerX: width / 2
     readonly property real centerY: height / 2
+
+    // Idle/offline states animate at a reduced rate so the 800-particle
+    // redraw does not pin a CPU core at 60 FPS for the entire session.
+    property int animInterval: (coreMode === "idle" || coreMode === "offline")
+        ? 120 : 50
 
     Canvas {
         id: canvas
@@ -58,8 +63,8 @@ Item {
                 if (alpha < 0.01 || size < 0.1) continue
 
                 // Layer depth opacity
-                if (p.layer === 0) alpha *= 0.3
-                else if (p.layer === 1) alpha *= 0.65
+                if (p.layer === 0) alpha *= 0.6
+                else if (p.layer === 1) alpha *= 0.75
 
                 ctx.globalAlpha = alpha
                 ctx.beginPath()
@@ -138,7 +143,7 @@ Item {
                         // Color: warm orange
                         p.r = 1.0; p.g = 0.55; p.b = 0.1
                         // Alpha: slow pulse
-                        p.alpha = 0.1 + 0.15 * (0.5 + 0.5 * Math.sin(t * 0.4 + p.phase))
+                        p.alpha = 0.15 + 0.25 * (0.5 + 0.5 * Math.sin(t * 0.4 + p.phase))
                         break
 
                     case "listening":
@@ -226,7 +231,7 @@ Item {
 
     Timer {
         id: animTimer
-        interval: 16
+        interval: root.animInterval
         running: true
         repeat: true
         property real lastTimestamp: 0

@@ -109,6 +109,13 @@ class ContextManager:
                 clarification_question=resolved.get("original_question", ""),
             )
 
+        if action == "cancel":
+            return Response(
+                success=True,
+                message="Cancelled.",
+                data={"context_resolved": True, "action": "cancel", "intent": follow_up_intent},
+            )
+
         # Handle new action types
         if action == "replace_search":
             return self._build_resolved_response("use_current_tab", {
@@ -195,7 +202,15 @@ class ContextManager:
             msg = f"{display_name} is already running and focused."
             return Response(success=True, message=msg)
 
-        if has_focusable_window:
+        is_browser = any(
+            b in app_name.casefold() for b in ("chrome", "edge", "brave", "opera", "vivaldi", "firefox")
+        )
+        if is_browser:
+            question = (
+                f"{display_name} is already running. Would you like me to "
+                "use the existing window, open a new window, or use a different profile?"
+            )
+        elif has_focusable_window:
             question = f"{display_name} is already running. Would you like me to switch to it or open another window?"
         else:
             question = f"{display_name} is already running in the background. Would you like me to switch to it or open another window?"

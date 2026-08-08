@@ -1,4 +1,4 @@
 Loading: C:\Users\muham\OneDrive\Desktop\JARVIS\ui\qml\v4\MainWindow.qml
-Root objects: 1
-Root: <PySide6.QtGui.QWindow(0x1f51955f3c0, name="fullscreenWindow") at 0x000001F5184391C0>
+QML WARN: [file:///C:/Users/muham/OneDrive/Desktop/JARVIS/ui/qml/v4/MainWindow.qml: No such file or directory]
+Root objects: 0
 Done

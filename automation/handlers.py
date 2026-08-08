@@ -20,7 +20,7 @@ import automation.interactive_launcher as interactive
 import automation.security_tools as security_tools
 import automation.system_ops as system_ops
 import automation.windows as windows
-from automation.application_registry import ApplicationRegistry, _GENERIC_ALIASES
+from automation.application_registry import _GENERIC_ALIASES, get_application_registry
 from memory.file_memory import FileMemory
 from automation.keyboard import KeyboardController
 from automation.mouse import MouseController
@@ -73,7 +73,7 @@ class AppsHandler:
     }
 
     def __init__(self) -> None:
-        self._app_registry = ApplicationRegistry()
+        self._app_registry = get_application_registry()
 
     def run(self, step: Step, voice_input: Callable[[], str | None] | None = None) -> Any:
         target = _require_target(step) if step.action != "close_all_apps" else ""
@@ -538,6 +538,7 @@ class BrowserHandler:
         "browser_search",
         "open_website",
         "search",
+        "click_first_video",
         "new_tab",
         "close_current_tab",
         "close_all_tabs",
@@ -548,6 +549,19 @@ class BrowserHandler:
         "refresh_page",
         "hard_refresh",
         "reload",
+        # Media / playback control (CDP + DOM)
+        "youtube_state",
+        "youtube_pause",
+        "youtube_resume",
+        "youtube_play_next",
+        "youtube_play_previous",
+        "youtube_skip_ad",
+        "youtube_like",
+        "youtube_subscribe",
+        "youtube_continue_watching",
+        "scroll_page",
+        "get_page_state",
+        "get_selected_text",
     }
 
     def run(self, step: Step, **kwargs: Any) -> Any:
@@ -564,6 +578,62 @@ class BrowserHandler:
             provider = step.parameters.get("provider", "google")
             query = _require_parameter(step, "query")
             return browser.search(provider, query)
+
+        if step.action == "click_first_video":
+            query = step.parameters.get("query") or step.target
+            from automation import youtube
+            return youtube.play_first_result(query or "")
+
+        if step.action == "youtube_state":
+            from automation import youtube
+            return youtube.get_state()
+
+        if step.action == "youtube_pause":
+            from automation import youtube
+            return youtube.pause()
+
+        if step.action == "youtube_resume":
+            from automation import youtube
+            return youtube.resume()
+
+        if step.action == "youtube_play_next":
+            from automation import youtube
+            return youtube.play_next()
+
+        if step.action == "youtube_play_previous":
+            from automation import youtube
+            return youtube.play_previous()
+
+        if step.action == "youtube_skip_ad":
+            from automation import youtube
+            return youtube.skip_ad()
+
+        if step.action == "youtube_like":
+            from automation import youtube
+            return youtube.like_video()
+
+        if step.action == "youtube_subscribe":
+            from automation import youtube
+            return youtube.subscribe()
+
+        if step.action == "youtube_continue_watching":
+            from automation import youtube
+            return youtube.continue_watching()
+
+        if step.action == "scroll_page":
+            direction = step.parameters.get("direction", "down")
+            return browser.scroll(direction)
+
+        if step.action == "get_page_state":
+            return browser.current_state()
+
+        if step.action == "get_selected_text":
+            selected = browser.selected_text()
+            return {
+                "success": True,
+                "message": "Here is the selected text." if selected else "Nothing is selected.",
+                "details": {"selected_text": selected},
+            }
 
         if step.action == "new_tab":
             return browser.new_tab()
@@ -703,13 +773,17 @@ class KeyboardHandler:
 
         if step.action == "hotkey":
             keys = _require_parameter(step, "keys")
+            normalized_keys = None
             if isinstance(keys, str):
-                return self._controller.hotkey(keys)
-            if isinstance(keys, (list, tuple)):
-                return self._controller.hotkey(*keys)
-            raise StepParameterError(
-                "Step action 'hotkey' requires 'keys' to be a string, list, or tuple."
-            )
+                normalized_keys = keys
+            elif isinstance(keys, (list, tuple)):
+                normalized_keys = ",".join(str(k) for k in keys)
+            else:
+                raise StepParameterError(
+                    "Step action 'hotkey' requires 'keys' to be a string, list, or tuple."
+                )
+
+            return self._run_hotkey(normalized_keys)
 
         if step.action == "hold":
             return self._controller.hold(_require_parameter(step, "key"))
@@ -734,6 +808,55 @@ class KeyboardHandler:
             action=step.action,
             supported=self._SUPPORTED_ACTIONS,
         )
+
+    def _run_hotkey(self, keys: str) -> dict[str, Any]:
+        active_window = self._active_window_title()
+        is_chrome_window = bool(active_window and "chrome" in active_window.casefold())
+        logger.info(
+            "KeyboardEvent keys=%s active_window=%r chrome_window=%s",
+            keys,
+            active_window,
+            is_chrome_window,
+        )
+
+        first_attempt = self._controller.hotkey(keys)
+        if first_attempt:
+            return {"success": True, "message": f"Pressed {keys}.", "details": {"keys": keys, "attempt": 1, "active_window": active_window}}
+
+        logger.warning("KeyboardHandler: hotkey failed on first attempt for %s", keys)
+        retry_result = self._controller.hotkey(keys)
+        if retry_result:
+            return {"success": True, "message": f"Pressed {keys} after retry.", "details": {"keys": keys, "attempt": 2, "active_window": active_window}}
+
+        details = {
+            "keys": keys,
+            "attempt": 2,
+            "ctrl_n": keys.casefold() in {"ctrl+n", "ctrl+shift+n"},
+            "active_window": active_window,
+            "chrome_window": is_chrome_window,
+        }
+        message = self._failure_message(keys, active_window, is_chrome_window)
+        logger.error("KeyboardHandler: hotkey failed after retry for %s", keys)
+        return {"success": False, "message": message, "details": details}
+
+    @staticmethod
+    def _active_window_title() -> str:
+        try:
+            return windows.get_active_window() or ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _failure_message(keys: str, active_window: str, is_chrome_window: bool) -> str:
+        normalized = (keys or "").strip().casefold()
+        if normalized in {"ctrl+n", "ctrl+shift+n"}:
+            if active_window and not is_chrome_window:
+                return (
+                    f"I focused the existing window, but the Ctrl+N shortcut was not accepted by {active_window!r}, "
+                    "so I could not open a new Chrome window."
+                )
+            return "I focused the existing window, but the Ctrl+N shortcut was not accepted, so I could not open a new window."
+        return f"The keyboard shortcut {keys} failed to send."
 
 
 class SpecialFolderHandler:

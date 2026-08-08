@@ -1,8 +1,5 @@
 import QtQuick 2.15
 
-/**
- * Sidebar — 200px dark glass sidebar with logo, navigation, and status dots.
- */
 Rectangle {
     id: root
 
@@ -10,154 +7,142 @@ Rectangle {
     property bool internetOk: false
     property bool micOk: false
     property bool speakerOk: false
+    property real cpuUsage: 0
+    property real ramUsage: 0
+    property real gpuUsage: 0
 
     signal sectionClicked(string section)
 
-    width: 200
+    width: 266
     height: parent.height
-    color: Qt.rgba(8/255, 6/255, 5/255, 0.85)
+    color: Qt.rgba(3/255, 4/255, 5/255, 0.56)
+    border.width: 1
+    border.color: Qt.rgba(255/255, 126/255, 0, 0.15)
     clip: true
 
-    // Right border divider
     Rectangle {
-        anchors.right: parent.right
-        width: 1
-        height: parent.height
-        color: Qt.rgba(255/255, 140/255, 26/255, 0.08)
+        anchors.fill: parent
+        color: "transparent"
+        border.width: 1
+        border.color: Qt.rgba(255/255, 126/255, 0, 0.045)
+        radius: 0
     }
 
-    // ── Logo Area ──
     Item {
         id: logoArea
         anchors.top: parent.top
-        anchors.topMargin: 20
+        anchors.topMargin: 18
         anchors.left: parent.left
-        anchors.leftMargin: 20
-        width: parent.width
-        height: 60
-
-        Rectangle {
-            id: logoIcon
-            width: 32
-            height: 32
-            radius: 8
-            color: Qt.rgba(255/255, 140/255, 26/255, 0.12)
-            border.width: 1
-            border.color: Qt.rgba(255/255, 140/255, 26/255, 0.15)
-
-            Text {
-                anchors.centerIn: parent
-                text: "J"
-                font.pixelSize: 16
-                font.bold: true
-                color: "#ff8c1a"
-            }
-        }
+        anchors.leftMargin: 26
+        anchors.right: parent.right
+        anchors.rightMargin: 20
+        height: 66
 
         Text {
-            anchors.left: logoIcon.right
-            anchors.leftMargin: 12
-            anchors.top: logoIcon.top
-            anchors.topMargin: -2
+            id: brand
             text: "JARVIS"
             font.family: "Segoe UI"
-            font.pixelSize: 16
+            font.pixelSize: 30
             font.bold: true
-            font.letterSpacing: 3
-            color: "#e8d5c4"
+            color: "#ff8200"
         }
 
         Text {
-            anchors.left: logoIcon.right
-            anchors.leftMargin: 12
-            anchors.top: logoIcon.top
-            anchors.topMargin: 20
+            anchors.top: brand.bottom
+            anchors.topMargin: -2
             text: "AI ASSISTANT"
             font.family: "Segoe UI"
-            font.pixelSize: 8
-            font.letterSpacing: 4
-            color: "#776655"
+            font.pixelSize: 12
+            color: "#d3b99f"
+            opacity: 0.85
         }
     }
 
-    // ── Divider ──
     Rectangle {
+        id: navCard
         anchors.top: logoArea.bottom
-        anchors.topMargin: 0
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: parent.width - 40
-        height: 1
-        color: Qt.rgba(255/255, 140/255, 26/255, 0.06)
-    }
-
-    // ── Navigation Items ──
-    Column {
-        id: navColumn
-        anchors.top: logoArea.bottom
-        anchors.topMargin: 14
+        anchors.topMargin: 22
         anchors.left: parent.left
-        anchors.leftMargin: 12
+        anchors.leftMargin: 20
         anchors.right: parent.right
-        anchors.rightMargin: 12
-        spacing: 2
+        anchors.rightMargin: 20
+        height: Math.min(342, parent.height * 0.37)
+        radius: 12
+        color: Qt.rgba(2/255, 6/255, 8/255, 0.42)
+        border.width: 1
+        border.color: Qt.rgba(255/255, 126/255, 0, 0.22)
 
-        Repeater {
-            model: [
-                { section: "conversation", icon: "◉", label: "Conversation" },
-                { section: "memory",       icon: "▦", label: "Memory" },
-                { section: "automation",   icon: "⚙", label: "Automation" },
-                { section: "files",        icon: "◈", label: "Files" },
-                { section: "settings",     icon: "⚡", label: "Settings" }
-            ]
+        Column {
+            anchors.fill: parent
+            anchors.margins: 13
+            spacing: 4
 
-            Item {
-                width: parent.width
-                height: 40
-
-                // Active indicator bar
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.leftMargin: -12
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 3
-                    height: parent.height * 0.6
-                    radius: 1.5
-                    color: "#ff8c1a"
-                    opacity: root.activeSection === modelData.section ? 1 : 0
-                    visible: opacity > 0
-                    Behavior on opacity { NumberAnimation { duration: 200 } }
-                }
+            Repeater {
+                model: [
+                    { section: "home", icon: "\u2302", label: "HOME", soon: false },
+                    { section: "conversation", icon: "\u25A1", label: "CONVERSATION", soon: false },
+                    { section: "memory", icon: "\u25C7", label: "MEMORY", soon: false },
+                    { section: "system", icon: "\u25AD", label: "SYSTEM", soon: false },
+                    { section: "automation", icon: "\u2699", label: "AUTOMATION", soon: false },
+                    { section: "agents", icon: "\u25CB", label: "AGENTS", soon: true },
+                    { section: "settings", icon: "\u26ED", label: "SETTINGS", soon: false }
+                ]
 
                 Rectangle {
-                    anchors.fill: parent
-                    radius: 8
-                    color: root.activeSection === modelData.section
-                           ? Qt.rgba(255/255, 140/255, 26/255, 0.08)
-                           : "transparent"
-                    Behavior on color { ColorAnimation { duration: 150 } }
+                    width: parent.width
+                    height: 42
+                    radius: 7
+                    readonly property bool isActive: root.activeSection === modelData.section || (root.activeSection === "conversation" && modelData.section === "home")
+                    color: isActive ? Qt.rgba(255/255, 126/255, 0, 0.14) : "transparent"
+                    border.width: isActive ? 1 : 0
+                    border.color: Qt.rgba(255/255, 126/255, 0, 0.18)
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 3
+                        height: parent.height - 10
+                        radius: 2
+                        color: "#ff8c00"
+                        opacity: parent.isActive ? 1 : 0
+                    }
 
                     Row {
                         anchors.left: parent.left
-                        anchors.leftMargin: 12
+                        anchors.leftMargin: 16
                         anchors.verticalCenter: parent.verticalCenter
-                        spacing: 10
+                        spacing: 13
 
                         Text {
                             text: modelData.icon
-                            font.pixelSize: 14
-                            color: root.activeSection === modelData.section ? "#ff8c1a" : "#665544"
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                            anchors.verticalCenter: parent.verticalCenter
+                            font.family: "Segoe UI"
+                            font.pixelSize: 20
+                            color: parent.parent.isActive ? "#ff970d" : "#c9b7a4"
+                            width: 22
+                            horizontalAlignment: Text.AlignHCenter
                         }
-
                         Text {
                             text: modelData.label
                             font.family: "Segoe UI"
-                            font.pixelSize: 12
-                            font.letterSpacing: 1
-                            color: root.activeSection === modelData.section ? "#e8d5c4" : "#776655"
-                            Behavior on color { ColorAnimation { duration: 150 } }
+                            font.pixelSize: 14
+                            color: parent.parent.isActive ? "#f4d7bd" : "#b5a493"
                             anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Rectangle {
+                            visible: modelData.soon
+                            width: 34
+                            height: 16
+                            radius: 8
+                            color: Qt.rgba(255/255, 126/255, 0, 0.12)
+                            border.width: 1
+                            border.color: Qt.rgba(255/255, 126/255, 0, 0.20)
+                            Text {
+                                anchors.centerIn: parent
+                                text: "SOON"
+                                font.family: "Segoe UI"
+                                font.pixelSize: 8
+                                color: "#eaa45e"
+                            }
                         }
                     }
 
@@ -165,16 +150,6 @@ Rectangle {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onEntered: {
-                            if (root.activeSection !== modelData.section) {
-                                parent.color = Qt.rgba(255/255, 140/255, 26/255, 0.08)
-                            }
-                        }
-                        onExited: {
-                            if (root.activeSection !== modelData.section) {
-                                parent.color = "transparent"
-                            }
-                        }
                         onClicked: root.sectionClicked(modelData.section)
                     }
                 }
@@ -182,65 +157,65 @@ Rectangle {
         }
     }
 
-    // ── Status Section ──
-    Item {
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 16
+    SystemCards {
+        id: systemCards
+        anchors.top: navCard.bottom
+        anchors.topMargin: 22
         anchors.left: parent.left
         anchors.leftMargin: 20
         anchors.right: parent.right
         anchors.rightMargin: 20
-        height: 30
+        height: Math.min(310, parent.height - navCard.y - navCard.height - miniOrb.height - 56)
+        cpuUsage: root.cpuUsage
+        ramUsage: root.ramUsage
+        gpuUsage: root.gpuUsage
+    }
+
+    Rectangle {
+        id: miniOrb
+        anchors.left: parent.left
+        anchors.leftMargin: 0
+        anchors.right: parent.right
+        anchors.rightMargin: 0
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 8
+        height: 104
+        radius: 28
+        color: Qt.rgba(3/255, 5/255, 6/255, 0.70)
+        border.width: 1
+        border.color: Qt.rgba(255/255, 126/255, 0, 0.28)
+
+        AiCore {
+            anchors.left: parent.left
+            anchors.leftMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            baseSize: 72
+            coreMode: "idle"
+            glowIntensity: 0.45
+            animated: false
+        }
 
         Column {
-            spacing: 6
-
-            Row {
-                spacing: 8
-                anchors.horizontalCenter: parent.horizontalCenter
-
-                // Network status
-                Rectangle {
-                    width: 5; height: 5; radius: 2.5
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: root.internetOk ? "#00ff88" : "#333333"
-                }
-                Text {
-                    text: "Net"
-                    font.family: "Consolas"
-                    font.pixelSize: 8
-                    color: "#776655"
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-
-                // Mic status
-                Rectangle {
-                    width: 5; height: 5; radius: 2.5
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: root.micOk ? "#33aaff" : "#333333"
-                }
-                Text {
-                    text: "Mic"
-                    font.family: "Consolas"
-                    font.pixelSize: 8
-                    color: "#776655"
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-
-                // Speaker status
-                Rectangle {
-                    width: 5; height: 5; radius: 2.5
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: root.speakerOk ? "#ff8c1a" : "#333333"
-                }
-                Text {
-                    text: "Spk"
-                    font.family: "Consolas"
-                    font.pixelSize: 8
-                    color: "#776655"
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+            anchors.left: parent.left
+            anchors.leftMargin: 102
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 3
+            Text { text: "JARVIS"; font.family: "Segoe UI"; font.pixelSize: 12; color: "#d8c5b5" }
+            Text { text: "Active"; font.family: "Segoe UI"; font.pixelSize: 11; color: "#00ff88" }
+            Rectangle {
+                width: 84; height: 1
+                color: Qt.rgba(255/255, 126/255, 0, 0.45)
             }
+        }
+
+        Text {
+            anchors.right: parent.right
+            anchors.rightMargin: 18
+            anchors.verticalCenter: parent.verticalCenter
+            text: ">"
+            font.family: "Segoe UI"
+            font.pixelSize: 20
+            color: "#d8a06b"
         }
     }
 }

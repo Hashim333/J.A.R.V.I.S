@@ -2,22 +2,53 @@
 ui/bridge.py
 
 Master Python-to-QML bridge for the JARVIS desktop shell.
+
+Bridge ONLY:
+  - receives already-computed values
+  - emits Qt signals (auto-queued by Qt for cross-thread safety)
+  - updates properties
+  - schedules repaints
+
+Bridge NEVER queries WMI, win32com, psutil, or performs blocking I/O.
+All system resource polling is delegated to ui.system_monitor.SystemMonitor.
+
+Thread safety
+-------------
+All public ``@Slot`` methods can be called from any thread — Qt's
+``AutoConnection`` queues their emission to the UI thread.  All
+``@Property`` getters/setters should only be accessed from the UI thread.
+Use ``@Slot`` methods (``set_cpu_usage``, etc.) from background threads.
 """
 
 from __future__ import annotations
 
 import datetime
 import logging
-import platform
 import time
 
 from PySide6.QtCore import QObject, Signal, Property, Slot, QTimer
 
 logger = logging.getLogger(__name__)
 
+_THROTTLE_DELTA = 0.5
+
+# How long the backend may go without a heartbeat before the UI reports
+# it as offline (Core Offline).
+_BACKEND_STALL_SECONDS = 8.0
+_BACKEND_CHECK_MS = 1000
+
 
 class Bridge(QObject):
-    """Single bridge object exposed as 'bridge' in QML."""
+    """Single bridge object exposed as 'bridge' in QML.
+
+    Write methods decorated with ``@Slot`` are safe to call from any
+    thread — Qt's cross-thread signal/slot mechanism queues execution
+    to the GUI thread.
+
+    Property **getters** and **setters** (``bridge.coreState = ...``)
+    run on the caller's thread and should only be used from the GUI
+    thread.  Background threads must use the ``@Slot`` setter methods.
+    """
 
     # ── Core state ────────────────────────────────────────────────────
     coreStateChanged = Signal(str)
@@ -27,8 +58,10 @@ class Bridge(QObject):
     windowModeChanged = Signal(str)
     _window_mode: str = "fullscreen"
 
-    # ── Subtitles ─────────────────────────────────────────────────────
+    # ── Subtitles / Conversation History ─────────────────────────────
     subtitleChanged = Signal(str)
+    conversationHistoryChanged = Signal()
+    _conversation_history: list = []
 
     # ── Wake word ─────────────────────────────────────────────────────
     wakeActiveChanged = Signal(bool)
@@ -47,6 +80,7 @@ class Bridge(QObject):
     cpuUsageChanged = Signal(float)
     ramUsageChanged = Signal(float)
     gpuUsageChanged = Signal(float)
+    diskUsageChanged = Signal(float)
     batteryChanged = Signal(float)
     clockChanged = Signal(str)
     providerChanged = Signal(str)
@@ -59,6 +93,7 @@ class Bridge(QObject):
     _cpu: float = 0.0
     _ram: float = 0.0
     _gpu: float = 0.0
+    _disk: float = 0.0
     _battery: float = -1.0
     _provider: str = ""
     _model: str = ""
@@ -78,6 +113,39 @@ class Bridge(QObject):
         self._clock_timer.start(1000)
         self._tick()
 
+        # Backend liveness monitor — flips the UI to "Core Offline" if the
+        # backend stops sending heartbeats, and back to "idle" on recovery.
+        self._backend_heartbeat: float = 0.0
+        self._backend_offline: bool = False
+        self._backend_monitor = QTimer(self)
+        self._backend_monitor.timeout.connect(self._monitor_backend)
+        self._backend_monitor.start(_BACKEND_CHECK_MS)
+
+    # ── Backend heartbeat ────────────────────────────────────────────
+
+    @Slot()
+    def set_backend_heartbeat(self) -> None:
+        """Record that the backend is alive. Safe from any thread."""
+        self._backend_heartbeat = time.monotonic()
+
+    def _monitor_backend(self) -> None:
+        """UI-thread check: mark the backend offline when heartbeats stop."""
+        if self._backend_heartbeat == 0.0:
+            return  # backend has not signalled yet
+        stale = (time.monotonic() - self._backend_heartbeat) > _BACKEND_STALL_SECONDS
+        if stale and not self._backend_offline:
+            self._backend_offline = True
+            self.coreState = "offline"
+            self.show_subtitle(
+                "Core Offline — backend not responding. Attempting to recover..."
+            )
+            logger.warning("Bridge: backend heartbeat stale — showing Core Offline")
+        elif not stale and self._backend_offline:
+            self._backend_offline = False
+            self.coreState = "idle"
+            self.show_subtitle("Backend recovered.")
+            logger.info("Bridge: backend heartbeat resumed — back online")
+
     # ── Core state ────────────────────────────────────────────────────
 
     @Property(str, notify=coreStateChanged)
@@ -93,7 +161,7 @@ class Bridge(QObject):
         if self._core_state != state:
             self._core_state = state
             self.coreStateChanged.emit(state)
-            logger.info("Bridge: core → %s", state)
+            logger.debug("Bridge: core → %s", state)
 
     @Slot(str)
     def set_core_state(self, state: str) -> None:
@@ -118,16 +186,38 @@ class Bridge(QObject):
         if self._window_mode != mode:
             self._window_mode = mode
             self.windowModeChanged.emit(mode)
+            logger.debug("Bridge: windowMode → %s", mode)
 
     @Slot(str)
     def set_window_mode(self, mode: str) -> None:
         self.windowMode = mode
 
-    # ── Subtitles ─────────────────────────────────────────────────────
+    # ── Subtitles / Conversation History ─────────────────────────────
+
+    @Property(list, notify=conversationHistoryChanged)
+    def conversationHistory(self) -> list:
+        return self._conversation_history
 
     @Slot(str)
     def show_subtitle(self, text: str) -> None:
         self.subtitleChanged.emit(text)
+        if text:
+            self.add_conversation_entry("JARVIS", text)
+
+    @Slot(str, str)
+    def add_conversation_entry(self, speaker: str, text: str) -> None:
+        if not text:
+            return
+        import datetime as _dt
+        entry = {
+            "speaker": speaker,
+            "text": text,
+            "timestamp": _dt.datetime.now().strftime("%H:%M:%S"),
+        }
+        self._conversation_history.append(entry)
+        if len(self._conversation_history) > 50:
+            self._conversation_history = self._conversation_history[-50:]
+        self.conversationHistoryChanged.emit()
 
     # ── Wake word ─────────────────────────────────────────────────────
 
@@ -183,11 +273,15 @@ class Bridge(QObject):
 
     @Slot(float)
     def set_cpu_usage(self, pct: float) -> None:
+        if abs(pct - self._cpu) <= _THROTTLE_DELTA and self._cpu != 0.0:
+            return
         self._cpu = pct
         self.cpuUsageChanged.emit(pct)
 
     @Slot(float)
     def set_ram_usage(self, pct: float) -> None:
+        if abs(pct - self._ram) <= _THROTTLE_DELTA and self._ram != 0.0:
+            return
         self._ram = pct
         self.ramUsageChanged.emit(pct)
 
@@ -197,11 +291,22 @@ class Bridge(QObject):
 
     @Slot(float)
     def set_gpu_usage(self, pct: float) -> None:
+        if abs(pct - self._gpu) <= _THROTTLE_DELTA and self._gpu != 0.0:
+            return
         self._gpu = pct
         self.gpuUsageChanged.emit(pct)
 
     @Slot(float)
+    def set_disk_usage(self, pct: float) -> None:
+        if abs(pct - self._disk) <= _THROTTLE_DELTA and self._disk != 0.0:
+            return
+        self._disk = pct
+        self.diskUsageChanged.emit(pct)
+
+    @Slot(float)
     def set_battery(self, pct: float) -> None:
+        if abs(pct - self._battery) <= _THROTTLE_DELTA and self._battery != -1.0:
+            return
         self._battery = pct
         self.batteryChanged.emit(pct)
 
@@ -255,9 +360,19 @@ class Bridge(QObject):
 
     # ── Clean shutdown ────────────────────────────────────────────────
 
+    def stop_timers(self) -> None:
+        """Stop all internal timers. Call during shutdown before quit."""
+        if self._clock_timer is not None:
+            self._clock_timer.stop()
+            logger.debug("Bridge: clock timer stopped")
+        if getattr(self, "_backend_monitor", None) is not None:
+            self._backend_monitor.stop()
+            logger.debug("Bridge: backend monitor timer stopped")
+
     @Slot()
     def quit_app(self) -> None:
         logger.info("Bridge: clean shutdown requested")
+        self.stop_timers()
         from PySide6.QtCore import QCoreApplication
         QCoreApplication.quit()
 

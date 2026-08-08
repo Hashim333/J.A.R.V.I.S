@@ -8,8 +8,10 @@ Item {
     property color coreColor: "#ff8c1a"
     property real micEnergy: 0.0
     property real assistantEnergy: 0.0
+    property bool animated: true
 
-    readonly property real baseSize: 600
+    property real baseSize: 620
+    readonly property real uiScale: baseSize / 260
     width: baseSize
     height: baseSize
 
@@ -31,7 +33,6 @@ Item {
         }
     }
 
-    // Ring speeds in degrees per second for each mode
     readonly property var ringSpeeds: ({
         "idle":      { r1: 140, r2: -240, r3: 90,  r4: -140, r5: 47  },
         "listening": { r1: 70,  r2: -120, r3: 45,  r4: -70,  r5: 24  },
@@ -46,43 +47,41 @@ Item {
         return speeds[ring] || 140
     }
 
-    // Monotonic running time (seconds) for continuous rotation
     property real runningTime: 0
     Timer {
-        interval: 16
-        running: true
+        interval: 33
+        running: root.animated
         repeat: true
-        onTriggered: root.runningTime += 0.016
+        onTriggered: root.runningTime += 0.033
     }
 
-    // Breathing oscillation (0→1 loop) for subtle scale/opacity only
     property real breathe: 0
     NumberAnimation on breathe {
         loops: Animation.Infinite
+        running: root.animated
         from: 0; to: 1
         duration: 3200
         easing.type: Easing.InOutSine
     }
 
-    // Glow oscillation (0.35→0.65 loop) for intensity variation
     property real glowOsc: 0
     NumberAnimation on glowOsc {
         loops: Animation.Infinite
+        running: root.animated
         from: 0.35; to: 0.65
         duration: 2400
         easing.type: Easing.InOutSine
     }
 
-    // Pulse progress for expanding rings
     property real pulseProgress: 0
     NumberAnimation on pulseProgress {
         loops: Animation.Infinite
+        running: root.animated
         from: 0; to: 1
         duration: 2800
     }
 
-    // Breathing scale — subtle enough that 0→1 wrap is invisible
-    readonly property real breatheScale: 1.0 + 0.045 * (0.5 + 0.5 * Math.sin(breathe * Math.PI * 2))
+    readonly property real breatheScale: 1.0 + 0.04 * (0.5 + 0.5 * Math.sin(breathe * Math.PI * 2))
     transform: Scale {
         origin.x: root.width / 2
         origin.y: root.height / 2
@@ -90,20 +89,38 @@ Item {
         yScale: breatheScale
     }
 
-    // Map coreMode to color
-    onCoreModeChanged: {
-        root.coreColor = root.modeColor()
-    }
-    Component.onCompleted: {
-        root.coreColor = root.modeColor()
+    onCoreModeChanged: root.coreColor = root.modeColor()
+    Component.onCompleted: root.coreColor = root.modeColor()
+
+    function requestCanvasRefresh() {
+        function visit(item) {
+            if (!item || !item.children) return
+            for (var i = 0; i < item.children.length; i++) {
+                if (item.children[i] instanceof Canvas) {
+                    item.children[i].requestPaint()
+                }
+                visit(item.children[i])
+            }
+        }
+        visit(root)
     }
 
-    // ── Layer 0: Outermost Ambient Corona (900px) ──
-    Canvas {
-        width: 900; height: 900
+    onCoreColorChanged: requestCanvasRefresh()
+    onGlowIntensityChanged: requestCanvasRefresh()
+
+    Item {
+        id: scaledCore
+        width: 260
+        height: 260
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
-        opacity: glowIntensity * 0.08
+        scale: root.uiScale
+        transformOrigin: Item.Center
+    Canvas {
+        width: 624; height: 624
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        opacity: glowIntensity * 0.15
         antialiasing: true
         onPaint: {
             var ctx = getContext("2d")
@@ -111,21 +128,19 @@ Item {
             var w = width, h = height, c = root.coreColor
             ctx.clearRect(0, 0, w, h)
             var grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w/2)
-            grad.addColorStop(0, Qt.rgba(c.r, c.g, c.b, 0.08))
-            grad.addColorStop(0.4, Qt.rgba(c.r, c.g, c.b, 0.03))
+            grad.addColorStop(0, Qt.rgba(c.r, c.g, c.b, 0.15))
+            grad.addColorStop(0.35, Qt.rgba(c.r, c.g, c.b, 0.04))
             grad.addColorStop(1, "transparent")
             ctx.fillStyle = grad
             ctx.fillRect(0, 0, w, h)
         }
-        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 1: Outer Glow Ring (600px) ──
     Canvas {
-        width: 600; height: 600
+        width: 416; height: 416
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
-        opacity: glowIntensity * 0.2
+        opacity: glowIntensity * 0.5
         antialiasing: true
         onPaint: {
             var ctx = getContext("2d")
@@ -133,22 +148,19 @@ Item {
             var w = width, h = height, c = root.coreColor
             ctx.clearRect(0, 0, w, h)
             var grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w/2)
-            grad.addColorStop(0, Qt.rgba(c.r, c.g, c.b, 0.2))
-            grad.addColorStop(0.3, Qt.rgba(c.r, c.g, c.b, 0.08))
-            grad.addColorStop(0.6, Qt.rgba(c.r, c.g, c.b, 0.02))
+            grad.addColorStop(0, Qt.rgba(c.r, c.g, c.b, 0.30))
+            grad.addColorStop(0.35, Qt.rgba(c.r, c.g, c.b, 0.06))
             grad.addColorStop(1, "transparent")
             ctx.fillStyle = grad
             ctx.fillRect(0, 0, w, h)
         }
-        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 2: Mid Glow Ring (450px) ──
     Canvas {
-        width: 450; height: 450
+        width: 286; height: 286
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
-        opacity: glowIntensity * 0.4
+        opacity: glowIntensity * 0.6
         antialiasing: true
         onPaint: {
             var ctx = getContext("2d")
@@ -156,115 +168,54 @@ Item {
             var w = width, h = height, c = root.coreColor
             ctx.clearRect(0, 0, w, h)
             var grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w/2)
-            grad.addColorStop(0, Qt.rgba(c.r, c.g, c.b, 0.4))
-            grad.addColorStop(0.3, Qt.rgba(c.r, c.g, c.b, 0.15))
-            grad.addColorStop(0.6, Qt.rgba(c.r, c.g, c.b, 0.04))
+            grad.addColorStop(0, Qt.rgba(c.r, c.g, c.b, 0.50))
+            grad.addColorStop(0.35, Qt.rgba(c.r, c.g, c.b, 0.08))
             grad.addColorStop(1, "transparent")
             ctx.fillStyle = grad
             ctx.fillRect(0, 0, w, h)
         }
-        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 3: Concentric Rotating Ring 1 (outermost, 380px) ──
     Rectangle {
         id: ring1
-        width: 380; height: 380
-        radius: 190
+        width: 221; height: 221
+        radius: 110.5
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
-        border.width: 1.5
-        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.15 * glowIntensity)
+        border.width: 1.2
+        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.20 * glowIntensity)
         color: "transparent"
         transform: Rotation {
             origin.x: ring1.width / 2
             origin.y: ring1.height / 2
             angle: root.runningTime * root.ringDegPerSec("r1") % 360
         }
-        Behavior on border.color { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 4: Concentric Ring 2 (320px) ──
     Rectangle {
         id: ring2
-        width: 320; height: 320
-        radius: 160
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        border.width: 1.0
-        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.2 * glowIntensity)
-        color: "transparent"
-        transform: Rotation {
-            origin.x: ring2.width / 2
-            origin.y: ring2.height / 2
-            angle: root.runningTime * root.ringDegPerSec("r2") % 360
-        }
-        Behavior on border.color { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
-    }
-
-    // ── Layer 5: Concentric Ring 3 (270px) ──
-    Rectangle {
-        id: ring3
-        width: 270; height: 270
-        radius: 135
+        width: 169; height: 169
+        radius: 84.5
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         border.width: 0.8
         border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.25 * glowIntensity)
         color: "transparent"
         transform: Rotation {
-            origin.x: ring3.width / 2
-            origin.y: ring3.height / 2
-            angle: root.runningTime * root.ringDegPerSec("r3") % 360
+            origin.x: ring2.width / 2
+            origin.y: ring2.height / 2
+            angle: root.runningTime * root.ringDegPerSec("r2") % 360
         }
-        Behavior on border.color { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 6: Inner Energy Ring (210px, thicker glow ring) ──
-    Rectangle {
-        id: ring4
-        width: 210; height: 210
-        radius: 105
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        border.width: 2.0
-        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.3 * glowIntensity)
-        color: "transparent"
-        transform: Rotation {
-            origin.x: ring4.width / 2
-            origin.y: ring4.height / 2
-            angle: root.runningTime * root.ringDegPerSec("r4") % 360
-        }
-        Behavior on border.color { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
-    }
-
-    // ── Layer 7: Innermost Ring (150px) ──
-    Rectangle {
-        id: ring5
-        width: 150; height: 150
-        radius: 75
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        border.width: 1.2
-        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.35 * glowIntensity)
-        color: "transparent"
-        transform: Rotation {
-            origin.x: ring5.width / 2
-            origin.y: ring5.height / 2
-            angle: root.runningTime * root.ringDegPerSec("r5") % 360
-        }
-        Behavior on border.color { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
-    }
-
-    // ── Layer 8: Listening ring (blue, 240px) ──
     Rectangle {
         id: listenRing
-        width: 240; height: 240
-        radius: 120
+        width: 195; height: 195
+        radius: 97.5
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         border.width: 0.6
-        border.color: Qt.rgba(51/255, 170/255, 255/255, 0.2 * glowIntensity)
+        border.color: Qt.rgba(51/255, 170/255, 255/255, 0.15 * glowIntensity)
         color: "transparent"
         visible: root.coreMode === "listening"
         opacity: visible ? 1 : 0
@@ -276,27 +227,39 @@ Item {
         Behavior on opacity { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 9: Hexagonal Mesh (Canvas, 220px) ──
+    Rectangle {
+        id: ring4
+        width: 117; height: 117
+        radius: 58.5
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        border.width: 1.0
+        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.35 * glowIntensity)
+        color: "transparent"
+        transform: Rotation {
+            origin.x: ring4.width / 2
+            origin.y: ring4.height / 2
+            angle: root.runningTime * root.ringDegPerSec("r4") % 360
+        }
+    }
+
     Canvas {
         id: hexCanvas
-        width: 220; height: 220
+        width: 125; height: 125
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         antialiasing: true
-        opacity: 0.15 + 0.1 * glowIntensity
-
+        opacity: 0.12 + 0.08 * glowIntensity
         onPaint: {
             var ctx = getContext("2d")
             if (!ctx) return
             var w = width, h = height
             ctx.clearRect(0, 0, w, h)
-            ctx.strokeStyle = Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.4)
-            ctx.lineWidth = 0.6
-
-            var hexR = w * 0.05
+            ctx.strokeStyle = Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.5)
+            ctx.lineWidth = 0.5
+            var hexR = w * 0.045
             var cols = Math.ceil(w / (hexR * 1.8))
             var rows = Math.ceil(h / (hexR * 1.6))
-
             for (var row = 0; row < rows; row++) {
                 for (var col = 0; col < cols; col++) {
                     var cx = col * hexR * 1.8 + (row % 2) * hexR * 0.9
@@ -315,12 +278,10 @@ Item {
                 }
             }
         }
-        Behavior on opacity { NumberAnimation { duration: 500 } }
     }
 
-    // ── Layer 10: Inner Glow Sphere (120px) ──
     Canvas {
-        width: 120; height: 120
+        width: 83; height: 83
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         antialiasing: true
@@ -340,16 +301,14 @@ Item {
             ctx.arc(w/2, h/2, w/2, 0, Math.PI * 2)
             ctx.fill()
         }
-        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 11: Bright Center Hotspot (50px) ──
     Canvas {
-        width: 50; height: 50
+        width: 36; height: 36
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         antialiasing: true
-        opacity: 0.7 * (0.8 + 0.2 * (0.5 + 0.5 * Math.sin(root.breathe * Math.PI * 2)))
+        opacity: 0.65 * (0.8 + 0.2 * (0.5 + 0.5 * Math.sin(root.breathe * Math.PI * 2)))
         onPaint: {
             var ctx = getContext("2d")
             if (!ctx) return
@@ -366,35 +325,32 @@ Item {
         }
     }
 
-    // ── Layer 12: Upper-Left Glare (200px) ──
     Canvas {
-        width: 200; height: 200
-        x: (parent.width - width) / 2 - 40
-        y: (parent.height - height) / 2 - 40
+        width: 130; height: 130
+        x: (parent.width - width) / 2 - 28
+        y: (parent.height - height) / 2 - 28
         antialiasing: true
-        opacity: glowIntensity * 0.5
+        opacity: glowIntensity * 0.55
         onPaint: {
             var ctx = getContext("2d")
             if (!ctx) return
             var w = width, h = height, c = root.coreColor
             ctx.clearRect(0, 0, w, h)
             var grad = ctx.createRadialGradient(w*0.3, h*0.3, 0, w*0.3, h*0.3, w*0.5)
-            grad.addColorStop(0, Qt.rgba(255/255, 217/255, 102/255, 0.3 * glowIntensity))
-            grad.addColorStop(0.4, Qt.rgba(c.r, c.g, c.b, 0.08))
+            grad.addColorStop(0, Qt.rgba(255/255, 217/255, 102/255, 0.35 * glowIntensity))
+            grad.addColorStop(0.4, Qt.rgba(c.r, c.g, c.b, 0.10))
             grad.addColorStop(1, "transparent")
             ctx.fillStyle = grad
             ctx.fillRect(0, 0, w, h)
         }
-        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 13: Bottom-Right Reflection (140px) ──
     Canvas {
-        width: 140; height: 140
-        x: (parent.width - width) / 2 + 40
-        y: (parent.height - height) / 2 + 40
+        width: 91; height: 91
+        x: (parent.width - width) / 2 + 18
+        y: (parent.height - height) / 2 + 18
         antialiasing: true
-        opacity: glowIntensity * 0.25
+        opacity: glowIntensity * 0.30
         onPaint: {
             var ctx = getContext("2d")
             if (!ctx) return
@@ -402,93 +358,83 @@ Item {
             ctx.clearRect(0, 0, w, h)
             var grad = ctx.createRadialGradient(w*0.7, h*0.7, 0, w*0.7, h*0.7, w*0.5)
             grad.addColorStop(0, "transparent")
-            grad.addColorStop(0.5, Qt.rgba(c.r, c.g, c.b, 0.05))
-            grad.addColorStop(1, Qt.rgba(c.r, c.g, c.b, 0.1 * glowIntensity))
+            grad.addColorStop(0.5, Qt.rgba(c.r, c.g, c.b, 0.12 * glowIntensity))
+            grad.addColorStop(1, Qt.rgba(c.r, c.g, c.b, 0.15 * glowIntensity))
             ctx.fillStyle = grad
             ctx.fillRect(0, 0, w, h)
         }
-        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Layer 14: Expanding Pulse Ring 1 ──
     Rectangle {
         property real p: root.pulseProgress
-        readonly property real expandSize: 120 + p * (480 - 120)
-        readonly property real expandOpacity: p < 0.78 ? (0.35 * (1 - p / 0.78)) : 0
+        readonly property real expandSize: 91 + p * (338 - 91)
+        readonly property real expandOpacity: p < 0.78 ? (0.40 * (1 - p / 0.78)) : 0
         width: expandSize; height: expandSize
         radius: width / 2
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
-        border.width: 1.2
-        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.3 * glowIntensity * (expandOpacity / 0.35))
+        border.width: 1.0
+        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.35 * glowIntensity * (expandOpacity / 0.40))
         color: "transparent"
         opacity: expandOpacity
         visible: opacity > 0.01
     }
 
-    // ── Layer 15: Expanding Pulse Ring 2 (delayed) ──
     Rectangle {
         property real p: Math.max(0, (root.pulseProgress - 0.39) / 0.61)
-        readonly property real expandSize: 120 + p * (480 - 120)
+        readonly property real expandSize: 91 + p * (338 - 91)
         readonly property real expandOpacity: p < 0.78 ? (0.25 * (1 - p / 0.78)) : 0
         width: expandSize; height: expandSize
         radius: width / 2
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
-        border.width: 0.8
-        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.2 * glowIntensity * (expandOpacity / 0.25))
+        border.width: 0.6
+        border.color: Qt.rgba(coreColor.r, coreColor.g, coreColor.b, 0.20 * glowIntensity * (expandOpacity / 0.25))
         color: "transparent"
         opacity: expandOpacity
         visible: opacity > 0.01
     }
 
-    // ── Layer 16: Outer Orbiting Lights (10 dots, continuous orbit) ──
     Repeater {
-        model: 10
+        model: 6
         Rectangle {
-            readonly property real orbitRadius: [0.28, 0.35, 0.42, 0.48, 0.52, 0.30, 0.38, 0.44, 0.50, 0.55][index] * root.width
-            // Angular speed in rad/s (converted from original cycles/3.2s)
-            readonly property real orbitSpeed: [0.785, 1.374, 1.767, 2.159, 2.552, 0.982, 1.571, 1.963, 2.356, 1.178][index]
+            readonly property real orbitRadius: [0.20, 0.27, 0.34, 0.41, 0.48, 0.55][index] * root.width
+            readonly property real orbitSpeed: [0.90, 1.25, 1.65, 2.00, 2.35, 1.10][index]
             readonly property real direction: index % 2 === 0 ? 1 : -1
-            readonly property real dotSize: [2.5, 3.5, 2, 4, 3, 3, 2.5, 3, 4, 2][index]
-            readonly property real phase: index * 0.628
-
+            readonly property real dotSize: [2.0, 2.8, 3.2, 3.8, 3.0, 2.4][index]
+            readonly property real phase: index * 0.65
             x: (parent.width - width) / 2 + orbitRadius * Math.cos(root.runningTime * orbitSpeed * direction + phase) - width / 2
             y: (parent.height - height) / 2 + orbitRadius * Math.sin(root.runningTime * orbitSpeed * direction + phase) - height / 2
             width: dotSize; height: dotSize
             radius: dotSize / 2
             color: Qt.lighter(coreColor, 1.3)
-            opacity: 0.4 + 0.4 * (0.5 + 0.5 * Math.sin(root.runningTime * 3.927 + phase))
-            Behavior on color { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
+            opacity: 0.45 + 0.25 * (0.5 + 0.5 * Math.sin(root.runningTime * 3.9 + phase))
         }
     }
 
-    // ── Layer 17: Inner Orbiting Lights (8 smaller dots, continuous orbit) ──
     Repeater {
-        model: 8
+        model: 4
         Rectangle {
-            readonly property real orbitRadius: [0.12, 0.17, 0.22, 0.27, 0.14, 0.19, 0.24, 0.29][index] * root.width
-            readonly property real orbitSpeed: [2.356, 2.945, 3.534, 3.927, 2.552, 3.142, 3.730, 2.749][index]
+            readonly property real orbitRadius: [0.12, 0.16, 0.20, 0.24][index] * root.width
+            readonly property real orbitSpeed: [2.0, 2.5, 3.0, 3.4][index]
             readonly property real direction: index % 2 === 0 ? 1 : -1
-            readonly property real dotSize: [1.5, 2.5, 3.5, 2, 2, 3, 2.5, 1.5][index]
-            readonly property real phase: index * 0.785
-
+            readonly property real dotSize: [1.4, 2.2, 2.7, 1.8][index]
+            readonly property real phase: index * 0.75
             x: (parent.width - width) / 2 + orbitRadius * Math.cos(root.runningTime * orbitSpeed * direction + phase) - width / 2
             y: (parent.height - height) / 2 + orbitRadius * Math.sin(root.runningTime * orbitSpeed * direction + phase) - height / 2
             width: dotSize; height: dotSize
             radius: dotSize / 2
             color: "#ffffff"
-            opacity: 0.5 + 0.3 * (0.5 + 0.5 * Math.sin(root.runningTime * 5.890 + phase))
+            opacity: 0.55 + 0.20 * (0.5 + 0.5 * Math.sin(root.runningTime * 5.8 + phase))
         }
     }
 
-    // ── Layer 18: Bloom overlay (extra radial brightness) ──
     Canvas {
         width: 210; height: 210
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
         antialiasing: true
-        opacity: 0.6 * glowIntensity * (0.8 + 0.2 * (0.5 + 0.5 * Math.sin(root.breathe * Math.PI * 2)))
+        opacity: 0.60 * glowIntensity * (0.8 + 0.2 * (0.5 + 0.5 * Math.sin(root.breathe * Math.PI * 2)))
         onPaint: {
             var ctx = getContext("2d")
             if (!ctx) return
@@ -502,29 +448,10 @@ Item {
             ctx.fillStyle = grad
             ctx.fillRect(0, 0, w, h)
         }
-        Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
     }
 
-    // ── Mode color reactivity ──
-    Behavior on coreColor {
-        ColorAnimation { duration: 500; easing.type: Easing.OutCubic }
-    }
-    Behavior on glowIntensity {
-        NumberAnimation { duration: 500; easing.type: Easing.OutCubic }
     }
 
-    onCoreColorChanged: {
-        for (var i = 0; i < children.length; i++) {
-            if (children[i] instanceof Canvas) {
-                children[i].requestPaint()
-            }
-        }
-    }
-    onGlowIntensityChanged: {
-        for (var i = 0; i < children.length; i++) {
-            if (children[i] instanceof Canvas) {
-                children[i].requestPaint()
-            }
-        }
-    }
+    Behavior on coreColor { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
+    Behavior on glowIntensity { NumberAnimation { duration: 500; easing.type: Easing.OutCubic } }
 }

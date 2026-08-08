@@ -1,24 +1,22 @@
-"""Voice subsystem public exports."""
+"""Voice subsystem public exports.
+
+The active voice path is the full-duplex streaming pipeline
+(``voice.duplex`` + ``voice.streaming_stt``); the legacy one-shot Google
+STT stack was removed in FIX-002.
+"""
 
 from voice.elevenlabs_provider import ElevenLabsProvider
 from voice.manager import VoiceManager
-from voice.microphone import MicrophoneCapture, MicrophoneManager
-from voice.pipeline import VoiceConversationPipeline
 from voice.provider import SpeechProvider, VoiceProvider, VoiceProviderError
-from voice.push_to_talk import PushToTalk
-from voice.speech_recognition import SpeechRecognition, SpeechRecognitionResult
+from voice.synonym_engine import CanonicalResult, SynonymEngine
 from voice.system_provider import SystemProvider
 
 __all__ = [
+    "CanonicalResult",
     "ElevenLabsProvider",
-    "MicrophoneCapture",
-    "MicrophoneManager",
-    "PushToTalk",
     "SpeechProvider",
-    "SpeechRecognition",
-    "SpeechRecognitionResult",
+    "SynonymEngine",
     "SystemProvider",
-    "VoiceConversationPipeline",
     "VoiceManager",
     "VoiceProvider",
     "VoiceProviderError",

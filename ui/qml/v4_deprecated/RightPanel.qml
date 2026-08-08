@@ -1,8 +1,5 @@
 import QtQuick 2.15
 
-/**
- * RightPanel — 240px panel with core state, quick status (CPU/RAM/GPU), and active task.
- */
 Rectangle {
     id: root
 
@@ -14,325 +11,215 @@ Rectangle {
     property real gpuUsage: 0
     property string currentTask: ""
 
-    width: 240
+    width: 590
     height: parent.height
-    color: Qt.rgba(8/255, 6/255, 5/255, 0.85)
+    color: Qt.rgba(2/255, 3/255, 4/255, 0.42)
+    border.width: 1
+    border.color: Qt.rgba(255/255, 126/255, 0, 0.18)
     clip: true
 
-    // Left border divider
-    Rectangle {
-        anchors.left: parent.left
-        width: 1
-        height: parent.height
-        color: Qt.rgba(255/255, 140/255, 26/255, 0.08)
-    }
+    Column {
+        anchors.fill: parent
+        anchors.margins: 14
+        spacing: 14
 
-    // ── Header ──
-    Text {
-        anchors.top: parent.top
-        anchors.topMargin: 18
-        anchors.left: parent.left
-        anchors.leftMargin: 18
-        text: "JARVIS"
-        font.family: "Segoe UI"
-        font.pixelSize: 18
-        font.bold: true
-        font.letterSpacing: 3
-        color: "#e8d5c4"
-    }
-    Text {
-        anchors.top: parent.top
-        anchors.topMargin: 42
-        anchors.left: parent.left
-        anchors.leftMargin: 20
-        text: "AI ASSISTANT"
-        font.family: "Segoe UI"
-        font.pixelSize: 9
-        font.letterSpacing: 4
-        color: "#776655"
-    }
-
-    // ── Divider ──
-    Rectangle {
-        anchors.top: parent.top
-        anchors.topMargin: 70
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: parent.width - 36
-        height: 1
-        color: Qt.rgba(255/255, 140/255, 26/255, 0.06)
-    }
-
-    // Timer for pulse animation
-    property real animTick: 0
-    Timer {
-        interval: 50
-        running: true
-        repeat: true
-        onTriggered: { root.animTick = Date.now() }
-    }
-
-    // ── CORE STATE Section ──
-    Text {
-        anchors.top: parent.top
-        anchors.topMargin: 84
-        anchors.left: parent.left
-        anchors.leftMargin: 18
-        text: "CORE STATE"
-        font.family: "Segoe UI"
-        font.pixelSize: 7
-        font.letterSpacing: 3
-        color: "#776655"
-    }
-
-    // Core State Card
-    Rectangle {
-        anchors.top: parent.top
-        anchors.topMargin: 100
-        anchors.left: parent.left
-        anchors.leftMargin: 16
-        anchors.right: parent.right
-        anchors.rightMargin: 16
-        height: 52
-        radius: 8
-        color: Qt.rgba(255/255, 255/255, 255/255, 0.03)
-        border.width: 1
-        border.color: Qt.rgba(255/255, 140/255, 26/255, 0.10)
-
-        // State dot
         Rectangle {
-            anchors.left: parent.left
-            anchors.leftMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
-            width: 8; height: 8; radius: 4
-            color: {
-                switch (root.coreMode) {
-                    case "listening": return "#33aaff"
-                    case "thinking":  return "#ffd700"
-                    case "speaking":  return "#ff8c1a"
-                    case "error":     return "#ff3355"
-                    case "offline":   return "#444444"
-                    default:          return "#ff8c1a"
+            width: parent.width
+            height: Math.min(504, root.height * 0.50)
+            radius: 14
+            color: Qt.rgba(2/255, 5/255, 7/255, 0.52)
+            border.width: 1
+            border.color: Qt.rgba(255/255, 126/255, 0, 0.22)
+
+            Text {
+                id: stateTitle
+                anchors.top: parent.top
+                anchors.topMargin: 18
+                anchors.left: parent.left
+                anchors.leftMargin: 20
+                text: "AI CORE STATES"
+                font.family: "Segoe UI"
+                font.pixelSize: 18
+                font.bold: true
+                color: "#ff8c1a"
+            }
+
+            AiCoreStates {
+                anchors.top: stateTitle.bottom
+                anchors.topMargin: 14
+                anchors.left: parent.left
+                anchors.leftMargin: 14
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                currentMode: root.coreMode
+                scale: root.width < 500 ? 0.82 : 1.0
+            }
+        }
+
+        Rectangle {
+            width: parent.width
+            height: Math.min(250, root.height * 0.26)
+            radius: 14
+            color: Qt.rgba(2/255, 5/255, 7/255, 0.56)
+            border.width: 1
+            border.color: Qt.rgba(255/255, 126/255, 0, 0.24)
+
+            Text {
+                id: quickTitle
+                anchors.top: parent.top
+                anchors.topMargin: 16
+                anchors.left: parent.left
+                anchors.leftMargin: 20
+                text: "QUICK STATUS"
+                font.family: "Segoe UI"
+                font.pixelSize: 16
+                font.bold: true
+                color: "#ff8c1a"
+            }
+
+            Column {
+                anchors.left: parent.left
+                anchors.leftMargin: 22
+                anchors.top: quickTitle.bottom
+                anchors.topMargin: 18
+                width: parent.width * 0.50
+                spacing: 17
+
+                StatusRow { icon: "\u2630"; label: "INTERNET"; value: "Connected"; ok: true }
+                StatusRow { icon: "\u266A"; label: "MICROPHONE"; value: "Active"; ok: true }
+                StatusRow { icon: "\u25B7"; label: "VOICE PROVIDER"; value: root.provider; ok: true }
+                StatusRow { icon: "\u25C8"; label: "LLM"; value: root.model; ok: true }
+            }
+
+            Column {
+                anchors.right: parent.right
+                anchors.rightMargin: 22
+                anchors.top: quickTitle.bottom
+                anchors.topMargin: 14
+                width: parent.width * 0.34
+                spacing: 13
+
+                Meter { label: "CPU"; value: Math.round(root.cpuUsage) + "%"; progress: root.cpuUsage / 100; spark: true }
+                Meter { label: "MEMORY"; value: Math.round(root.ramUsage) + "%"; progress: root.ramUsage / 100 }
+                Meter { label: "GPU"; value: Math.round(root.gpuUsage) + "%"; progress: root.gpuUsage / 100 }
+                Text {
+                    text: "CLOCK      3.41 GHz"
+                    font.family: "Segoe UI"
+                    font.pixelSize: 13
+                    color: "#d0c2b4"
                 }
             }
-            Behavior on color { ColorAnimation { duration: 500; easing.type: Easing.OutCubic } }
-
-            // Pulse animation
-            Rectangle {
-                anchors.centerIn: parent
-                width: parent.width + 6
-                height: parent.height + 6
-                radius: (width + height) / 4
-                color: "transparent"
-                border.width: 1
-                border.color: Qt.rgba(parent.color.r, parent.color.g, parent.color.b, 0.3)
-                opacity: 0.5 + 0.5 * Math.sin(root.animTick * 0.003)
-            }
         }
 
-        // State name
-        Text {
-            anchors.left: parent.left
-            anchors.leftMargin: 28
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.verticalCenterOffset: -6
-            text: root.coreMode.charAt(0).toUpperCase() + root.coreMode.slice(1)
-            font.family: "Segoe UI"
-            font.pixelSize: 11
-            font.bold: true
-            color: "#e0d5ca"
-        }
-
-        // Model name
-        Text {
-            anchors.left: parent.left
-            anchors.leftMargin: 28
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.verticalCenterOffset: 10
-            text: root.model
-            font.family: "Consolas"
-            font.pixelSize: 8
-            color: "#998877"
-        }
-
-        // Provider badge
         Rectangle {
-            anchors.right: parent.right
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            width: 60
-            height: 20
-            radius: 4
-            color: Qt.rgba(255/255, 140/255, 26/255, 0.06)
+            width: parent.width
+            height: Math.max(150, parent.height - 504 - 250 - 28)
+            radius: 14
+            color: Qt.rgba(2/255, 5/255, 7/255, 0.56)
+            border.width: 1
+            border.color: Qt.rgba(255/255, 126/255, 0, 0.24)
+
             Text {
+                anchors.top: parent.top
+                anchors.topMargin: 16
+                anchors.left: parent.left
+                anchors.leftMargin: 20
+                text: "VOICE ACTIVITY VISUALIZATION"
+                font.family: "Segoe UI"
+                font.pixelSize: 16
+                color: "#ead8c8"
+            }
+
+            VoicePanel {
                 anchors.centerIn: parent
-                text: root.provider
-                font.family: "Consolas"
-                font.pixelSize: 7
-                color: "#aa8866"
+                anchors.verticalCenterOffset: 4
+                width: parent.width - 70
+                height: 78
+                coreMode: root.coreMode
+                micEnergy: 0.78
+                assistantEnergy: 0.70
+            }
+
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: 44
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 18
+                text: "YOU SPEAK\n(Listening)"
+                font.family: "Segoe UI"
+                font.pixelSize: 12
+                color: "#ff8c1a"
+            }
+
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 44
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 18
+                horizontalAlignment: Text.AlignRight
+                text: "JARVIS SPEAKS\n(Responding)"
+                font.family: "Segoe UI"
+                font.pixelSize: 12
+                color: "#33aaff"
             }
         }
     }
 
-    // ── QUICK STATUS Section ──
-    Text {
-        anchors.top: parent.top
-        anchors.topMargin: 168
-        anchors.left: parent.left
-        anchors.leftMargin: 18
-        text: "QUICK STATUS"
-        font.family: "Segoe UI"
-        font.pixelSize: 7
-        font.letterSpacing: 3
-        color: "#776655"
+    component StatusRow: Row {
+        property string icon: ""
+        property string label: ""
+        property string value: ""
+        property bool ok: false
+
+        spacing: 12
+        width: parent ? parent.width : 240
+        height: 22
+
+        Text { text: parent.icon; font.family: "Segoe UI"; font.pixelSize: 20; color: "#ff8c1a"; width: 22 }
+        Text { text: parent.label; font.family: "Segoe UI"; font.pixelSize: 13; color: "#cfc0b2"; width: 118 }
+        Rectangle { width: 7; height: 7; radius: 4; color: parent.ok ? "#22dd55" : "#3a3a3a"; anchors.verticalCenter: parent.verticalCenter }
+        Text { text: parent.value; font.family: "Segoe UI"; font.pixelSize: 12; color: "#c2b4a8"; elide: Text.ElideRight; width: parent.width - 175 }
     }
 
-    // Status Cards
-    Column {
-        anchors.top: parent.top
-        anchors.topMargin: 184
-        anchors.left: parent.left
-        anchors.leftMargin: 16
-        anchors.right: parent.right
-        anchors.rightMargin: 16
-        spacing: 6
-
-        // CPU
-        StatusCard {
-            label: "CPU"
-            value: Math.round(root.cpuUsage) + "%"
-            progress: root.cpuUsage / 100
-            accentColor: "#33aaff"
-        }
-
-        // RAM
-        StatusCard {
-            label: "RAM"
-            value: Math.round(root.ramUsage) + "%"
-            progress: root.ramUsage / 100
-            accentColor: "#00ff88"
-        }
-
-        // GPU
-        StatusCard {
-            label: "GPU"
-            value: Math.round(root.gpuUsage) + "%"
-            progress: root.gpuUsage / 100
-            accentColor: "#ffd700"
-        }
-    }
-
-    // ── Active Task Panel ──
-    Rectangle {
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 16
-        anchors.left: parent.left
-        anchors.leftMargin: 16
-        anchors.right: parent.right
-        anchors.rightMargin: 16
-        height: root.currentTask.length > 0 ? 40 : 0
-        radius: 6
-        color: Qt.rgba(255/255, 255/255, 255/255, 0.03)
-        border.width: 1
-        border.color: Qt.rgba(255/255, 140/255, 26/255, 0.06)
-        visible: height > 0
-        clip: true
-
-        Behavior on height { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
-
-        Text {
-            anchors.top: parent.top
-            anchors.topMargin: 4
-            anchors.left: parent.left
-            anchors.leftMargin: 8
-            text: "CURRENT TASK"
-            font.family: "Segoe UI"
-            font.pixelSize: 6
-            font.letterSpacing: 2
-            color: "#776655"
-        }
-
-        Text {
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 4
-            anchors.left: parent.left
-            anchors.leftMargin: 8
-            anchors.right: parent.right
-            anchors.rightMargin: 8
-            text: root.currentTask
-            font.family: "Consolas"
-            font.pixelSize: 9
-            color: "#e0d5ca"
-            elide: Text.ElideRight
-        }
-    }
-
-    // ── Status Card Component ──
-    component StatusCard: Rectangle {
+    component Meter: Item {
         property string label: ""
         property string value: ""
         property real progress: 0
-        property color accentColor: "#33aaff"
+        property bool spark: false
 
-        height: 40
-        radius: 6
-        color: Qt.rgba(255/255, 255/255, 255/255, 0.03)
-        border.width: 1
-        border.color: Qt.rgba(255/255, 140/255, 26/255, 0.06)
+        width: parent ? parent.width : 180
+        height: 34
 
-        // Left accent
-        Rectangle {
+        Text {
             anchors.left: parent.left
             anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: 2
-            radius: 1
-            color: accentColor
-        }
-
-        // Label
-        Text {
-            anchors.left: parent.left
-            anchors.leftMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
             text: parent.label
             font.family: "Segoe UI"
-            font.pixelSize: 7
-            font.letterSpacing: 1
-            color: "#998877"
+            font.pixelSize: 13
+            color: "#d9c9ba"
         }
-
-        // Value
         Text {
             anchors.right: parent.right
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.top: parent.top
             text: parent.value
-            font.family: "Consolas"
-            font.pixelSize: 10
-            font.weight: Font.DemiBold
-            color: "#e0e0e0"
+            font.family: "Segoe UI"
+            font.pixelSize: 13
+            color: "#e7d8ca"
         }
-
-        // Progress bar
         Rectangle {
             anchors.left: parent.left
-            anchors.leftMargin: 12
             anchors.right: parent.right
-            anchors.rightMargin: 50
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.verticalCenterOffset: 8
-            height: 3
-            radius: 1.5
-            color: Qt.rgba(255/255, 255/255, 255/255, 0.06)
-
+            anchors.bottom: parent.bottom
+            height: 5
+            radius: 2
+            color: Qt.rgba(255/255, 255/255, 255/255, 0.08)
             Rectangle {
                 anchors.left: parent.left
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-                width: parent.width * parent.parent.progress
-                radius: 1.5
-                color: accentColor
-                Behavior on width { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+                width: parent.width * Math.max(0, Math.min(1, progress))
+                radius: 2
+                color: "#ff7e00"
             }
         }
     }

@@ -12,6 +12,7 @@ from typing import Any
 
 from brain.execution_plan import ExecutionPlan, Step
 from brain.parsed_command import ParsedCommand
+from monitoring.instrumentation import timed
 
 
 class Planner:
@@ -59,6 +60,7 @@ class Planner:
         "admin_command": "Executing a command that requires administrator privileges",
     }
 
+    @timed("planner.create_plan")
     def create_plan(self, parsed: ParsedCommand, confirmed: bool = False) -> ExecutionPlan:
         builder = self._BUILDERS.get(parsed.intent)
         if builder is None:
@@ -71,6 +73,7 @@ class Planner:
         metadata: dict[str, Any] = {
             "raw_text": parsed.raw_text,
             "reasoning": reasoning,
+            "reasoning_pipeline": ["observe", "understand", "plan", "verify", "act"],
         }
 
         if not confirmed:
@@ -106,10 +109,9 @@ class Planner:
 
         reasoning_map = {
             "open_app": lambda: (
-                f"User said {raw!r}. Intent is to open an application. "
-                f"Target: {parsed.entities.get('app_name', 'unknown')}. "
-                f"Will find the executable, check if already running, "
-                f"launch or focus, then verify success."
+                f"observe the current desktop state before acting. "
+                f"understand that {raw!r} means opening {parsed.entities.get('app_name', 'unknown')}. "
+                f"plan the action, verify the outcome, and only then act."
             ),
             "close_app": lambda: (
                 f"User said {raw!r}. Intent is to close an application. "
@@ -418,10 +420,48 @@ class Planner:
 
     def _build_play_music(self, parsed: ParsedCommand) -> list[Step]:
         query = parsed.entities.get("query", "")
+        if not query:
+            return [self._step(
+                "click_first_video", None,
+                {"query": ""},
+                "Open the first YouTube result.",
+            )]
         return [self._step(
             "search", None,
             {"query": query, "provider": "youtube"},
             f"Play {query} on YouTube Music.",
+        )]
+
+    def _build_media_pause(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_pause", None, {}, "Pause the video.")]
+
+    def _build_media_resume(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_resume", None, {}, "Resume the video.")]
+
+    def _build_media_next(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_play_next", None, {}, "Play the next video.")]
+
+    def _build_media_previous(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_play_previous", None, {}, "Play the previous video.")]
+
+    def _build_skip_ad(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_skip_ad", None, {}, "Skip the ad.")]
+
+    def _build_like_video(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_like", None, {}, "Like the video.")]
+
+    def _build_subscribe_channel(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_subscribe", None, {}, "Subscribe to the channel.")]
+
+    def _build_continue_watching(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_continue_watching", None, {}, "Continue watching.")]
+
+    def _build_scroll_page(self, parsed: ParsedCommand) -> list[Step]:
+        direction = parsed.entities.get("direction", "down")
+        return [self._step(
+            "scroll_page", None,
+            {"direction": direction},
+            f"Scroll {direction} on the page.",
         )]
 
     def _build_compound(self, parsed: ParsedCommand) -> list[Step]:
@@ -742,6 +782,15 @@ class Planner:
         "open_website": _build_open_website,
         "search": _build_search,
         "play_music": _build_play_music,
+        "media_pause": _build_media_pause,
+        "media_resume": _build_media_resume,
+        "media_next": _build_media_next,
+        "media_previous": _build_media_previous,
+        "skip_ad": _build_skip_ad,
+        "like_video": _build_like_video,
+        "subscribe_channel": _build_subscribe_channel,
+        "continue_watching": _build_continue_watching,
+        "scroll_page": _build_scroll_page,
         "compound": _build_compound,
         "open_special_folder": _build_open_special_folder,
         "open_settings": _build_open_settings,

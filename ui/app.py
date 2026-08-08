@@ -1,31 +1,53 @@
 """
 ui/app.py
 
-JARVIS Desktop Shell — entry point.
-Creates the QApplication, system tray, bridge, window manager, loads the
-web-based UI (HTML/CSS/JS) in a QWebEngineView, and coordinates window
-mode transitions.
+JARVIS Desktop Shell — entry point and shutdown coordinator.
+
+Thread model
+------------
+- **Qt MainThread** runs the Qt event loop, Bridge signal handlers, and
+  QML property updates.
+- **system-monitor** daemon thread polls CPU/RAM/GPU/Disk/Battery via
+  psutil/WMI and sends results to Bridge via auto-queued Qt signals.
+- **world-model** daemon thread drives domain-specific collectors.
+- **working-memory** daemon thread evicts expired entries every 60s.
+- All background threads receive a ``threading.Event`` stop signal and
+  are joined with a timeout during shutdown.
+
+Shutdown sequence
+-----------------
+1. SystemMonitor.stop()     → signal, join (5s timeout)
+2. WorldModel.stop()        → signal, join (5s timeout)
+3. WorkingMemory.stop()     → signal, join (5s timeout)
+4. app.quit()               → QCoreApplication::quit()
+
+Each step is timed and failures are logged.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QUrl, Qt, QObject, QSize
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QSurfaceFormat, QAction
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PySide6.QtWidgets import QApplication, QWidget, QSystemTrayIcon, QMenu
 from PySide6.QtQml import QQmlApplicationEngine
 
 from ui.bridge import Bridge
+from ui.system_monitor import SystemMonitor
 from ui.window_manager import WindowManager
 
 logger = logging.getLogger(__name__)
 
 
 class JarvisApp:
-    """Top-level application controller for the JARVIS desktop shell."""
+    """Top-level application controller for the JARVIS desktop shell.
+
+    Owns the shutdown sequence for all background services.
+    """
 
     def __init__(self) -> None:
         existing = QApplication.instance()
@@ -36,6 +58,11 @@ class JarvisApp:
         self.app.setApplicationName("JARVIS")
         self.app.setOrganizationName("JARVIS")
         self.app.setQuitOnLastWindowClosed(False)
+
+        # Application icon (taskbar / alt-tab / window title bar).
+        # Drawn programmatically — the orange orb is the JARVIS brand mark.
+        self._app_icon = QIcon(self._make_tray_pixmap(256))
+        self.app.setWindowIcon(self._app_icon)
 
         fmt = QSurfaceFormat()
         fmt.setSamples(4)
@@ -51,6 +78,12 @@ class JarvisApp:
         self._wire_bridge()
         self._create_window()
         self.wm.start()
+
+        self._monitor = SystemMonitor(self.bridge)
+        self._monitor.start()
+
+        self._world_model = None
+        self._working_memory = None
 
     # ── Tray ──────────────────────────────────────────────────────────
 
@@ -134,6 +167,15 @@ class JarvisApp:
         self.window = root_objects[0]
         self.window.setMinimumSize(QSize(1280, 720))
 
+        # The QML top-level window is a QWindow (on Windows). QWindow has no
+        # setWindowIcon() — that is a QWidget-only API. The icon is provided
+        # process-wide via QApplication.setWindowIcon() plus (on Windows) the
+        # native AppUserModelID association in _apply_windows_taskbar_identity().
+        if isinstance(self.window, QWidget):
+            self.window.setWindowIcon(self._app_icon)
+        else:
+            self._apply_windows_taskbar_identity()
+
         # Force WS_EX_APPWINDOW so the frameless window has a taskbar button
         self._ensure_taskbar_icon()
         self.window.showMaximized()
@@ -158,6 +200,37 @@ class JarvisApp:
         except Exception as exc:
             logger.warning("Failed to set WS_EX_APPWINDOW: %s", exc)
 
+    def _apply_windows_taskbar_identity(self) -> None:
+        """Associate the process with a Windows AppUserModelID.
+
+        On Windows, the taskbar groups and icons windows by AppUserModelID.
+        Without an explicit ID, a QML top-level window (QWindow) shows the
+        default Python/blank taskbar icon regardless of
+        QApplication.setWindowIcon(). Setting an explicit process-level ID
+        makes the taskbar use the QApplication icon.
+
+        Uses the native Win32 API — QWindow does not expose setWindowIcon()
+        (that is a QWidget-only API), so this is the correct mechanism for a
+        QML-based window.
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            shell32 = ctypes.windll.shell32
+            proc = getattr(
+                shell32, "SetCurrentProcessExplicitAppUserModelID", None
+            )
+            if proc is None:
+                logger.debug("AppUserModelID API not available")
+                return
+            proc.argtypes = [ctypes.c_wchar_p]
+            proc.restype = ctypes.c_long
+            hr = proc("JARVIS.Desktop")
+            logger.info("Set Windows AppUserModelID (hr=0x%08x)", hr)
+        except Exception as exc:
+            logger.warning("Failed to set AppUserModelID: %s", exc)
+
     # ── Window minimize ───────────────────────────────────────────────
 
     def _minimize_window(self) -> None:
@@ -176,9 +249,61 @@ class JarvisApp:
     # ── Run ───────────────────────────────────────────────────────────
 
     def run(self) -> int:
-        logger.info("JARVIS UI starting")
+        logger.info("JARVIS UI: Qt event loop starting")
         return self.app.exec()
 
     def _quit(self) -> None:
-        logger.info("JARVIS UI shutting down")
-        self.app.quit()
+        logger.info("JARVIS UI: shutdown started")
+        shutdown_start = time.monotonic()
+
+        # Stop timers first to prevent re-entrant calls during shutdown
+        self.bridge.stop_timers()
+        self.wm.stop_timers()
+
+        self._stop_service(
+            "SystemMonitor", self._monitor.stop,
+            lambda: self._monitor is not None,
+        )
+
+        if self._world_model is not None:
+            self._stop_service("WorldModel", self._world_model.stop)
+
+        if self._working_memory is not None:
+            self._stop_service("WorkingMemory", self._working_memory.stop)
+
+        total_ms = (time.monotonic() - shutdown_start) * 1000
+        logger.info("JARVIS UI: shutdown complete in %.0fms", total_ms)
+
+        from PySide6.QtCore import QCoreApplication
+        QCoreApplication.quit()
+
+    @staticmethod
+    def _stop_service(
+        name: str, stop_fn, guard=None, timeout: float = 5.0,
+    ) -> None:
+        """Signal a background service to stop and wait for its thread.
+
+        Logs start, duration, and any failure to stop within *timeout*.
+        """
+        if guard is not None and not guard():
+            logger.debug("JARVIS: %s not running — skipped", name)
+            return
+        start = time.monotonic()
+        try:
+            stop_fn()
+        except Exception as exc:
+            logger.error(
+                "JARVIS: %s.stop() raised %s: %s",
+                name, type(exc).__name__, exc,
+            )
+            return
+        elapsed = (time.monotonic() - start) * 1000
+        if elapsed >= timeout * 1000:
+            logger.warning(
+                "JARVIS: %s stop took %.0fms (may have timed out)",
+                name, elapsed,
+            )
+        else:
+            logger.info(
+                "JARVIS: %s stopped in %.0fms", name, elapsed,
+            )

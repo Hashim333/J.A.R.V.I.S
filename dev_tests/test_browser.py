@@ -1,11 +1,11 @@
 """
 dev_tests/test_browser.py
 
-Unit tests for the context-aware browser automation module.
+Unit tests for the CDP/DOM-driven browser automation module.
 """
 
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from automation.browser import (
     search,
@@ -19,50 +19,73 @@ from automation.browser import (
     duplicate_tab,
     reopen_closed_tab,
     refresh_page,
+    current_state,
+    selected_text,
+    scroll,
 )
+from automation.cdp import CdpTab
+
+
+def _tab(tab_id: str = "tab-1", url: str = "https://www.youtube.com",
+         title: str = "YouTube", active: bool = True) -> CdpTab:
+    return CdpTab(
+        tab_id=tab_id, title=title, url=url,
+        active=active, window_id=1,
+        ws_url=f"ws://127.0.0.1:9222/{tab_id}",
+    )
+
+
+def _fake_client(tabs=None, active=None, page_state=None):
+    client = MagicMock()
+    tabs = [tabs] if isinstance(tabs, CdpTab) else (tabs or [])
+    client.list_tabs.return_value = tabs
+    client.active_tab.return_value = active or (tabs[0] if tabs else None)
+    client.find_tab.return_value = None
+    client.activate.return_value = True
+    client.new_tab.return_value = _tab(tab_id="tab-new", url="about:blank")
+    client.close_tab.return_value = True
+    client.reload.return_value = None
+    client.evaluate.return_value = True
+    client.page_state.return_value = page_state or {
+        "url": "https://www.youtube.com", "title": "YouTube",
+        "selectedText": "", "readyState": "complete",
+    }
+    client.accessibility_tree.return_value = []
+    return client
 
 
 class TestBrowserAutomation(unittest.TestCase):
-    """Tests for browser automation functions."""
+    """Tests for browser automation functions over CDP."""
 
-    def setUp(self):
-        self._focus_chrome_patcher = patch("automation.browser._focus_chrome")
-        self._navigate_patcher = patch("automation.browser._navigate_current_tab")
-        self._new_tab_patcher = patch("automation.browser.new_tab")
-        self._search_shortcut_patcher = patch("automation.browser._search_via_shortcut")
-        self._wait_patcher = patch("automation.browser._wait_after_nav")
+    # -- open_url --------------------------------------------------------
 
-        self.mock_focus_chrome = self._focus_chrome_patcher.start()
-        self.mock_navigate = self._navigate_patcher.start()
-        self.mock_new_tab = self._new_tab_patcher.start()
-        self.mock_search_shortcut = self._search_shortcut_patcher.start()
-        self.mock_wait = self._wait_patcher.start()
+    def test_open_url_known_site_reuses_existing_tab(self) -> None:
+        """Known site reuses an existing tab on the same domain."""
+        fake = _fake_client(tabs=[_tab()])
+        fake.find_tab.return_value = _tab()
+        with patch("automation.browser._client", return_value=fake):
+            result = open_url("youtube")
+        self.assertTrue(result["success"])
+        self.assertTrue(result["details"]["reused"])
+        fake.activate.assert_called_once()
+        fake.new_tab.assert_not_called()
 
-        self.addCleanup(self._focus_chrome_patcher.stop)
-        self.addCleanup(self._navigate_patcher.stop)
-        self.addCleanup(self._new_tab_patcher.stop)
-        self.addCleanup(self._search_shortcut_patcher.stop)
-        self.addCleanup(self._wait_patcher.stop)
+    def test_open_url_opens_new_tab_when_none_open(self) -> None:
+        fake = _fake_client()
+        fake.find_tab.return_value = None
+        with patch("automation.browser._client", return_value=fake):
+            result = open_url("https://www.python.org")
+        self.assertTrue(result["success"])
+        self.assertFalse(result["details"]["reused"])
+        fake.new_tab.assert_called_once_with("https://www.python.org")
 
-    # -- open_url tests --------------------------------------------------------
-
-    def test_open_url_known_site_opens_new_tab(self) -> None:
-        """Known site always opens a new tab (safe default)."""
-        open_url("youtube")
-        self.mock_focus_chrome.assert_called_once()
-        self.mock_new_tab.assert_called_once()
-        self.mock_navigate.assert_called_once_with("https://www.youtube.com")
-
-    def test_open_url_full_url_opens_new_tab(self) -> None:
-        open_url("https://www.python.org")
-        self.mock_focus_chrome.assert_called_once()
-        self.mock_new_tab.assert_called_once()
-        self.mock_navigate.assert_called_once_with("https://www.python.org")
-
-    def test_open_url_unknown_site_with_dot(self) -> None:
-        open_url("example.com")
-        self.mock_new_tab.assert_called_once()
-        self.mock_navigate.assert_called_once_with("https://example.com")
+    def test_open_url_known_site_normalizes(self) -> None:
+        fake = _fake_client()
+        fake.find_tab.return_value = None
+        with patch("automation.browser._client", return_value=fake):
+            result = open_url("example.com")
+        self.assertTrue(result["success"])
+        fake.new_tab.assert_called_once_with("https://example.com")
 
     def test_open_url_empty_raises_error(self) -> None:
         with self.assertRaises(BrowserOperationError):
@@ -72,249 +95,184 @@ class TestBrowserAutomation(unittest.TestCase):
         with self.assertRaises(BrowserOperationError):
             open_url("notasite")
 
-    # -- search tests ----------------------------------------------------------
+    # -- search ----------------------------------------------------------
 
-    def test_search_google(self) -> None:
-        search("google", "python decorators")
-        self.mock_focus_chrome.assert_called_once()
-        self.mock_new_tab.assert_called_once()
-        self.mock_navigate.assert_called_once_with(
+    def test_search_google_opens_new_tab(self) -> None:
+        fake = _fake_client()
+        fake.find_tab.return_value = None
+        with patch("automation.browser._client", return_value=fake):
+            result = search("google", "python decorators")
+        self.assertTrue(result["success"])
+        fake.new_tab.assert_called_once_with(
             "https://www.google.com/search?q=python+decorators"
         )
 
-    def test_search_youtube(self) -> None:
-        search("youtube", "lo fi hip hop")
-        self.mock_focus_chrome.assert_called_once()
-        self.mock_new_tab.assert_called_once()
-        self.mock_navigate.assert_called_once_with(
+    def test_search_youtube_reuses_results_tab(self) -> None:
+        fake = _fake_client()
+        results = _tab(tab_id="results", url="https://www.youtube.com/results")
+        fake.find_tab.side_effect = lambda url_substring=None, title_substring=None: (
+            results if url_substring == "youtube.com/results" else None
+        )
+        with patch("automation.browser._client", return_value=fake):
+            result = search("youtube", "lo fi hip hop")
+        self.assertTrue(result["success"])
+        self.assertTrue(result["details"]["reused"])
+        fake.navigate.assert_called_once_with(
+            results,
+            "https://www.youtube.com/results?search_query=lo+fi+hip+hop",
+        )
+        fake.new_tab.assert_not_called()
+
+    def test_search_youtube_opens_new_tab(self) -> None:
+        fake = _fake_client()
+        fake.find_tab.return_value = None
+        with patch("automation.browser._client", return_value=fake):
+            result = search("youtube", "lo fi hip hop")
+        self.assertTrue(result["success"])
+        fake.new_tab.assert_called_once_with(
             "https://www.youtube.com/results?search_query=lo+fi+hip+hop"
         )
-        self.mock_search_shortcut.assert_called_once_with("youtube", "lo fi hip hop")
 
     def test_search_github(self) -> None:
-        search("github", "openai")
-        self.mock_focus_chrome.assert_called_once()
-        self.mock_new_tab.assert_called_once()
-        self.mock_navigate.assert_called_once_with(
-            "https://github.com/search?q=openai"
-        )
-        self.mock_search_shortcut.assert_called_once_with("github", "openai")
+        fake = _fake_client()
+        fake.find_tab.return_value = None
+        with patch("automation.browser._client", return_value=fake):
+            result = search("github", "openai")
+        self.assertTrue(result["success"])
+        fake.new_tab.assert_called_once_with("https://github.com/search?q=openai")
 
     def test_search_wikipedia(self) -> None:
-        search("wikipedia", "kerala")
-        self.mock_navigate.assert_called_once_with(
+        fake = _fake_client()
+        fake.find_tab.return_value = None
+        with patch("automation.browser._client", return_value=fake):
+            result = search("wikipedia", "kerala")
+        self.assertTrue(result["success"])
+        fake.new_tab.assert_called_once_with(
             "https://en.wikipedia.org/w/index.php?search=kerala"
         )
 
-    def test_search_stackoverflow(self) -> None:
-        search("stackoverflow", "selenium python")
-        self.mock_navigate.assert_called_once_with(
-            "https://stackoverflow.com/search?q=selenium+python"
-        )
+    def test_search_unsupported_provider_fails(self) -> None:
+        with patch("automation.browser._client") as mock_client:
+            result = search("bing", "test")
+        mock_client.assert_not_called()
+        self.assertFalse(result["success"])
 
-    def test_search_facebook(self) -> None:
-        search("facebook", "openai")
-        self.mock_navigate.assert_called_once_with(
-            "https://www.facebook.com/search/top/?q=openai"
-        )
+    def test_search_empty_query_fails(self) -> None:
+        with patch("automation.browser._client") as mock_client:
+            result = search("google", "  ")
+        mock_client.assert_not_called()
+        self.assertFalse(result["success"])
 
-    def test_search_unsupported_provider_raises_error(self) -> None:
-        with self.assertRaises(BrowserOperationError):
-            search("bing", "test")
+    # -- Tab management --------------------------------------------------
 
-    def test_search_empty_query_raises_error(self) -> None:
-        with self.assertRaises(BrowserOperationError):
-            search("google", "  ")
+    def test_new_tab(self) -> None:
+        fake = _fake_client()
+        with patch("automation.browser._client", return_value=fake):
+            result = new_tab()
+        self.assertTrue(result["success"])
+        fake.new_tab.assert_called_once()
 
-    # -- Tab management tests --------------------------------------------------
+    def test_close_current_tab(self) -> None:
+        fake = _fake_client(tabs=[_tab()])
+        with patch("automation.browser._client", return_value=fake):
+            result = close_current_tab()
+        self.assertTrue(result["success"])
+        fake.close_tab.assert_called_once()
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_new_tab(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        new_tab()
-        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "t")
+    def test_close_all_tabs(self) -> None:
+        fake = _fake_client(tabs=[_tab(tab_id="1"), _tab(tab_id="2")])
+        with patch("automation.browser._client", return_value=fake):
+            result = close_all_tabs()
+        self.assertTrue(result["success"])
+        self.assertEqual(fake.close_tab.call_count, 2)
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_close_current_tab(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        close_current_tab()
-        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "w")
+    def test_next_tab(self) -> None:
+        fake = _fake_client(tabs=[_tab(tab_id="1"), _tab(tab_id="2", active=False)])
+        with patch("automation.browser._client", return_value=fake):
+            result = next_tab()
+        self.assertTrue(result["success"])
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_close_all_tabs(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        close_all_tabs()
-        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "w")
+    def test_previous_tab(self) -> None:
+        fake = _fake_client(tabs=[_tab(tab_id="1"), _tab(tab_id="2", active=False)])
+        with patch("automation.browser._client", return_value=fake):
+            result = previous_tab()
+        self.assertTrue(result["success"])
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_next_tab(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        next_tab()
-        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "tab")
+    def test_duplicate_tab(self) -> None:
+        fake = _fake_client(tabs=[_tab()])
+        with patch("automation.browser._client", return_value=fake):
+            result = duplicate_tab()
+        self.assertTrue(result["success"])
+        fake.new_tab.assert_called_once_with("https://www.youtube.com")
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_previous_tab(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        previous_tab()
-        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "tab")
+    def test_reopen_closed_tab_is_honest(self) -> None:
+        result = reopen_closed_tab()
+        self.assertFalse(result["success"])
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_duplicate_tab(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        duplicate_tab()
-        mock_pyautogui.hotkey.assert_any_call("alt", "d")
-        mock_pyautogui.hotkey.assert_any_call("alt", "enter")
+    def test_refresh_page(self) -> None:
+        fake = _fake_client(tabs=[_tab()])
+        with patch("automation.browser._client", return_value=fake):
+            result = refresh_page()
+        self.assertTrue(result["success"])
+        fake.reload.assert_called_once()
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_reopen_closed_tab(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        reopen_closed_tab()
-        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "t")
+    def test_hard_refresh_page(self) -> None:
+        fake = _fake_client(tabs=[_tab()])
+        with patch("automation.browser._client", return_value=fake):
+            result = refresh_page(hard=True)
+        self.assertTrue(result["success"])
+        fake.reload.assert_called_once_with(fake.active_tab.return_value, ignore_cache=True)
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_refresh_page(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        refresh_page()
-        mock_pyautogui.press.assert_called_once_with("f5")
+    # -- Page reading ----------------------------------------------------
 
-    @patch("automation.browser.pyautogui")
-    @patch("automation.browser.windows.focus_window")
-    @patch("automation.browser.apps.is_running")
-    def test_hard_refresh_page(
-        self,
-        mock_is_running: MagicMock,
-        mock_focus: MagicMock,
-        mock_pyautogui: MagicMock,
-    ) -> None:
-        mock_is_running.return_value = True
-        mock_focus.return_value = True
-        refresh_page(hard=True)
-        mock_pyautogui.hotkey.assert_called_once_with("ctrl", "shift", "r")
+    def test_current_state_returns_page_details(self) -> None:
+        fake = _fake_client(tabs=[_tab()], page_state={
+            "url": "https://www.youtube.com/watch?v=abc",
+            "title": "Video - YouTube",
+            "selectedText": "selected words",
+            "readyState": "complete",
+        })
+        with patch("automation.browser._client", return_value=fake):
+            result = current_state()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["details"]["url"], "https://www.youtube.com/watch?v=abc")
+        self.assertEqual(result["details"]["selected_text"], "selected words")
+
+    def test_selected_text(self) -> None:
+        fake = _fake_client(tabs=[_tab()], page_state={
+            "url": "x", "title": "y", "selectedText": "hello", "readyState": "complete",
+        })
+        with patch("automation.browser._client", return_value=fake):
+            self.assertEqual(selected_text(), "hello")
+
+    def test_scroll_returns_success(self) -> None:
+        fake = _fake_client(tabs=[_tab()])
+        with patch("automation.browser._client", return_value=fake):
+            result = scroll("down")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["details"]["direction"], "down")
 
 
 # ===========================================================================
-# Regression tests — BUG 1 / BUG 3 / BUG 5
+# No-OCR / no-coordinates guarantees
 # ===========================================================================
 
-class TestBrowserSafety(unittest.TestCase):
-    """Verify critical safety regressions are fixed."""
+class TestNoScreenAutomation(unittest.TestCase):
+    """The browser layer must never touch pyautogui, pygetwindow or OCR."""
 
-    @patch("automation.browser._focus_chrome")
-    @patch("automation.browser.new_tab")
-    @patch("automation.browser._navigate_current_tab")
-    @patch("automation.browser._ensure_safe_focus")
-    def test_bug3_open_url_always_new_tab(
-        self, mock_safe, mock_nav, mock_new_tab, mock_focus
-    ):
-        """BUG 3: open_url must always open a new tab before navigating."""
-        open_url("https://www.youtube.com")
-        mock_focus.assert_called_once()
-        mock_new_tab.assert_called_once()
-        mock_nav.assert_called_once_with("https://www.youtube.com")
+    def test_browser_module_has_no_pyautogui(self) -> None:
+        import automation.browser as browser
+        self.assertFalse(hasattr(browser, "pyautogui"))
+        self.assertFalse(hasattr(browser, "pygetwindow"))
+        self.assertFalse(hasattr(browser, "gw"))
+        self.assertFalse(hasattr(browser, "ui_detector"))
 
-    @patch("automation.browser._focus_chrome")
-    @patch("automation.browser.new_tab")
-    @patch("automation.browser._navigate_current_tab")
-    @patch("automation.browser._search_via_shortcut")
-    @patch("automation.browser._wait_after_nav")
-    @patch("automation.browser._ensure_safe_focus")
-    def test_bug3_search_always_new_tab(
-        self, mock_safe, mock_wait, mock_shortcut, mock_nav, mock_new_tab, mock_focus
-    ):
-        """BUG 3: search must always open a new tab before navigating."""
-        search("google", "python")
-        mock_focus.assert_called_once()
-        mock_new_tab.assert_called_once()
-        mock_nav.assert_called_once()
-
-    def test_bug5_verify_foreground_detection(self):
-        """BUG 5: _verify_foreground_is should detect chrome in title."""
-        from automation.browser import _verify_foreground_is
-        with patch("automation.browser.gw.getActiveWindow") as mock_get:
-            mock_win = MagicMock()
-            mock_win.title = "YouTube - Google Chrome"
-            mock_get.return_value = mock_win
-            self.assertTrue(_verify_foreground_is("chrome"))
-
-    def test_bug5_verify_foreground_no_match(self):
-        """BUG 5: Should return False when foreground is not chrome."""
-        from automation.browser import _verify_foreground_is
-        with patch("automation.browser.gw.getActiveWindow") as mock_get:
-            mock_win = MagicMock()
-            mock_win.title = "JARVIS Desktop"
-            mock_get.return_value = mock_win
-            self.assertFalse(_verify_foreground_is("chrome"))
-
-    @patch("automation.browser.gw.getActiveWindow")
-    def test_bug5_verify_none(self, mock_get):
-        """BUG 5: Should handle None foreground window."""
-        from automation.browser import _verify_foreground_is
-        mock_get.return_value = None
-        self.assertFalse(_verify_foreground_is("chrome"))
+    def test_browser_module_has_no_ui_detector_import(self) -> None:
+        import automation.browser as browser
+        source = open(browser.__file__, encoding="utf-8").read()
+        self.assertNotIn("ui_detector", source)
+        self.assertNotIn("pyautogui", source)
+        self.assertNotIn("pygetwindow", source)
 
 
 class TestProtectedTabDetection(unittest.TestCase):

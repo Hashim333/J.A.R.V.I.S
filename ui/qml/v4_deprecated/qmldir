@@ -12,4 +12,5 @@ BottomCards 1.0 BottomCards.qml
 SystemCards 1.0 SystemCards.qml
 GlowLayer 1.0 GlowLayer.qml
 FloatingOrb 1.0 FloatingOrb.qml
+AiCoreStates 1.0 AiCoreStates.qml
 Theme 1.0 Theme.qml

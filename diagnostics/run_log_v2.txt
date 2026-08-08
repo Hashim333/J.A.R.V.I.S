@@ -1,0 +1,682 @@
+
+Configuration Loaded
+--------------------------------------------------
+
+  Voice Provider:   Elevenlabs
+  Voice Enabled:    Yes
+  Voice ID:         A2n0deBXrNcraJ2I9mUk
+  Model:            eleven_multilingual_v2
+  API Key:          af****5c
+  Ollama URL:       http://localhost:11434
+  Ollama Model:     qwen2.5:3b
+  Ollama Timeout:   30s
+  Debug:            No
+  Mic Sensitivity:  1.0
+  Mic AGC:          On (target: 0.15)
+  Mic Noise Gate:   On (threshold: 0.02)
+
+14:52:37 [INFO] automation.application_registry: ApplicationRegistry: Start Menu scan found 78 apps in 0.89s
+14:52:38 [INFO] automation.application_registry: ApplicationRegistry: Desktop scan found 11 apps in 0.44s
+14:52:38 [INFO] automation.application_registry: ApplicationRegistry: Program Files scan found 172 apps in 0.09s
+14:52:38 [INFO] automation.application_registry: ApplicationRegistry: WindowsApps scan found 0 apps in 0.00s
+14:52:38 [INFO] automation.application_registry: ApplicationRegistry: Registry scan found 18 apps in 0.00s
+14:52:38 [INFO] automation.application_registry: ApplicationRegistry: PATH scan found 703 apps in 0.11s
+14:52:39 [INFO] automation.application_registry: ApplicationRegistry: discovered 1006 apps in 2.95s
+14:52:39 [INFO] voice.manager: VoiceManager: configured provider='elevenlabs'
+14:52:39 [INFO] voice.elevenlabs_provider: ElevenLabs: configured (voice=A2n0deBXrNcraJ2I9mUk, model=eleven_multilingual_v2, format=pcm_22050, stability=0.55, similarity=0.8, style=0.35, boost=True)
+14:52:39 [INFO] voice.manager: VoiceManager: ElevenLabs provider created (voice=A2n0deBXrNcraJ2I9mUk, model=eleven_multilingual_v2)
+14:52:39 [INFO] voice.manager: VoiceManager: initialized with ElevenLabsProvider
+14:52:39 [INFO] run: Echo prevention active
+14:52:40 [INFO] automation.application_registry: ApplicationRegistry: Start Menu scan found 78 apps in 0.84s
+14:52:41 [INFO] automation.application_registry: ApplicationRegistry: Desktop scan found 11 apps in 0.42s
+14:52:41 [INFO] automation.application_registry: ApplicationRegistry: Program Files scan found 172 apps in 0.06s
+14:52:41 [INFO] automation.application_registry: ApplicationRegistry: WindowsApps scan found 0 apps in 0.00s
+14:52:41 [INFO] automation.application_registry: ApplicationRegistry: Registry scan found 18 apps in 0.02s
+14:52:41 [INFO] automation.application_registry: ApplicationRegistry: PATH scan found 703 apps in 0.14s
+14:52:42 [INFO] automation.application_registry: ApplicationRegistry: discovered 1006 apps in 3.03s
+14:52:42 [INFO] world_model.world_model: WorldModel: thread 'world-model' started
+14:52:42 [INFO] world_model.world_model: WorldModel: started with 5 collectors
+14:52:42 [INFO] run: World state service started
+14:52:42 [INFO] run: Starting microphone...
+14:52:45 [INFO] ui.app: Set Windows AppUserModelID (hr=0x00000000)
+14:52:45 [INFO] ui.app: Applied WS_EX_APPWINDOW for taskbar integration
+14:52:45 [INFO] ui.system_monitor: SystemMonitor: starting background poll thread
+14:52:45 [INFO] ui.system_monitor: SystemMonitor: thread 'system-monitor' started
+14:52:45 [INFO] diag: [DIAG] instrumentation installed (interval=2.0s)
+14:52:45 [INFO] ui.monitor: [UI MONITOR] Installed | thread=MainThread id=28212 heartbeat=0.2s
+14:52:45 [INFO] run: UIMonitor installed (diag mode)
+14:52:45 [INFO] run: Backend loop started
+14:52:45 [INFO] run: JARVIS desktop UI starting
+14:52:45 [INFO] ui.app: JARVIS UI: Qt event loop starting
+14:52:46 [INFO] voice.wakeword: WakeWordDetector: sample_rate=16000, sample_width=2, bytes_per_ms=32.0, _ROLLING_BUFFER_BYTES=20480 (640 ms), _MIN_AUDIO_BYTES=4000 (125 ms), _MAX_CAPTURE_BYTES=128000 (4000 ms)
+LOG (VoskAPI:ReadDataFiles():model.cc:213) Decoding params beam=10 max-active=3000 lattice-beam=2
+LOG (VoskAPI:ReadDataFiles():model.cc:216) Silence phones 1:2:3:4:5:6:7:8:9:10
+LOG (VoskAPI:RemoveOrphanNodes():nnet-nnet.cc:948) Removed 0 orphan nodes.
+LOG (VoskAPI:RemoveOrphanComponents():nnet-nnet.cc:847) Removing 0 orphan components.
+LOG (VoskAPI:ReadDataFiles():model.cc:248) Loading i-vector extractor from C:\Users\muham\.cache\vosk\vosk-model-small-en-us-0.15/ivector/final.ie
+LOG (VoskAPI:ComputeDerivedVars():ivector-extractor.cc:183) Computing derived variables for iVector extractor
+LOG (VoskAPI:ComputeDerivedVars():ivector-extractor.cc:204) Done.
+LOG (VoskAPI:ReadDataFiles():model.cc:282) Loading HCL and G from C:\Users\muham\.cache\vosk\vosk-model-small-en-us-0.15/graph/HCLr.fst C:\Users\muham\.cache\vosk\vosk-model-small-en-us-0.15/graph/Gr.fst
+14:52:47 [INFO] diag: [DIAG] SNAPSHOT | cpu=0% rss=796MB ui_tick=0.1/s threads=8 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+LOG (VoskAPI:ReadDataFiles():model.cc:308) Loading winfo C:\Users\muham\.cache\vosk\vosk-model-small-en-us-0.15/graph/phones/word_boundary.int
+14:52:47 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:52:47 [INFO] services.wake_word_service: WakeWordService initialized
+14:52:47 [INFO] services.wake_word_service: WakeWordService starting — listening for wake word
+14:52:47 [INFO] monitoring.watchdog: Watchdog[backend_loop] started (timeout=150.0s)
+14:52:47 [INFO] monitoring.watchdog: Watchdog[conversation] started (timeout=60.0s)
+14:52:47 [INFO] run: Backend ready
+14:52:47 [INFO] run: Processing text: 'open notepad'
+14:52:47 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:52:47 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-0_0 tid=16080
+14:52:47 [INFO] thinking.pipeline: Pipeline INPUT: 'open notepad' confirmed=False
+14:52:47 [INFO] thinking.pipeline: 
+---- USER ------------
+open notepad
+---- CLASSIFICATION --
+APPLICATION_CONTROL
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:52:47 [INFO] thinking.pipeline:   intent=open_app category=navigation
+14:52:47 [INFO] thinking.pipeline:   decision=ASK_CLARIFICATION reasoning=Context manager requested clarification: notepad is already running. Would you like me to switch to it or open another window?
+14:52:47 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-0_0 tid=16080 status=OK duration=32ms
+14:52:47 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=47ms
+14:52:47 [INFO] voice.manager: VoiceManager: enqueued: 'notepad is already running. Would you like me to switch to i'
+14:52:47 [INFO] voice.manager: VoiceManager: worker started
+14:52:47 [INFO] run: Task result: TaskResult.CLARIFICATION | message: notepad is already running. Would you like me to switch to it or open another window?
+14:52:47 [INFO] voice.elevenlabs_provider: ElevenLabs: request attempt 1/2 (voice=A2n0deBXrNcraJ2I9mUk, model=eleven_multilingual_v2, format=pcm_22050, 85 chars)
+14:52:47 [INFO] services.conversation_manager: STATE IDLE -> WAITING_CONFIRMATION (clarification)
+14:52:47 [INFO] services.conversation_manager: STATE WAITING_CONFIRMATION -> ACTIVE_CONVERSATION (command received)
+14:52:48 [INFO] diag: [DIAG] TASK START | task=listen_for_command thread=Thread-11 (_backend_loop) tid=22936
+14:52:48 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:52:49 [WARNING] voice.elevenlabs_provider: ElevenLabs: request failed (attempt 1, 1234 ms): HTTP Error 401: Unauthorized
+14:52:49 [INFO] voice.elevenlabs_provider: ElevenLabs: retrying...
+14:52:49 [INFO] voice.elevenlabs_provider: ElevenLabs: request attempt 2/2 (voice=A2n0deBXrNcraJ2I9mUk, model=eleven_multilingual_v2, format=pcm_22050, 85 chars)
+14:52:49 [INFO] diag: [DIAG] SNAPSHOT | cpu=87% rss=840MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:52:49 [WARNING] voice.elevenlabs_provider: ElevenLabs: request failed (attempt 2, 344 ms): HTTP Error 401: Unauthorized
+14:52:49 [ERROR] voice.elevenlabs_provider: ElevenLabs: all 2 attempts failed: HTTP Error 401: Unauthorized
+14:52:49 [WARNING] voice.manager: VoiceManager: FAILED (85 chars, 2078 ms): 'notepad is already running. Would you like me to switch to i'
+14:52:49 [WARNING] voice.manager: VoiceManager: Switching to system voice provider: speak() returned False for 'notepad is already running. Would you li'
+14:52:51 [INFO] diag: [DIAG] SNAPSHOT | cpu=63% rss=871MB ui_tick=1.5/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:52:53 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:52:53 [WARNING] services.listener_service: Recognition failed via stream (attempt 1/3): No speech could be recognized.
+14:52:53 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:52:53 [INFO] diag: [DIAG] SNAPSHOT | cpu=72% rss=932MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:52:55 [INFO] world_model.collectors: SystemCollector: WMI GPU monitoring initialized
+14:52:55 [INFO] ui.system_monitor: SystemMonitor: WMI GPU monitoring initialized
+14:52:55 [INFO] diag: [DIAG] SNAPSHOT | cpu=65% rss=921MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:52:57 [INFO] diag: [DIAG] SNAPSHOT | cpu=85% rss=965MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:52:59 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:52:59 [WARNING] services.listener_service: Recognition failed via stream (attempt 2/3): No speech could be recognized.
+14:52:59 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:52:59 [INFO] diag: [DIAG] SNAPSHOT | cpu=94% rss=1060MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:01 [INFO] diag: [DIAG] SNAPSHOT | cpu=79% rss=1059MB ui_tick=1.0/s threads=11 queues={'command_queue': 2, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:02 [INFO] ui.window_manager: WindowManager: fullscreen \u2192 floating_orb
+14:53:03 [INFO] diag: [DIAG] SNAPSHOT | cpu=63% rss=1060MB ui_tick=1.0/s threads=11 queues={'command_queue': 2, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:05 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:53:05 [WARNING] services.listener_service: Recognition failed via stream (attempt 3/3): No speech could be recognized.
+14:53:05 [INFO] diag: [DIAG] TASK END   | task=listen_for_command thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=17671ms
+14:53:05 [INFO] run: Routing 'open calculator' to resolve_context (pending confirmation exists)
+14:53:05 [INFO] diag: [DIAG] TASK START | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936
+14:53:05 [INFO] diag: [DIAG] TASK START | task=pipeline.resolve_context thread=ThreadPoolExecutor-1_0 tid=17888
+14:53:05 [INFO] thinking.pipeline: Follow-up decision: type=ASK_CLARIFICATION reasoning=Follow-up needs more clarification: notepad is already running. Would you like me to switch to it or open another window?
+14:53:05 [INFO] diag: [DIAG] TASK END   | task=pipeline.resolve_context thread=ThreadPoolExecutor-1_0 tid=17888 status=OK duration=0ms
+14:53:05 [INFO] diag: [DIAG] TASK END   | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=16ms
+14:53:05 [INFO] voice.manager: VoiceManager: enqueued: 'notepad is already running. Would you like me to switch to i'
+14:53:05 [INFO] run: Task result: TaskResult.CLARIFICATION | message: I didn't understand that. notepad is already running. Would you like me to switch to it or open another window?
+14:53:05 [INFO] run: Routing 'what time is it' to resolve_context (pending confirmation exists)
+14:53:05 [INFO] diag: [DIAG] TASK START | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936
+14:53:05 [INFO] voice.manager: VoiceManager: OK (85 chars, 0 ms): 'notepad is already running. Would you like me to switch to i'
+14:53:05 [INFO] diag: [DIAG] TASK START | task=pipeline.resolve_context thread=ThreadPoolExecutor-2_0 tid=15312
+14:53:05 [INFO] thinking.pipeline: Follow-up decision: type=ASK_CLARIFICATION reasoning=No handler could resolve the answer.
+14:53:05 [INFO] diag: [DIAG] TASK END   | task=pipeline.resolve_context thread=ThreadPoolExecutor-2_0 tid=15312 status=OK duration=0ms
+14:53:05 [INFO] diag: [DIAG] TASK END   | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=0ms
+14:53:05 [INFO] voice.manager: VoiceManager: enqueued: 'I didn't understand that. Could you rephrase?'
+14:53:05 [INFO] run: Task result: TaskResult.CLARIFICATION | message: I didn't understand that. Could you rephrase?
+14:53:05 [INFO] services.conversation_manager: STATE ACTIVE_CONVERSATION -> RETURN_TO_IDLE (confirmation resolved)
+14:53:05 [INFO] diag: [DIAG] SNAPSHOT | cpu=67% rss=1189MB ui_tick=1.0/s threads=12 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-18 (_run)[9124]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:05 [INFO] voice.manager: VoiceManager: OK (45 chars, 47 ms): 'I didn't understand that. Could you rephrase?'
+LOG (VoskAPI:UpdateGrammarFst():recognizer.cc:287) ["jarvis"]
+LOG (VoskAPI:Estimate():language_model.cc:142) Estimating language model with ngram-order=2, discount=0.5
+LOG (VoskAPI:OutputToFst():language_model.cc:209) Created language model with 2 states and 2 arcs.
+14:53:07 [INFO] diag: [DIAG] SNAPSHOT | cpu=78% rss=1224MB ui_tick=1.0/s threads=12 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-19 (_run)[29452]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:09 [INFO] diag: [DIAG] SNAPSHOT | cpu=71% rss=979MB ui_tick=1.0/s threads=12 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-19 (_run)[29452]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+LOG (VoskAPI:UpdateGrammarFst():recognizer.cc:287) ["jarvis"]
+LOG (VoskAPI:Estimate():language_model.cc:142) Estimating language model with ngram-order=2, discount=0.5
+LOG (VoskAPI:OutputToFst():language_model.cc:209) Created language model with 2 states and 2 arcs.
+14:53:11 [INFO] diag: [DIAG] SNAPSHOT | cpu=68% rss=733MB ui_tick=1.0/s threads=12 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-19 (_run)[29452]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:12 [INFO] run: Processing text: 'battery status'
+14:53:12 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:53:12 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-3_0 tid=16948
+14:53:12 [INFO] thinking.pipeline: Pipeline INPUT: 'battery status' confirmed=False
+14:53:12 [INFO] thinking.pipeline: 
+---- USER ------------
+battery status
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:53:12 [INFO] thinking.pipeline:   intent=system_status category=unknown
+14:53:12 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Proceeding with intent 'system_status' — no context issues detected.
+14:53:12 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-3_0 tid=16948
+14:53:12 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-3_0 tid=16948 status=OK duration=0ms
+14:53:12 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: system_status
+  1. system_status
+14:53:12 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - none
+14:53:12 [INFO] thinking.pipeline:   plan steps=1 intent=system_status
+14:53:12 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-3_0 tid=16948
+[EXECUTOR] Executing step 0: action='system_status' target=None
+[EXECUTOR]   Handler: SystemHandler
+[EXECUTOR]   Result: {'success': True, 'message': 'Battery at 87%, Discharging. 68 minutes remaining', 'percentage': 87, 'status': 'Discharging', 'remaining_minutes': 68}
+[EXECUTOR] All 1 step(s) executed successfully.
+14:53:13 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-3_0 tid=16948 status=OK duration=719ms
+14:53:13 [INFO] thinking.pipeline: Executor -> success=True message=Battery at 87%, Discharging. 68 minutes remaining
+14:53:13 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=True status=SUCCESS message='Battery at 87%, Discharging. 68 minutes remaining'
+14:53:13 [INFO] thinking.pipeline: 
+---- USER ------------
+battery status
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- PLAN ------------
+0. system_status
+---- EXECUTOR --------
+SUCCESS
+14:53:13 [INFO] thinking.pipeline: 
+---- FINAL RESULT ----
+success=True status=SUCCESS
+Battery at 87%, Discharging. 68 minutes remaining
+14:53:13 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-3_0 tid=16948 status=OK duration=750ms
+14:53:13 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=750ms
+14:53:13 [INFO] voice.manager: VoiceManager: enqueued: 'Done.'
+14:53:13 [INFO] services.conversation_manager: STATE IDLE -> ACTIVE_CONVERSATION (command received)
+14:53:13 [INFO] voice.manager: VoiceManager: OK (5 chars, 0 ms): 'Done.'
+14:53:13 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:13 [INFO] voice.engine: VoiceEngine: barge-in monitoring started
+14:53:13 [INFO] diag: [DIAG] SNAPSHOT | cpu=68% rss=730MB ui_tick=1.0/s threads=12 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-22 (_run)[6052]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:14 [INFO] voice.engine: VoiceEngine: BARGE-IN DETECTED — user started speaking
+14:53:14 [INFO] voice.manager: VoiceManager: stopped current speech
+14:53:14 [INFO] voice.engine: VoiceEngine: barge-in monitoring stopped
+14:53:14 [INFO] voice.engine: VoiceEngine: speech interrupted
+14:53:14 [INFO] run: Barge-in detected
+14:53:14 [INFO] voice.engine: VoiceEngine: barge-in event — speech cancelled, listening ready
+14:53:14 [INFO] diag: [DIAG] TASK START | task=listen_for_command thread=Thread-11 (_backend_loop) tid=22936
+14:53:14 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:15 [INFO] diag: [DIAG] SNAPSHOT | cpu=74% rss=637MB ui_tick=1.0/s threads=11 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:17 [INFO] diag: [DIAG] SNAPSHOT | cpu=61% rss=628MB ui_tick=1.0/s threads=11 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:19 [INFO] diag: [DIAG] SNAPSHOT | cpu=64% rss=646MB ui_tick=1.0/s threads=11 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:20 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:53:20 [WARNING] services.listener_service: Recognition failed via stream (attempt 1/3): No speech could be recognized.
+14:53:20 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:21 [INFO] diag: [DIAG] SNAPSHOT | cpu=66% rss=633MB ui_tick=1.0/s threads=11 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:23 [INFO] diag: [DIAG] SNAPSHOT | cpu=61% rss=625MB ui_tick=1.0/s threads=11 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:25 [INFO] diag: [DIAG] SNAPSHOT | cpu=58% rss=633MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:26 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:53:26 [WARNING] services.listener_service: Recognition failed via stream (attempt 2/3): No speech could be recognized.
+14:53:26 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:27 [INFO] diag: [DIAG] SNAPSHOT | cpu=48% rss=625MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:29 [INFO] diag: [DIAG] SNAPSHOT | cpu=56% rss=616MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:31 [INFO] diag: [DIAG] SNAPSHOT | cpu=44% rss=616MB ui_tick=1.0/s threads=11 queues={'command_queue': 1, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:32 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:53:32 [WARNING] services.listener_service: Recognition failed via stream (attempt 3/3): No speech could be recognized.
+14:53:32 [INFO] diag: [DIAG] TASK END   | task=listen_for_command thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=17328ms
+14:53:32 [INFO] run: Processing text: 'open downloads folder'
+14:53:32 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:53:32 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-4_0 tid=15280
+14:53:32 [INFO] thinking.pipeline: Pipeline INPUT: 'open downloads folder' confirmed=False
+14:53:32 [INFO] thinking.pipeline: 
+---- USER ------------
+open downloads folder
+---- CLASSIFICATION --
+FILE_CONTROL
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:53:32 [INFO] thinking.pipeline:   intent=open_file category=unknown
+14:53:32 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Proceeding with intent 'open_file' — no context issues detected.
+14:53:32 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-4_0 tid=15280
+14:53:32 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-4_0 tid=15280 status=OK duration=0ms
+14:53:32 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: open_file
+  1. open_file downloads folder
+14:53:32 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - none
+14:53:32 [INFO] thinking.pipeline:   plan steps=1 intent=open_file
+14:53:32 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-4_0 tid=15280
+[EXECUTOR] Executing step 0: action='open_file' target='downloads folder'
+[EXECUTOR]   Handler: FileManagerHandler
+[EXECUTOR]   Result: {'success': False, 'message': 'File not found: downloads folder', 'needs_search': True, 'query': 'downloads folder'}
+[EXECUTOR]   Step returned failure: File not found: downloads folder
+14:53:32 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-4_0 tid=15280 status=OK duration=16ms
+14:53:32 [INFO] thinking.pipeline: Executor -> success=False message=File not found: downloads folder
+14:53:32 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=False status=FAILED message='File not found: downloads folder'
+14:53:32 [INFO] thinking.pipeline: 
+---- USER ------------
+open downloads folder
+---- CLASSIFICATION --
+FILE_CONTROL
+---- PLAN ------------
+0. open_file downloads folder
+---- EXECUTOR --------
+FAILED (FAILED)
+14:53:32 [INFO] thinking.pipeline: 
+---- FINAL RESULT ----
+success=False status=FAILED
+File not found: downloads folder
+14:53:32 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-4_0 tid=15280 status=OK duration=47ms
+14:53:32 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=47ms
+14:53:32 [INFO] voice.manager: VoiceManager: enqueued: 'Task: File not found: downloads folder Result: FAILED'
+14:53:32 [INFO] run: Task result: TaskResult.FAILED | message: File not found: downloads folder
+14:53:32 [INFO] voice.manager: VoiceManager: OK (53 chars, 0 ms): 'Task: File not found: downloads folder Result: FAILED'
+14:53:32 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:32 [INFO] voice.engine: VoiceEngine: barge-in monitoring started
+14:53:33 [INFO] diag: [DIAG] SNAPSHOT | cpu=46% rss=644MB ui_tick=1.0/s threads=12 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-26 (_run)[25632]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:34 [INFO] voice.engine: VoiceEngine: BARGE-IN DETECTED — user started speaking
+14:53:34 [INFO] voice.manager: VoiceManager: stopped current speech
+14:53:34 [INFO] voice.engine: VoiceEngine: barge-in monitoring stopped
+14:53:34 [INFO] voice.engine: VoiceEngine: speech interrupted
+14:53:34 [INFO] run: Barge-in detected
+14:53:34 [INFO] voice.engine: VoiceEngine: barge-in event — speech cancelled, listening ready
+14:53:34 [INFO] diag: [DIAG] TASK START | task=listen_for_command thread=Thread-11 (_backend_loop) tid=22936
+14:53:34 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:35 [INFO] diag: [DIAG] SNAPSHOT | cpu=64% rss=644MB ui_tick=1.0/s threads=11 queues={'command_queue': 0, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:37 [INFO] diag: [DIAG] SNAPSHOT | cpu=49% rss=648MB ui_tick=1.0/s threads=11 queues={'command_queue': 5, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:39 [INFO] diag: [DIAG] SNAPSHOT | cpu=52% rss=652MB ui_tick=1.0/s threads=11 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:39 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:53:39 [WARNING] services.listener_service: Recognition failed via stream (attempt 1/3): No speech could be recognized.
+14:53:39 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:41 [INFO] diag: [DIAG] SNAPSHOT | cpu=42% rss=638MB ui_tick=1.0/s threads=11 queues={'command_queue': 15, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:43 [INFO] diag: [DIAG] SNAPSHOT | cpu=36% rss=638MB ui_tick=1.0/s threads=11 queues={'command_queue': 15, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:45 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:53:45 [WARNING] services.listener_service: Recognition failed via stream (attempt 2/3): No speech could be recognized.
+14:53:45 [INFO] voice.vad: VAD configured: sample_rate=16000 Hz, channels=1, sample_width=2 bytes, bytes_per_second=32000, frame_size=480 samples (960 bytes / 30 ms), padding=25 frames (750 ms), aggressiveness=1
+14:53:45 [INFO] diag: [DIAG] SNAPSHOT | cpu=27% rss=629MB ui_tick=1.0/s threads=11 queues={'command_queue': 15, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:47 [INFO] diag: [DIAG] SNAPSHOT | cpu=38% rss=629MB ui_tick=1.0/s threads=11 queues={'command_queue': 15, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:49 [INFO] diag: [DIAG] SNAPSHOT | cpu=54% rss=638MB ui_tick=1.0/s threads=11 queues={'command_queue': 15, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:51 [INFO] voice.speech_recognition: Google STT: no speech recognized
+14:53:51 [WARNING] services.listener_service: Recognition failed via stream (attempt 3/3): No speech could be recognized.
+14:53:51 [INFO] diag: [DIAG] TASK END   | task=listen_for_command thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=17125ms
+14:53:51 [INFO] run: Processing text: 'open notepad'
+14:53:51 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:53:51 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-5_0 tid=15496
+14:53:51 [INFO] thinking.pipeline: Pipeline INPUT: 'open notepad' confirmed=False
+14:53:51 [INFO] thinking.pipeline: 
+---- USER ------------
+open notepad
+---- CLASSIFICATION --
+APPLICATION_CONTROL
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:53:51 [INFO] thinking.pipeline:   intent=open_app category=navigation
+14:53:51 [INFO] thinking.pipeline:   decision=ASK_CLARIFICATION reasoning=Context manager requested clarification: notepad is already running. Would you like me to switch to it or open another window?
+14:53:51 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-5_0 tid=15496 status=OK duration=0ms
+14:53:51 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=0ms
+14:53:51 [INFO] voice.manager: VoiceManager: enqueued: 'notepad is already running. Would you like me to switch to i'
+14:53:51 [INFO] run: Task result: TaskResult.CLARIFICATION | message: notepad is already running. Would you like me to switch to it or open another window?
+14:53:51 [INFO] services.conversation_manager: STATE ACTIVE_CONVERSATION -> WAITING_CONFIRMATION (clarification)
+14:53:51 [INFO] services.conversation_manager: STATE WAITING_CONFIRMATION -> ACTIVE_CONVERSATION (command received)
+14:53:51 [INFO] voice.manager: VoiceManager: OK (85 chars, 0 ms): 'notepad is already running. Would you like me to switch to i'
+14:53:51 [INFO] run: Routing 'open calculator' to resolve_context (pending confirmation exists)
+14:53:51 [INFO] diag: [DIAG] TASK START | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936
+14:53:51 [INFO] diag: [DIAG] TASK START | task=pipeline.resolve_context thread=ThreadPoolExecutor-6_0 tid=26348
+14:53:51 [INFO] thinking.pipeline: Follow-up decision: type=ASK_CLARIFICATION reasoning=Follow-up needs more clarification: notepad is already running. Would you like me to switch to it or open another window?
+14:53:51 [INFO] diag: [DIAG] TASK END   | task=pipeline.resolve_context thread=ThreadPoolExecutor-6_0 tid=26348 status=OK duration=0ms
+14:53:51 [INFO] diag: [DIAG] TASK END   | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=0ms
+14:53:51 [INFO] voice.manager: VoiceManager: enqueued: 'notepad is already running. Would you like me to switch to i'
+14:53:51 [INFO] run: Task result: TaskResult.CLARIFICATION | message: I didn't understand that. notepad is already running. Would you like me to switch to it or open another window?
+14:53:51 [INFO] run: Routing 'close notepad' to resolve_context (pending confirmation exists)
+14:53:51 [INFO] diag: [DIAG] TASK START | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936
+14:53:51 [INFO] diag: [DIAG] TASK START | task=pipeline.resolve_context thread=ThreadPoolExecutor-7_0 tid=23568
+14:53:51 [INFO] thinking.pipeline: Follow-up decision: type=ASK_CLARIFICATION reasoning=No handler could resolve the answer.
+14:53:51 [INFO] diag: [DIAG] TASK END   | task=pipeline.resolve_context thread=ThreadPoolExecutor-7_0 tid=23568 status=OK duration=0ms
+14:53:51 [INFO] diag: [DIAG] TASK END   | task=brain.resolve_context thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=0ms
+14:53:51 [INFO] voice.manager: VoiceManager: enqueued: 'I didn't understand that. Could you rephrase?'
+14:53:51 [INFO] run: Task result: TaskResult.CLARIFICATION | message: I didn't understand that. Could you rephrase?
+14:53:51 [INFO] services.conversation_manager: STATE ACTIVE_CONVERSATION -> RETURN_TO_IDLE (confirmation resolved)
+14:53:51 [INFO] run: Processing text: 'search for weather'
+14:53:51 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:53:51 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-8_0 tid=24780
+14:53:51 [INFO] thinking.pipeline: Pipeline INPUT: 'search for weather' confirmed=False
+14:53:51 [INFO] thinking.pipeline: 
+---- USER ------------
+search for weather
+---- CLASSIFICATION --
+BROWSER_CONTROL
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:53:51 [INFO] thinking.pipeline:   intent=search category=information
+14:53:51 [INFO] voice.manager: VoiceManager: OK (85 chars, 31 ms): 'notepad is already running. Would you like me to switch to i'
+14:53:51 [INFO] voice.manager: VoiceManager: OK (45 chars, 47 ms): 'I didn't understand that. Could you rephrase?'
+14:53:51 [INFO] diag: [DIAG] SNAPSHOT | cpu=57% rss=642MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-32 (_run)[9044]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:53 [INFO] diag: [DIAG] SNAPSHOT | cpu=48% rss=642MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-32 (_run)[9044]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:55 [INFO] diag: [DIAG] SNAPSHOT | cpu=41% rss=648MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-32 (_run)[9044]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:57 [INFO] diag: [DIAG] SNAPSHOT | cpu=41% rss=641MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:53:59 [INFO] diag: [DIAG] SNAPSHOT | cpu=41% rss=630MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:00 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Proceeding with intent 'search' — no context issues detected.
+14:54:00 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-8_0 tid=24780
+14:54:00 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-8_0 tid=24780 status=OK duration=0ms
+14:54:00 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: search
+  1. search
+14:54:00 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - url_loaded \u2192 google.com/search
+14:54:00 [INFO] thinking.pipeline:   plan steps=1 intent=search
+14:54:00 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-8_0 tid=24780
+[EXECUTOR] Executing step 0: action='search' target=None
+[EXECUTOR]   Handler: BrowserHandler
+14:54:00 [INFO] automation.browser: Opening new tab for search: https://www.google.com/search?q=weather
+14:54:01 [INFO] diag: [DIAG] SNAPSHOT | cpu=76% rss=639MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+[EXECUTOR]   Result: True
+[EXECUTOR] All 1 step(s) executed successfully.
+14:54:01 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-8_0 tid=24780 status=OK duration=1469ms
+14:54:01 [INFO] thinking.pipeline: Executor -> success=True message=Action completed.
+14:54:01 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=True status=SUCCESS message='Action completed.'
+14:54:03 [INFO] diag: [DIAG] SNAPSHOT | cpu=67% rss=640MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:05 [INFO] diag: [DIAG] SNAPSHOT | cpu=67% rss=640MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:07 [INFO] diag: [DIAG] SNAPSHOT | cpu=87% rss=640MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:09 [INFO] diag: [DIAG] SNAPSHOT | cpu=62% rss=640MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:11 [INFO] diag: [DIAG] SNAPSHOT | cpu=59% rss=640MB ui_tick=1.0/s threads=12 queues={'command_queue': 12, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:13 [INFO] diag: [DIAG] SNAPSHOT | cpu=51% rss=632MB ui_tick=1.0/s threads=12 queues={'command_queue': 12, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:15 [INFO] diag: [DIAG] SNAPSHOT | cpu=42% rss=633MB ui_tick=1.0/s threads=12 queues={'command_queue': 12, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-8_0[24780]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:17 [INFO] thinking.pipeline: IntelligentPlanner verification 'url_loaded' failed after 15s: url 'google.com/search' not found in active tabs
+14:54:17 [INFO] thinking.pipeline: IntelligentPlanner VERIFICATION: passed=False url 'google.com/search' not found in active tabs
+14:54:17 [INFO] thinking.pipeline: 
+---- VERIFICATION ----
+passed=False
+url 'google.com/search' not found in active tabs
+14:54:17 [WARNING] thinking.pipeline: IntelligentPlanner: VERIFICATION FAILED for intent=search
+14:54:17 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-8_0 tid=24780 status=OK duration=25594ms
+14:54:17 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=25594ms
+14:54:17 [INFO] voice.manager: VoiceManager: enqueued: 'Task: The action ran, but I couldn't verify the result (url '
+14:54:17 [INFO] run: Task result: TaskResult.FAILED | message: The action ran, but I couldn't verify the result (url 'google.com/search' not found in active tabs). I won't claim it worked — ask me to try again.
+14:54:17 [INFO] services.conversation_manager: STATE IDLE -> ACTIVE_CONVERSATION (command received)
+14:54:17 [INFO] run: Processing text: 'open youtube'
+14:54:17 [INFO] voice.manager: VoiceManager: OK (168 chars, 0 ms): 'Task: The action ran, but I couldn't verify the result (url '
+14:54:17 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:54:17 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-9_0 tid=29204
+14:54:17 [INFO] thinking.pipeline: Pipeline INPUT: 'open youtube' confirmed=False
+14:54:17 [INFO] thinking.pipeline: 
+---- USER ------------
+open youtube
+---- CLASSIFICATION --
+BROWSER_CONTROL
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:54:17 [INFO] thinking.pipeline:   intent=open_website category=navigation
+14:54:17 [INFO] diag: [DIAG] SNAPSHOT | cpu=41% rss=633MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:19 [INFO] diag: [DIAG] SNAPSHOT | cpu=45% rss=642MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:21 [INFO] diag: [DIAG] SNAPSHOT | cpu=50% rss=642MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:23 [INFO] diag: [DIAG] SNAPSHOT | cpu=46% rss=643MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:25 [INFO] diag: [DIAG] SNAPSHOT | cpu=49% rss=636MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:27 [INFO] diag: [DIAG] SNAPSHOT | cpu=44% rss=633MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:29 [INFO] diag: [DIAG] SNAPSHOT | cpu=38% rss=633MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:31 [INFO] diag: [DIAG] SNAPSHOT | cpu=50% rss=642MB ui_tick=1.0/s threads=13 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-33 (_run)[28104]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:33 [INFO] diag: [DIAG] SNAPSHOT | cpu=45% rss=642MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:35 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Proceeding with intent 'open_website' — no context issues detected.
+14:54:35 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-9_0 tid=29204
+14:54:35 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-9_0 tid=29204 status=OK duration=0ms
+14:54:35 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: open_website
+  1. open_website youtube
+14:54:35 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - url_loaded \u2192 https://www.youtube.com
+14:54:35 [INFO] thinking.pipeline:   plan steps=1 intent=open_website
+14:54:35 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-9_0 tid=29204
+[EXECUTOR] Executing step 0: action='open_website' target='youtube'
+[EXECUTOR]   Handler: BrowserHandler
+14:54:35 [INFO] diag: [DIAG] SNAPSHOT | cpu=50% rss=642MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+[EXECUTOR]   Result: True
+[EXECUTOR] All 1 step(s) executed successfully.
+14:54:36 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-9_0 tid=29204 status=OK duration=891ms
+14:54:36 [INFO] thinking.pipeline: Executor -> success=True message=Action completed.
+14:54:36 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=True status=SUCCESS message='Action completed.'
+14:54:37 [INFO] diag: [DIAG] SNAPSHOT | cpu=74% rss=642MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:39 [INFO] diag: [DIAG] SNAPSHOT | cpu=99% rss=633MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:41 [INFO] diag: [DIAG] SNAPSHOT | cpu=96% rss=642MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:43 [INFO] diag: [DIAG] SNAPSHOT | cpu=88% rss=642MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:45 [INFO] diag: [DIAG] SNAPSHOT | cpu=82% rss=619MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:47 [INFO] diag: [DIAG] SNAPSHOT | cpu=79% rss=619MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:49 [INFO] diag: [DIAG] SNAPSHOT | cpu=51% rss=610MB ui_tick=1.0/s threads=12 queues={'command_queue': 11, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-9_0[29204]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:51 [INFO] thinking.pipeline: IntelligentPlanner verification 'url_loaded' failed after 15s: url 'https://www.youtube.com' not found in active tabs
+14:54:51 [INFO] thinking.pipeline: IntelligentPlanner VERIFICATION: passed=False url 'https://www.youtube.com' not found in active tabs
+14:54:51 [INFO] thinking.pipeline: 
+---- VERIFICATION ----
+passed=False
+url 'https://www.youtube.com' not found in active tabs
+14:54:51 [WARNING] thinking.pipeline: IntelligentPlanner: VERIFICATION FAILED for intent=open_website
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-9_0 tid=29204 status=OK duration=34188ms
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=34188ms
+14:54:51 [INFO] voice.manager: VoiceManager: enqueued: 'Task: The action ran, but I couldn't verify the result (url '
+14:54:51 [INFO] run: Task result: TaskResult.FAILED | message: The action ran, but I couldn't verify the result (url 'https://www.youtube.com' not found in active tabs). I won't claim it worked — ask me to try again.
+14:54:51 [INFO] run: Processing text: 'increase volume'
+14:54:51 [INFO] voice.manager: VoiceManager: OK (174 chars, 0 ms): 'Task: The action ran, but I couldn't verify the result (url '
+14:54:51 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:54:51 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-10_0 tid=2560
+14:54:51 [INFO] thinking.pipeline: Pipeline INPUT: 'increase volume' confirmed=False
+14:54:51 [INFO] thinking.pipeline: 
+---- USER ------------
+increase volume
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:54:51 [INFO] thinking.pipeline:   intent=increase_volume category=unknown
+14:54:51 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Proceeding with intent 'increase_volume' — no context issues detected.
+14:54:51 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-10_0 tid=2560
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-10_0 tid=2560 status=OK duration=0ms
+14:54:51 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: increase_volume
+  1. increase_volume
+14:54:51 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - none
+14:54:51 [INFO] thinking.pipeline:   plan steps=1 intent=increase_volume
+14:54:51 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-10_0 tid=2560
+[EXECUTOR] Executing step 0: action='increase_volume' target=None
+[EXECUTOR]   Handler: VolumeHandler
+[EXECUTOR]   Result: {'success': False, 'message': 'Volume control is not available.'}
+[EXECUTOR]   Step returned failure: Volume control is not available.
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-10_0 tid=2560 status=OK duration=109ms
+14:54:51 [INFO] thinking.pipeline: Executor -> success=False message=Volume control is not available.
+14:54:51 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=False status=FAILED message='Volume control is not available.'
+14:54:51 [INFO] thinking.pipeline: 
+---- USER ------------
+increase volume
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- PLAN ------------
+0. increase_volume
+---- EXECUTOR --------
+FAILED (FAILED)
+14:54:51 [INFO] thinking.pipeline: 
+---- FINAL RESULT ----
+success=False status=FAILED
+Volume control is not available.
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-10_0 tid=2560 status=OK duration=109ms
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=109ms
+14:54:51 [INFO] voice.manager: VoiceManager: enqueued: 'Task: Volume control is not available. Result: FAILED'
+14:54:51 [INFO] run: Task result: TaskResult.FAILED | message: Volume control is not available.
+14:54:51 [INFO] run: Processing text: 'take screenshot'
+14:54:51 [INFO] voice.manager: VoiceManager: OK (53 chars, 0 ms): 'Task: Volume control is not available. Result: FAILED'
+14:54:51 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:54:51 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-11_0 tid=10868
+14:54:51 [INFO] thinking.pipeline: Pipeline INPUT: 'take screenshot' confirmed=False
+14:54:51 [INFO] thinking.pipeline: 
+---- USER ------------
+take screenshot
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:54:51 [INFO] thinking.pipeline:   intent=screenshot category=system
+14:54:51 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Proceeding with intent 'screenshot' — no context issues detected.
+14:54:51 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-11_0 tid=10868
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-11_0 tid=10868 status=OK duration=0ms
+14:54:51 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: screenshot
+  1. screenshot
+14:54:51 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - none
+14:54:51 [INFO] thinking.pipeline:   plan steps=1 intent=screenshot
+14:54:51 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-11_0 tid=10868
+[EXECUTOR] Executing step 0: action='screenshot' target=None
+[EXECUTOR]   Handler: ScreenshotHandler
+[EXECUTOR]   Result: {'success': True, 'message': 'Screenshot saved to C:\\Users\\muham\\Desktop\\screenshot_20260801_145451.png.', 'details': {'filepath': 'C:\\Users\\muham\\Desktop\\screenshot_20260801_145451.png'}}
+[EXECUTOR] All 1 step(s) executed successfully.
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-11_0 tid=10868 status=OK duration=203ms
+14:54:51 [INFO] thinking.pipeline: Executor -> success=True message=Screenshot saved to C:\Users\muham\Desktop\screenshot_20260801_145451.png.
+14:54:51 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=True status=SUCCESS message='Screenshot saved to C:\\Users\\muham\\Desktop\\screenshot_20260801_145451.png.'
+14:54:51 [INFO] thinking.pipeline: 
+---- USER ------------
+take screenshot
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- PLAN ------------
+0. screenshot
+---- EXECUTOR --------
+SUCCESS
+14:54:51 [INFO] thinking.pipeline: 
+---- FINAL RESULT ----
+success=True status=SUCCESS
+Screenshot saved to C:\Users\muham\Desktop\screenshot_20260801_145451.png.
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-11_0 tid=10868 status=OK duration=203ms
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=203ms
+14:54:51 [INFO] voice.manager: VoiceManager: enqueued: 'Done.'
+14:54:51 [INFO] run: Processing text: 'open settings'
+14:54:51 [INFO] voice.manager: VoiceManager: OK (5 chars, 0 ms): 'Done.'
+14:54:51 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:54:51 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-12_0 tid=25148
+14:54:51 [INFO] thinking.pipeline: Pipeline INPUT: 'open settings' confirmed=False
+14:54:51 [INFO] thinking.pipeline: 
+---- USER ------------
+open settings
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:54:51 [INFO] thinking.pipeline:   intent=open_settings category=unknown
+14:54:51 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Proceeding with intent 'open_settings' — no context issues detected.
+14:54:51 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-12_0 tid=25148
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-12_0 tid=25148 status=OK duration=0ms
+14:54:51 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: open_settings
+  1. open_settings
+14:54:51 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - none
+14:54:51 [INFO] thinking.pipeline:   plan steps=1 intent=open_settings
+14:54:51 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-12_0 tid=25148
+[EXECUTOR] Executing step 0: action='open_settings' target=''
+[EXECUTOR]   Handler: SettingsHandler
+[EXECUTOR]   Result: {'success': True, 'message': 'Opened main settings.', 'details': {'settings_uri': 'ms-settings:'}}
+[EXECUTOR] All 1 step(s) executed successfully.
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-12_0 tid=25148 status=OK duration=15ms
+14:54:51 [INFO] thinking.pipeline: Executor -> success=True message=Opened main settings.
+14:54:51 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=True status=SUCCESS message='Opened main settings.'
+14:54:51 [INFO] thinking.pipeline: 
+---- USER ------------
+open settings
+---- CLASSIFICATION --
+SYSTEM_COMMAND
+---- PLAN ------------
+0. open_settings
+---- EXECUTOR --------
+SUCCESS
+14:54:51 [INFO] thinking.pipeline: 
+---- FINAL RESULT ----
+success=True status=SUCCESS
+Opened main settings.
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-12_0 tid=25148 status=OK duration=15ms
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=31ms
+14:54:51 [INFO] voice.manager: VoiceManager: enqueued: 'Done.'
+14:54:51 [INFO] run: Processing text: 'open gmail'
+14:54:51 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:54:51 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-13_0 tid=18384
+14:54:51 [INFO] thinking.pipeline: Pipeline INPUT: 'open gmail' confirmed=False
+14:54:51 [INFO] thinking.pipeline: 
+---- USER ------------
+open gmail
+---- CLASSIFICATION --
+BROWSER_CONTROL
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:54:51 [INFO] thinking.pipeline:   intent=open_website category=navigation
+14:54:51 [INFO] thinking.pipeline:   decision=PROCEED reasoning=Protected site 'gmail' requested — will handle safely.
+14:54:51 [INFO] diag: [DIAG] TASK START | task=planner.create_plan thread=ThreadPoolExecutor-13_0 tid=18384
+14:54:51 [INFO] diag: [DIAG] TASK END   | task=planner.create_plan thread=ThreadPoolExecutor-13_0 tid=18384 status=OK duration=0ms
+14:54:51 [INFO] intelligence.intelligent_planner: 
+---- PLAN ------------
+Intent: open_website
+  1. open_website gmail
+14:54:51 [INFO] intelligence.intelligent_planner: ---- VERIFICATION ----
+  - url_loaded \u2192 https://mail.google.com
+14:54:51 [INFO] thinking.pipeline:   plan steps=1 intent=open_website
+14:54:51 [INFO] diag: [DIAG] TASK START | task=executor.execute thread=ThreadPoolExecutor-13_0 tid=18384
+[EXECUTOR] Executing step 0: action='open_website' target='gmail'
+[EXECUTOR]   Handler: BrowserHandler
+14:54:51 [INFO] voice.manager: VoiceManager: OK (5 chars, 16 ms): 'Done.'
+14:54:51 [INFO] diag: [DIAG] SNAPSHOT | cpu=61% rss=630MB ui_tick=1.0/s threads=14 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-35 (_run)[3668]d|Thread-37 (_run)[424]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+[EXECUTOR]   Result: True
+[EXECUTOR] All 1 step(s) executed successfully.
+14:54:52 [INFO] diag: [DIAG] TASK END   | task=executor.execute thread=ThreadPoolExecutor-13_0 tid=18384 status=OK duration=1047ms
+14:54:52 [INFO] thinking.pipeline: Executor -> success=True message=Action completed.
+14:54:52 [INFO] thinking.pipeline: IntelligentPlanner ACTION: success=True status=SUCCESS message='Action completed.'
+14:54:53 [INFO] diag: [DIAG] SNAPSHOT | cpu=97% rss=635MB ui_tick=1.0/s threads=14 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-35 (_run)[3668]d|Thread-37 (_run)[424]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:55 [INFO] diag: [DIAG] SNAPSHOT | cpu=94% rss=623MB ui_tick=1.0/s threads=13 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-35 (_run)[3668]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:57 [INFO] diag: [DIAG] SNAPSHOT | cpu=92% rss=613MB ui_tick=1.0/s threads=13 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-35 (_run)[3668]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:54:59 [INFO] diag: [DIAG] SNAPSHOT | cpu=77% rss=621MB ui_tick=1.0/s threads=13 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-35 (_run)[3668]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:55:01 [INFO] diag: [DIAG] SNAPSHOT | cpu=72% rss=613MB ui_tick=1.0/s threads=12 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:55:03 [INFO] diag: [DIAG] SNAPSHOT | cpu=65% rss=613MB ui_tick=1.0/s threads=12 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:55:05 [INFO] diag: [DIAG] SNAPSHOT | cpu=59% rss=613MB ui_tick=1.0/s threads=12 queues={'command_queue': 7, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-13_0[18384]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:55:07 [INFO] thinking.pipeline: IntelligentPlanner verification 'url_loaded' failed after 15s: url 'https://mail.google.com' not found in active tabs
+14:55:07 [INFO] thinking.pipeline: IntelligentPlanner VERIFICATION: passed=False url 'https://mail.google.com' not found in active tabs
+14:55:07 [INFO] thinking.pipeline: 
+---- VERIFICATION ----
+passed=False
+url 'https://mail.google.com' not found in active tabs
+14:55:07 [WARNING] thinking.pipeline: IntelligentPlanner: VERIFICATION FAILED for intent=open_website
+14:55:07 [INFO] diag: [DIAG] TASK END   | task=pipeline.process thread=ThreadPoolExecutor-13_0 tid=18384 status=OK duration=16172ms
+14:55:07 [INFO] diag: [DIAG] TASK END   | task=brain.process thread=Thread-11 (_backend_loop) tid=22936 status=OK duration=16172ms
+14:55:07 [INFO] voice.manager: VoiceManager: enqueued: 'Task: The action ran, but I couldn't verify the result (url '
+14:55:07 [INFO] run: Task result: TaskResult.FAILED | message: The action ran, but I couldn't verify the result (url 'https://mail.google.com' not found in active tabs). I won't claim it worked — ask me to try again.
+14:55:07 [INFO] run: Processing text: 'open reddit'
+14:55:07 [INFO] diag: [DIAG] TASK START | task=brain.process thread=Thread-11 (_backend_loop) tid=22936
+14:55:07 [INFO] voice.manager: VoiceManager: OK (174 chars, 0 ms): 'Task: The action ran, but I couldn't verify the result (url '
+14:55:07 [INFO] diag: [DIAG] TASK START | task=pipeline.process thread=ThreadPoolExecutor-14_0 tid=10184
+14:55:07 [INFO] thinking.pipeline: Pipeline INPUT: 'open reddit' confirmed=False
+14:55:07 [INFO] thinking.pipeline: 
+---- USER ------------
+open reddit
+---- CLASSIFICATION --
+BROWSER_CONTROL
+---- LLM -------------
+-
+---- EXECUTOR --------
+Pending
+14:55:07 [INFO] thinking.pipeline:   intent=open_website category=navigation
+14:55:07 [INFO] diag: [DIAG] SNAPSHOT | cpu=57% rss=623MB ui_tick=1.0/s threads=13 queues={'command_queue': 6, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-38 (_run)[22492]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-14_0[10184]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d
+14:55:09 [INFO] diag: [DIAG] SNAPSHOT | cpu=48% rss=623MB ui_tick=1.0/s threads=13 queues={'command_queue': 6, 'tts_queue': 0} threadlist=MainThread[28212]|Thread-10 (_text_input_loop)[25728]d|Thread-11 (_backend_loop)[22936]d|Thread-12 (_monitor)[12208]d|Thread-13 (_monitor)[17972]d|Thread-14 (_worker_loop)[6036]d|Thread-38 (_run)[22492]d|Thread-9 (_capture_loop)[25272]d|ThreadPoolExecutor-14_0[10184]d|diag-sampler[4452]d|system-monitor[21560]d|ui-stack-sampler[27912]d|world-model[26292]d

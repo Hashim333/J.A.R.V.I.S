@@ -1,2 +1,9 @@
 webrtcvad-wheels
 vosk
+
+# Speech pipeline: Faster-Whisper STT, Silero VAD, Porcupine wake word.
+# pvporcupine needs JARVIS_PICOVOICE_ACCESS_KEY set (otherwise the local
+# Vosk wake detector is used).  faster-whisper pulls in ctranslate2.
+faster-whisper
+silero-vad
+pvporcupine

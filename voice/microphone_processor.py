@@ -19,8 +19,8 @@ class MicrophoneProcessor:
       1. RMS energy calculation (for level monitoring / logging)
       2. Auto-calibration — measure noise floor from first ~1 s of audio
       3. Sensitivity scaling (user-configurable multiplier)
-      4. Noise gate — zeroes chunks below configurable RMS threshold
-      5. Automatic Gain Control — adaptively targets a configurable RMS level
+      4. Automatic Gain Control — adaptively targets a configurable RMS level
+      5. Noise gate — zeroes chunks still below threshold after AGC
       6. Peak normalization — prevents clipping after AGC overshoot
 
     Usage::
@@ -164,13 +164,8 @@ class MicrophoneProcessor:
         if self._sensitivity != 1.0:
             chunk = self._apply_gain(chunk, self._sensitivity)
 
-        # 4. Noise gate
-        if self._noise_gate_enabled and rms <= self._noise_gate_threshold:
-            self._audio_level = 0.0
-            self._running_rms = 0.0
-            return b'\x00' * len(chunk)
-
-        # 5. AGC
+        # 4. AGC — normalize level BEFORE the noise gate so quiet speech
+        #    is boosted above the gate threshold instead of being zeroed.
         if self._agc_enabled and rms > 0:
             target_gain = self._agc_target_level / max(rms, 1e-10)
             target_gain = max(0.1, min(target_gain, self._agc_max_gain))
@@ -185,6 +180,16 @@ class MicrophoneProcessor:
             chunk = self._apply_gain(chunk, self._current_gain)
             rms = self._calc_rms(chunk)
             self._running_rms = rms
+
+        # 5. Noise gate — zeroes chunks still below threshold after AGC
+        if self._noise_gate_enabled and rms <= self._noise_gate_threshold:
+            logger.debug(
+                "Noise gate: zeroing chunk (post-AGC rms=%.4f <= %.4f, gain=%.2f)",
+                rms, self._noise_gate_threshold, self._current_gain,
+            )
+            self._audio_level = 0.0
+            self._running_rms = 0.0
+            return b'\x00' * len(chunk)
 
         # 6. Peak normalization
         if self._normalization_target < 1.0:

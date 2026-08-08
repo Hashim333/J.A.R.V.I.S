@@ -1,0 +1,15 @@
+from __future__ import annotations
+
+from enum import Enum
+
+
+class TaskResult(Enum):
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    RETRYING = "RETRYING"
+    WAITING = "WAITING"
+    USER_CONFIRMATION = "USER_CONFIRMATION"
+    CLARIFICATION = "CLARIFICATION"
+    UNSUPPORTED = "UNSUPPORTED"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+    CANCELLED = "CANCELLED"

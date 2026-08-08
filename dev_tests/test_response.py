@@ -9,10 +9,10 @@ from models.response import Response
 from response.manager import ResponseManager
 
 
-def test_console_success_defaults_to_done() -> None:
+def test_console_success_defaults_to_neutral() -> None:
     response = Response(success=True, message="All steps executed.")
 
-    assert ResponseManager().console_text(response) == "Done."
+    assert ResponseManager().console_text(response) == "Understood."
 
 
 def test_console_unknown_command_message() -> None:
@@ -88,7 +88,7 @@ def test_voice_disabled_does_not_speak() -> None:
     with redirect_stdout(output):
         manager.present_console(response)
 
-    assert output.getvalue() == "Done.\n"
+    assert output.getvalue() == "Understood.\n"
     assert voice.spoken == []
 
 
@@ -118,8 +118,8 @@ def test_console_output_is_not_duplicated_when_voice_enabled() -> None:
     with redirect_stdout(output):
         manager.present_console(response)
 
-    assert output.getvalue() == "Done.\n"
-    assert voice.spoken == ["Done."]
+    assert output.getvalue() == "Understood.\n"
+    assert voice.spoken == ["Understood."]
 
 
 def test_voice_enabled_configuration_loading() -> None:

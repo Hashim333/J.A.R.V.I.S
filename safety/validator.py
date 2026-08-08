@@ -75,8 +75,8 @@ def validate_app_exists(app_name: str) -> dict[str, Any]:
         return {"valid": False, "exists": False, "message": "App name is empty"}
 
     try:
-        from automation.application_registry import ApplicationRegistry
-        registry = ApplicationRegistry()
+        from automation.application_registry import get_application_registry
+        registry = get_application_registry()
         info = registry.lookup(app_name)
         exe_path = getattr(info, "executable", None) or getattr(info, "path", None)
         if info is not None and exe_path and os.path.isfile(exe_path):

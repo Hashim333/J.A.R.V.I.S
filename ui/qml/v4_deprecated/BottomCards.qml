@@ -1,8 +1,5 @@
 import QtQuick 2.15
 
-/**
- * BottomCards — preview cards in the bottom section (Always Accessible, Chrome, VS Code, Floating Orb, Taskbar).
- */
 Item {
     id: root
 
@@ -10,67 +7,63 @@ Item {
     height: parent.height
 
     Row {
-        anchors.left: parent.left
-        anchors.leftMargin: 20
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 20
+        anchors.fill: parent
+        anchors.leftMargin: 88
+        anchors.rightMargin: 88
+        spacing: Math.max(18, (width - 760) / 5)
 
         Repeater {
             model: [
-                { icon: "◉", label: "ALWAYS\nACCESSIBLE", accent: "#ff8c1a" },
-                { icon: "◈", label: "CHROME", accent: "#33aaff" },
-                { icon: "▣", label: "VS CODE", accent: "#00ff88" },
-                { icon: "◎", label: "FLOATING\nORB", accent: "#ffd700" },
-                { icon: "▬", label: "TASKBAR", accent: "#ff8c1a" }
+                { icon: "\u25CE", label: "ADAPTIVE UI", subtext: "Orange (AI) \u2192 Blue (You)", accent: "#ff8c1a" },
+                { icon: "\u25C8", label: "REAL-TIME VOICE MATCH", subtext: "Particles react to voice", accent: "#33aaff" },
+                { icon: "\u25A3", label: "SMOOTH 60 FPS", subtext: "GPU Accelerated", accent: "#ff8c1a" },
+                { icon: "\u25C9", label: "NO CLUTTER", subtext: "Focus on what matters", accent: "#ff8c1a" },
+                { icon: "\u2723", label: "PREMIUM & FUTURISTIC", subtext: "Next-Gen AI Experience", accent: "#ff8c1a" }
             ]
 
             Item {
-                width: 100
-                height: 48
+                width: Math.max(150, (parent.width - parent.spacing * 4) / 5)
+                height: parent.height
 
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 6
-                    color: Qt.rgba(255/255, 255/255, 255/255, 0.02)
-                    border.width: 1
-                    border.color: Qt.rgba(255/255, 255/255, 255/255, 0.04)
-                    Behavior on color { ColorAnimation { duration: 150 } }
-                    Behavior on border.color { ColorAnimation { duration: 150 } }
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 12
 
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 4
+                    Rectangle {
+                        width: 34
+                        height: 34
+                        radius: 8
+                        color: Qt.rgba(255/255, 126/255, 0, 0.08)
+                        border.width: 1
+                        border.color: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.35)
+
+                        property color accentColor: modelData.accent
 
                         Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.centerIn: parent
                             text: modelData.icon
-                            font.pixelSize: 16
-                            color: modelData.accent
-                        }
-
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: modelData.label
                             font.family: "Segoe UI"
-                            font.pixelSize: 7
-                            font.letterSpacing: 1
-                            color: "#998877"
-                            horizontalAlignment: Text.AlignHCenter
-                            lineHeight: 1.2
+                            font.pixelSize: 17
+                            color: modelData.accent
                         }
                     }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onEntered: {
-                            parent.color = Qt.rgba(255/255, 140/255, 26/255, 0.06)
-                            parent.border.color = Qt.rgba(255/255, 140/255, 26/255, 0.10)
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+
+                        Text {
+                            text: modelData.label
+                            font.family: "Segoe UI"
+                            font.pixelSize: 13
+                            color: "#d9c9ba"
                         }
-                        onExited: {
-                            parent.color = Qt.rgba(255/255, 255/255, 255/255, 0.02)
-                            parent.border.color = Qt.rgba(255/255, 255/255, 255/255, 0.04)
+
+                        Text {
+                            text: modelData.subtext
+                            font.family: "Segoe UI"
+                            font.pixelSize: 11
+                            color: "#9a8b7d"
                         }
                     }
                 }
