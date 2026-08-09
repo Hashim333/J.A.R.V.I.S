@@ -6,6 +6,11 @@ from thinking.context_snapshot import (
     RunningAppInfo,
 )
 from thinking.decision_engine import Decision, DecisionEngine, DecisionType
+from thinking.decision_router import (
+    DecisionRouter,
+    ExecutionPlan,
+    RouteCategory,
+)
 from thinking.intent_recognizer import IntentRecognizer, RecognizedIntent
 from thinking.pipeline import PipelineEngine
 from thinking.response_generator import ResponseGenerator
