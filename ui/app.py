@@ -156,7 +156,11 @@ class JarvisApp:
         self._engine = QQmlApplicationEngine()
         self._engine.rootContext().setContextProperty("bridge", self.bridge)
 
-        qml_path = Path(__file__).parent / "qml" / "v4_deprecated" / "MainWindow.qml"
+        # Lightweight presentation shell (replaces the heavy v4 dashboard;
+        # v4_deprecated/ is retained off-path for reference).  Backend and
+        # bridge contract are unchanged — the shell only renders
+        # bridge.coreState / subtitle signals.
+        qml_path = Path(__file__).parent / "qml" / "light" / "Shell.qml"
         self._engine.load(QUrl.fromLocalFile(str(qml_path)))
 
         root_objects = self._engine.rootObjects()
@@ -165,7 +169,7 @@ class JarvisApp:
             return
 
         self.window = root_objects[0]
-        self.window.setMinimumSize(QSize(1280, 720))
+        self.window.setMinimumSize(QSize(480, 320))
 
         # The QML top-level window is a QWindow (on Windows). QWindow has no
         # setWindowIcon() — that is a QWidget-only API. The icon is provided
@@ -178,7 +182,7 @@ class JarvisApp:
 
         # Force WS_EX_APPWINDOW so the frameless window has a taskbar button
         self._ensure_taskbar_icon()
-        self.window.showMaximized()
+        self.window.showNormal()
 
         self.wm.set_fullscreen_window(self.window)
 

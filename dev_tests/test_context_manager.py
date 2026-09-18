@@ -247,13 +247,34 @@ class TestContextManagerAppCheck(unittest.TestCase):
             WindowState(hwnd=2, title="Chrome", pid=101, is_minimized=False,
                         is_maximized=True, is_focused=False, is_visible=True),
         ]
+        # FIX-CHROME-CLARIFY: a plain "open Chrome" switches to the existing
+        # window by default — no clarification round-trip.
         result = self.cm.check_before_execution(
             "open_app", {"app_name": "chrome", "original_app": "Chrome"}, "open Chrome",
         )
         self.assertIsNotNone(result)
+        self.assertTrue(result.success)
+        self.assertFalse(result.needs_clarification)
+        self.assertIn("already running", result.message)
+        self.assertFalse(self.cm.clarification.has_pending)
+
+    @patch("context_manager.app_detector.AppDetector.detect")
+    def test_app_running_new_window_still_clarifies(self, mock_detect):
+        from context_manager.app_detector import WindowState
+        mock_detect.return_value.running = True
+        mock_detect.return_value.windows = [
+            WindowState(hwnd=2, title="Chrome", pid=101, is_minimized=False,
+                        is_maximized=True, is_focused=False, is_visible=True),
+        ]
+        # Explicit "new window" still asks for confirmation before acting.
+        result = self.cm.check_before_execution(
+            "open_app", {"app_name": "chrome", "original_app": "Chrome"},
+            "open Chrome in a new window",
+        )
+        self.assertIsNotNone(result)
         self.assertFalse(result.success)
         self.assertTrue(result.needs_clarification)
-        self.assertIn("already running", result.clarification_question)
+        self.assertIn("new window", result.clarification_question)
         self.assertTrue(self.cm.clarification.has_pending)
 
     def test_non_app_intent_returns_none(self):
@@ -573,7 +594,7 @@ class TestContextManagerFullScenario(unittest.TestCase):
         self.cm = ContextManager()
 
     def test_open_chrome_twice_switch(self):
-        """open Chrome -> open Chrome again -> switch"""
+        """open Chrome -> (already running) -> switches by default"""
         with patch("context_manager.app_detector.AppDetector.detect") as mock_detect:
             from context_manager.app_detector import AppStatus, WindowState
             mock_detect.return_value = AppStatus(
@@ -582,20 +603,18 @@ class TestContextManagerFullScenario(unittest.TestCase):
                                      is_minimized=False, is_maximized=True,
                                      is_focused=False, is_visible=True)],
             )
+            # FIX-CHROME-CLARIFY: a plain "open Chrome" on a running Chrome
+            # switches to the existing window immediately — no clarification.
             r1 = self.cm.check_before_execution(
                 "open_app", {"app_name": "chrome", "original_app": "Chrome"}, "open Chrome",
             )
             self.assertIsNotNone(r1)
-            self.assertTrue(r1.needs_clarification)
-            self.assertIn("already running", r1.clarification_question)
-
-            r2 = self.cm.handle_follow_up("switch to it")
-            self.assertIsNotNone(r2)
-            self.assertTrue(r2.success)
-            self.assertEqual(r2.data["action"], "switch_to_existing")
+            self.assertTrue(r1.success)
+            self.assertIn("already running", r1.message)
+            self.assertFalse(self.cm.clarification.has_pending)
 
     def test_open_chrome_new_window(self):
-        """open Chrome -> open Chrome again -> new window"""
+        """open Chrome (new window) -> still clarifies before a new window"""
         with patch("context_manager.app_detector.AppDetector.detect") as mock_detect:
             from context_manager.app_detector import AppStatus, WindowState
             mock_detect.return_value = AppStatus(
@@ -604,16 +623,19 @@ class TestContextManagerFullScenario(unittest.TestCase):
                                      is_minimized=False, is_maximized=True,
                                      is_focused=False, is_visible=True)],
             )
-            self.cm.check_before_execution(
-                "open_app", {"app_name": "chrome", "original_app": "Chrome"}, "open Chrome",
+            r0 = self.cm.check_before_execution(
+                "open_app", {"app_name": "chrome", "original_app": "Chrome"},
+                "open Chrome in a new window",
             )
+            self.assertIsNotNone(r0)
+            self.assertTrue(r0.needs_clarification)
             r = self.cm.handle_follow_up("new window")
             self.assertIsNotNone(r)
             self.assertTrue(r.success)
             self.assertEqual(r.data["action"], "open_new_window")
 
     def test_open_chrome_new_tab(self):
-        """open Chrome -> open Chrome again -> new tab"""
+        """open Chrome (new tab) -> still clarifies before a new tab"""
         with patch("context_manager.app_detector.AppDetector.detect") as mock_detect:
             from context_manager.app_detector import AppStatus, WindowState
             mock_detect.return_value = AppStatus(
@@ -622,9 +644,12 @@ class TestContextManagerFullScenario(unittest.TestCase):
                                      is_minimized=False, is_maximized=True,
                                      is_focused=False, is_visible=True)],
             )
-            self.cm.check_before_execution(
-                "open_app", {"app_name": "chrome", "original_app": "Chrome"}, "open Chrome",
+            r0 = self.cm.check_before_execution(
+                "open_app", {"app_name": "chrome", "original_app": "Chrome"},
+                "open Chrome in a new tab",
             )
+            self.assertIsNotNone(r0)
+            self.assertTrue(r0.needs_clarification)
             r = self.cm.handle_follow_up("new tab")
             self.assertIsNotNone(r)
             self.assertTrue(r.success)

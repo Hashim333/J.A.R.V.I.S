@@ -235,6 +235,21 @@ class VoiceEngine:
             sample_rate=16000,
         )
 
+        # FIX 3: never steal a consumer owned by someone else (e.g. the
+        # full-duplex session).  If the feed is owned, barge-in cannot
+        # attach here — refuse loudly instead of hijacking STT or, worse,
+        # leaving the mic disconnected on stop().
+        current = self._microphone_stream._consumer
+        if current is not None and getattr(current, "__self__", None) is not self._barge_in_vad:
+            owner = type(getattr(current, "__self__", current)).__name__
+            if owner != "VoiceEngine":
+                logger.warning(
+                    "VoiceEngine: barge-in refused — mic consumer owned by %s",
+                    owner,
+                )
+                self._barge_in_active = False
+                self._barge_in_vad = None
+                return
         self._microphone_stream.set_consumer(self._barge_in_vad.process_audio)
         self._microphone_stream.set_on_audio_level(self._on_audio_level)
         logger.info("VoiceEngine: barge-in monitoring started")
@@ -253,8 +268,20 @@ class VoiceEngine:
             self._barge_in_timer = None
         self._barge_in_pending = False
         if self._microphone_stream is not None:
-            self._microphone_stream.set_consumer(None)
-            self._microphone_stream.set_on_audio_level(None)
+            # FIX 3: only release the consumer if it is still ours — never
+            # disconnect a feed owned by someone else (e.g. duplex STT).
+            current = self._microphone_stream._consumer
+            if current is None or (
+                getattr(current, "__self__", None) is self._barge_in_vad
+            ):
+                self._microphone_stream.set_consumer(None)
+                self._microphone_stream.set_on_audio_level(None)
+            else:
+                logger.warning(
+                    "VoiceEngine: barge-in stopped but mic consumer owned by "
+                    "%s — left attached",
+                    type(getattr(current, "__self__", current)).__name__,
+                )
         self._barge_in_vad = None
         logger.info("VoiceEngine: barge-in monitoring stopped")
 

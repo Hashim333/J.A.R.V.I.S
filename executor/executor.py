@@ -360,6 +360,13 @@ class Executor:
                     attempt += 1
                     result = handler.run(step, voice_input=self._voice_input)
                     print(f"[EXECUTOR]   Result: {result!r}")
+                    if cancel_event is not None and cancel_event.is_set():
+                        logger.info(
+                            "[EXECUTOR] Task cancelled after step %d returned — "
+                            "discarding stale handler result",
+                            index,
+                        )
+                        return self._cancelled_result(plan, results)
                     step_result = ActionResult.from_handler(result)
                     if (
                         step_result.task_result == TaskResult.RETRYING
@@ -468,7 +475,7 @@ class Executor:
                 )
                 return ActionResult(
                     success=False,
-                    message=f"Step {index} (action={action!r}) failed: {exc}",
+                    message="I couldn't complete that request.",
                     data={
                         "intent": plan.intent,
                         "results": results,

@@ -5,6 +5,7 @@ import threading
 from concurrent.futures import Future, TimeoutError
 from typing import TYPE_CHECKING, Any
 
+from brain.time_budget import TimeBudget
 from models.response import Response
 from monitoring.performance import log_duration
 from monitoring.instrumentation import timed
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BRAIN_TIMEOUT = 20.0
+_TIMEOUT_RESULT_GRACE = 1.5
 
 
 def _task_result(value: str) -> Any:
@@ -159,7 +161,37 @@ class Brain:
             future.cancel()
             if cancel_event is not None:
                 cancel_event.set()
-            logger.error("Brain: operation timed out after %ds — recovery: returning error response", timeout)
+            # Fast path: the operation may have completed exactly at the
+            # deadline — a finished operation must report its real result,
+            # never a timeout.
+            if future.done():
+                try:
+                    done_result = future.result(timeout=0)
+                except Exception:
+                    done_result = None
+                if done_result is not None:
+                    logger.warning(
+                        "Brain: operation completed at the %.1fs deadline — "
+                        "returning its result instead of a timeout",
+                        timeout,
+                    )
+                    return done_result
+            # A synchronous handler may be completing at the deadline. Give
+            # it a short handoff window so a successful result is not turned
+            # into a false timeout, while still bounding a genuinely hung
+            # operation.
+            try:
+                late_result = future.result(timeout=_TIMEOUT_RESULT_GRACE)
+            except TimeoutError:
+                late_result = None
+            if late_result is not None:
+                logger.warning(
+                    "Brain: operation crossed %.1fs deadline but returned a result "
+                    "during the handoff grace window",
+                    _TIMEOUT_RESULT_GRACE,
+                )
+                return late_result
+            logger.error("Brain: operation timed out after %.1fs — recovery: returning error response", timeout)
             warn_recovery("brain operation timeout")
             return Response(
                 success=False,
@@ -193,13 +225,21 @@ class Brain:
         self._ensure_pipeline()
         start = stage_entry("brain.process", input_=text)
         try:
-            return self._run_with_timeout(
+            budget = TimeBudget(_BRAIN_TIMEOUT)
+            response = self._run_with_timeout(
                 lambda: self._pipeline.process(
                     text, confirmed=confirmed, cancel_event=cancel_event,
                     speech_confidence=speech_confidence,
+                    time_budget=budget,
                 ),
                 cancel_event=cancel_event,
             )
+            # Temporary session memory: the user side of the exchange is
+            # recorded by the pipeline (_remember_command); record JARVIS's
+            # reply here so the reasoner's next prompt sees both turns and
+            # can resolve references like "it" / "that".
+            self._remember_reply(response)
+            return response
         finally:
             stage_exit("brain.process", start)
 
@@ -209,11 +249,47 @@ class Brain:
         self._ensure_pipeline()
         start = stage_entry("brain.resolve_context", input_=answer)
         try:
-            return self._run_with_timeout(
+            budget = TimeBudget(_BRAIN_TIMEOUT)
+            response = self._run_with_timeout(
                 lambda: self._pipeline.resolve_context(
-                    answer, cancel_event=cancel_event,
+                    answer, cancel_event=cancel_event, time_budget=budget,
                 ),
                 cancel_event=cancel_event,
             )
+            self._remember_reply(response)
+            return response
         finally:
             stage_exit("brain.resolve_context", start)
+
+    def _remember_reply(self, response: Any) -> None:
+        """Append JARVIS's reply to the in-memory conversation history.
+
+        Uses the existing ``WorkingMemory`` ASSISTANT_ACTION list (bounded
+        at 20 entries).  Purely in-RAM: restarting the app clears it
+        automatically; nothing is ever written to disk.
+        """
+        if self._working_memory is None or response is None:
+            return
+        message = getattr(response, "message", "") or ""
+        if not message.strip():
+            return
+        try:
+            self._working_memory.add_action(message.strip())
+        except Exception as exc:
+            logger.warning("WorkingMemory.add_action (reply) failed: %s", exc)
+
+    def reset_conversation(self) -> int:
+        """Explicitly clear the temporary conversation memory.
+
+        Returns the number of entries evicted.  Memory is otherwise lost
+        automatically when the application exits (it lives only in RAM).
+        """
+        if self._working_memory is None:
+            return 0
+        try:
+            cleared = self._working_memory.clear()
+            logger.info("Conversation memory cleared (%d entries)", cleared)
+            return cleared
+        except Exception as exc:
+            logger.warning("WorkingMemory.clear failed: %s", exc)
+            return 0

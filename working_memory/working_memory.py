@@ -103,8 +103,11 @@ class WorkingMemory:
         """Signal the background eviction loop and wait for it."""
         self._stop.set()
         if self._eviction_thread is not None:
-            self._eviction_thread.join(timeout=5.0)
-            logger.info("WorkingMemory: stopped")
+            self._eviction_thread.join(timeout=2.0)
+            if self._eviction_thread.is_alive():
+                logger.warning("WorkingMemory: eviction thread still blocked after 2s — continuing shutdown")
+            else:
+                logger.info("WorkingMemory: stopped")
 
     # ── Add ───────────────────────────────────────────────────────────
 

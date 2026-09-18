@@ -30,6 +30,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from brain.llm import LLM
 from brain.parser import Parser
@@ -123,6 +124,7 @@ _INTENT_TO_CATEGORY: dict[str, UtteranceCategory] = {
     "sign_out": UtteranceCategory.SYSTEM_COMMAND,
     "cancel_shutdown": UtteranceCategory.SYSTEM_COMMAND,
     "system_status": UtteranceCategory.SYSTEM_COMMAND,
+    "report_time": UtteranceCategory.SYSTEM_COMMAND,
     "set_brightness": UtteranceCategory.SYSTEM_COMMAND,
     "wifi_on": UtteranceCategory.SYSTEM_COMMAND,
     "wifi_off": UtteranceCategory.SYSTEM_COMMAND,
@@ -215,9 +217,9 @@ _CHAT_PATTERNS: list[tuple[re.Pattern[str], UtteranceCategory, str]] = [
      UtteranceCategory.QUESTION, "I can open and close apps, search the web, control browser tabs, manage files, and control system settings like volume, brightness, and Wi-Fi. What would you like me to do?"),
     (re.compile(r"(thank you|thanks)\b", re.IGNORECASE),
      UtteranceCategory.CHAT, "You're welcome!"),
-    (re.compile(r"^(what|why|how|where|when|which|who|is it|are you|do you|does|can i|is there)", re.IGNORECASE),
-     UtteranceCategory.QUESTION, "I couldn't reach my language model, so I can only help with commands right now. "
-                                "You can ask me to open apps, search the web, or control system settings."),
+     (re.compile(r"^(what|why|how|where|when|which|who|is it|are you|do you|does|can i|is there)", re.IGNORECASE),
+      UtteranceCategory.QUESTION, "Your online AI connection is unavailable right now. "
+                                 "You can ask me to open apps, search the web, or control system settings."),
 ]
 
 
@@ -232,12 +234,16 @@ class UtteranceClassifier:
     # Public API
     # ------------------------------------------------------------------
 
-    def classify(self, text: str) -> ClassificationResult:
+    def classify(self, text: str, time_budget: Any = None) -> ClassificationResult:
         """Classify *text* into a single ``UtteranceCategory``.
 
         Returns a result whose ``category`` is never ``None``. Action
         categories carry an empty ``response``; non-action categories
         carry a natural spoken/printed response.
+
+        ``time_budget`` (``brain.time_budget.TimeBudget``) bounds the LLM
+        classification call so it never exceeds the parent brain budget
+        (PART 11).
         """
         if not text or not text.strip():
             return ClassificationResult(
@@ -259,7 +265,7 @@ class UtteranceClassifier:
             return canned
 
         # 3. LLM classification + response (with action-evidence guard).
-        return self._classify_by_llm(text)
+        return self._classify_by_llm(text, time_budget=time_budget)
 
     # ------------------------------------------------------------------
     # Rule fast-path
@@ -290,10 +296,19 @@ class UtteranceClassifier:
     # LLM classification
     # ------------------------------------------------------------------
 
-    def _classify_by_llm(self, text: str) -> ClassificationResult:
+    def _classify_by_llm(
+        self, text: str, time_budget: Any = None
+    ) -> ClassificationResult:
         prompt = _CLASSIFIER_PROMPT.format(text=text.strip())
         try:
-            raw = self._llm.ask(prompt)
+            if time_budget is not None:
+                if time_budget.expired:
+                    logger.debug("UtteranceClassifier: budget exhausted — using fallback")
+                    return self._classify_by_fallback(text)
+                default = getattr(self._llm, "_timeout", None) or 30.0
+                raw = self._llm.ask(prompt, timeout=time_budget.child_timeout(default))
+            else:
+                raw = self._llm.ask(prompt)
         except Exception as exc:
             logger.warning("UtteranceClassifier: LLM unavailable (%s) — using fallback", exc)
             return self._classify_by_fallback(text)
@@ -377,8 +392,18 @@ class UtteranceClassifier:
         if lowered.endswith("?"):
             return ClassificationResult(
                 category=UtteranceCategory.QUESTION,
-                response="I couldn't reach my language model, so I can only help with commands right now. "
+                response="Your online AI connection is unavailable right now. "
                          "You can ask me to open apps, search the web, or control system settings.",
+                source="rules",
+            )
+
+        if self._has_action_evidence(text):
+            return ClassificationResult(
+                category=UtteranceCategory.QUESTION,
+                response=(
+                    "I heard a command, but I could not identify the exact "
+                    "action or target. Please rephrase it."
+                ),
                 source="rules",
             )
 

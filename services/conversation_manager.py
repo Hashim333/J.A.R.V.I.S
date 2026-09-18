@@ -131,7 +131,7 @@ class ConversationManager:
         self._set_state(ConversationState.RETURN_TO_IDLE, reason)
         self._state = ConversationState.IDLE
         self._rearm_wake("return to idle")
-        logger.info("Sleep entered — returning to wake mode (%s)", reason or "idle")
+        logger.info("Returned to idle — ready to listen (%s)", reason or "idle")
 
     def on_timeout(self) -> None:
         self._clear_pending()

@@ -13,6 +13,16 @@ from thinking.decision_router import (
 )
 from thinking.intent_recognizer import IntentRecognizer, RecognizedIntent
 from thinking.pipeline import PipelineEngine
+from thinking.speech_intelligence import (
+    AliasDictionary,
+    ConfidenceBand,
+    CorrectionRecord,
+    InstalledAppMatcher,
+    SpeechAction,
+    SpeechDecision,
+    SpeechIntelligenceLayer,
+    SpeechTranscript,
+)
 from thinking.response_generator import ResponseGenerator
 from thinking.task_supervisor import SupervisorDecision, TaskStatus, TaskSupervisor
 from thinking.verification_engine import VerificationEngine, VerificationResult

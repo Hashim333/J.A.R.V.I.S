@@ -61,6 +61,21 @@ _PROTECTED_TAB_PATTERNS: list[str] = [
     "stackoverflow", "stackexchange",
 ]
 
+_NEW_WINDOW_TOKENS = ("new window", "another window", "new tab", "second window", "additional window")
+_PROFILE_TOKENS = ("profile", "specific profile", "different profile", "another profile", "separate profile")
+
+
+def _mentions_new_window(raw_text: str) -> bool:
+    text = (raw_text or "").casefold()
+    return any(t in text for t in _NEW_WINDOW_TOKENS)
+
+
+def _mentions_different_profile(raw_text: str) -> bool:
+    text = (raw_text or "").casefold()
+    return "profile" in text and any(
+        t in text for t in ("different", "other", "another", "specific", "work", "personal", "new")
+    )
+
 
 class ContextManager:
     def __init__(self) -> None:
@@ -76,7 +91,7 @@ class ContextManager:
         self.clarification.store_last_command(raw_text)
 
         if intent == "open_app":
-            return self._check_app_open(entities)
+            return self._check_app_open(entities, raw_text)
         elif intent == "open_website":
             return self._check_website_open(entities)
         elif intent == "search":
@@ -184,7 +199,7 @@ class ContextManager:
     # App checks
     # ------------------------------------------------------------------
 
-    def _check_app_open(self, entities: dict[str, Any]) -> Response | None:
+    def _check_app_open(self, entities: dict[str, Any], raw_text: str = "") -> Response | None:
         app_name = entities.get("app_name") or entities.get("original_app", "")
         process_name = entities.get("process_name", f"{app_name}.exe")
         display_name = entities.get("original_app", app_name)
@@ -205,11 +220,36 @@ class ContextManager:
         is_browser = any(
             b in app_name.casefold() for b in ("chrome", "edge", "brave", "opera", "vivaldi", "firefox")
         )
+
+        # FIX-CHROME-CLARIFY: opening an already-running app is the common,
+        # expected action — JARVIS switches to the existing window by default
+        # and never asks "use existing or new?" for a plain "open Chrome".
+        # Clarification is reserved for utterances that explicitly request a
+        # new window or a different profile, otherwise it is a "switch to the
+        # existing window" command.
+        wants_new_window = _mentions_new_window(raw_text)
+        # An explicitly named profile (e.g. "open Chrome Hashi") is already
+        # resolved — the handler opens that profile directly, so no
+        # "which profile?" question is asked. Only an unnamed profile
+        # request ("a different profile") needs clarification.
+        explicit_profile = (entities.get("profile") or "").strip()
+        wants_profile = not explicit_profile and _mentions_different_profile(raw_text)
+
         if is_browser:
-            question = (
-                f"{display_name} is already running. Would you like me to "
-                "use the existing window, open a new window, or use a different profile?"
-            )
+            if wants_profile:
+                question = (
+                    f"{display_name} is already running. Which profile should I use?"
+                )
+            elif wants_new_window:
+                question = (
+                    f"{display_name} is already running. Open a new window?"
+                )
+            else:
+                # Default: focus the existing Chrome window — no clarification.
+                msg = (
+                    f"{display_name} is already running — switching to it."
+                )
+                return Response(success=True, message=msg)
         elif has_focusable_window:
             question = f"{display_name} is already running. Would you like me to switch to it or open another window?"
         else:
@@ -294,6 +334,16 @@ class ContextManager:
         query = entities.get("query", "")
         provider = entities.get("provider", "google")
         provider_key = provider.strip().casefold()
+
+        # An explicitly requested provider ("search for Python in YouTube",
+        # "search X on Google") is unambiguous: execute it directly in the
+        # appropriate browser context. The browser layer reuses the existing
+        # search tab instead of duplicating it, so asking
+        # replace/current/new-tab just because a search already exists only
+        # stalls a clear command. Clarification is reserved for requests
+        # with no explicit provider.
+        if entities.get("provider_explicit"):
+            return None
 
         # Check if the active tab is YouTube — ask search destination first
         active = self.browser_detector.get_active_tab_across_browsers()

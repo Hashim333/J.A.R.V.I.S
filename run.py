@@ -13,6 +13,16 @@ transitions live in exactly one place — the ConversationOwner driving the
 from __future__ import annotations
 
 import logging
+import os
+
+# The Whisper/numpy stack pulls in Intel MKL (Fortran runtime), whose
+# default console-control handler ABORTS the whole process (forrtl error
+# 200) when its hosting console window closes — observed killing a healthy
+# backend mid-conversation. Disabling that handler keeps the backend alive;
+# Ctrl+C / shutdown paths are unaffected (Python-level handlers remain).
+# Must be set before MKL first loads, hence here at module top.
+os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
+
 import queue
 import sys
 import threading
@@ -73,7 +83,94 @@ _CONVERSATION_AUTO_SLEEP_SECONDS = 30.0
 _CONVERSATION_CONFIRMATION_TIMEOUT_SECONDS = 15.0
 
 
+def _is_pid_running(pid: int) -> bool:
+    """Cross-process liveness check."""
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            import subprocess
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, int(pid))
+            if handle:
+                try:
+                    exit_code = ctypes.c_ulong()
+                    if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                        return exit_code.value == 259
+                    return True
+                finally:
+                    kernel32.CloseHandle(handle)
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            output = (result.stdout or "").strip()
+            return result.returncode == 0 and bool(output) and str(pid) in output
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _ensure_single_backend() -> None:
+    """Refuse to start a second backend process.
+
+    Two owner loops would fight over one microphone (one runs deaf) and
+    interleave contradictory states to the UI. A stale pid file (dead
+    process) is ignored and overwritten.
+    """
+    from pathlib import Path
+    pid_file = Path(__file__).resolve().parent / ".jarvis_backend.pid"
+    try:
+        raw = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        raw = ""
+    if raw:
+        try:
+            pid = int(raw)
+        except ValueError:
+            pid = -1
+        if pid != os.getpid() and _is_pid_running(pid):
+            print(
+                f"ERROR: another JARVIS backend is already running (pid {pid}). "
+                "Stop it (or delete .jarvis_backend.pid if it is stale) "
+                "before starting a second one — two backends corrupt "
+                "microphone ownership and UI state.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+    try:
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write backend pid file: %s", exc)
+
+
+def _release_backend_pid_file() -> None:
+    """Clear the guard file on clean exit — only if it still names us."""
+    from pathlib import Path
+    pid_file = Path(__file__).resolve().parent / ".jarvis_backend.pid"
+    try:
+        if pid_file.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            pid_file.unlink()
+    except OSError:
+        pass
+
+
 def main() -> None:
+    backend_only = any(arg in {"--backend-only", "--headless", "--no-ui"} for arg in sys.argv[1:])
+    if backend_only:
+        sys.argv = [arg for arg in sys.argv if arg not in {"--backend-only", "--headless", "--no-ui"}]
+        sys.argv = [sys.argv[0]] + [arg for arg in sys.argv[1:] if arg not in {"--backend-only", "--headless", "--no-ui"}]
+
+    # Persistent modes open the microphone: exactly one backend may run.
+    # (One-shot CLI text mode below never touches audio — no guard needed.)
+    if len(sys.argv) == 1:
+        _ensure_single_backend()
+
     if len(sys.argv) > 1:
         parser = Parser()
         planner = Planner()
@@ -174,12 +271,43 @@ def main() -> None:
         player.on_chunk_written = duplex_session.feed_playback_reference
         logger.info("Full-duplex echo cancellation active (playback reference fed)")
     else:
-        # No PCM reference available (e.g. system SAPI provider) — fall back
-        # to the old mic-mute echo prevention.
-        if player is not None:
-            player.on_playback_started = microphone_stream.mute
-            player.on_playback_finished = microphone_stream.unmute
         logger.info("Echo prevention active (mic-mute fallback, no PCM reference)")
+
+    def _tts_mute_guard_start() -> None:
+        """Mute the mic while TTS plays — but ONLY when no echo-cancelling
+        playback reference is available for the CURRENT provider.
+
+        The active provider can change at runtime (ElevenLabs quota ->
+        Piper -> system SAPI fallback), so this is decided per utterance,
+        not once at startup: providers whose player feeds the echo
+        canceller keep the mic open for instant barge-in; every other
+        provider mutes (ownership-safe "tts" owner) so JARVIS's own voice
+        can never self-trigger barge-in or phantom captures.
+        """
+        try:
+            provider = voice_manager.provider
+            provider_player = getattr(provider, "player", None)
+            if (
+                provider_player is not None
+                and getattr(provider_player, "on_chunk_written", None) is not None
+            ):
+                return
+        except Exception:
+            pass
+        microphone_stream.mute("tts")
+
+    def _tts_mute_guard_end() -> None:
+        """Re-arm the mic after TTS (releases only the "tts" mute owner)."""
+        try:
+            microphone_stream.unmute("tts")
+        except Exception as exc:
+            logger.error("TTS mute-guard release failed: %s", exc)
+
+    # Provider-agnostic, utterance-scoped, always paired (try/finally in
+    # the speech worker): the mic can never be left muted by TTS, and a
+    # runtime provider swap can never leave it unguarded.
+    voice_manager.on_utterance_started = _tts_mute_guard_start
+    voice_manager.on_utterance_finished = _tts_mute_guard_end
 
     def _voice_input() -> str | None:
         if voice_engine.is_speaking:
@@ -205,6 +333,14 @@ def main() -> None:
     registry.register("youtube_like", browser_handler)
     registry.register("youtube_subscribe", browser_handler)
     registry.register("youtube_continue_watching", browser_handler)
+    registry.register("youtube_volume_up", browser_handler)
+    registry.register("youtube_volume_down", browser_handler)
+    registry.register("youtube_mute", browser_handler)
+    registry.register("youtube_unmute", browser_handler)
+    registry.register("youtube_enter_fullscreen", browser_handler)
+    registry.register("youtube_exit_fullscreen", browser_handler)
+    registry.register("youtube_replay", browser_handler)
+    registry.register("youtube_go_back", browser_handler)
     registry.register("scroll_page", browser_handler)
     registry.register("get_page_state", browser_handler)
     registry.register("get_selected_text", browser_handler)
@@ -260,16 +396,24 @@ def main() -> None:
             agc_target_level=settings.mic_agc_target_level,
             noise_gate_enabled=settings.mic_noise_gate_enabled,
             noise_gate_threshold=settings.mic_noise_gate_threshold,
+            dc_removal_enabled=settings.mic_dc_removal_enabled,
+            high_pass_enabled=settings.mic_high_pass_enabled,
+            high_pass_cutoff_hz=settings.mic_high_pass_cutoff_hz,
+            speech_normalization_enabled=settings.mic_speech_normalization_enabled,
         )
     )
     logger.info(
         "MicrophoneProcessor wired: sensitivity=%s agc=%s target=%.3f "
-        "noise_gate=%s threshold=%.3f",
+        "noise_gate=%s threshold=%.3f dc=%s hp=%s(%.0f Hz) speech_norm=%s",
         settings.mic_sensitivity,
         settings.mic_agc_enabled,
         settings.mic_agc_target_level,
         settings.mic_noise_gate_enabled,
         settings.mic_noise_gate_threshold,
+        settings.mic_dc_removal_enabled,
+        settings.mic_high_pass_enabled,
+        settings.mic_high_pass_cutoff_hz,
+        settings.mic_speech_normalization_enabled,
     )
 
     logger.info("Starting microphone...")
@@ -278,34 +422,43 @@ def main() -> None:
     except Exception as exc:
         logger.warning("Microphone could not be started: %s", exc)
 
+    ui_app = None
     try:
-        ui_app = JarvisApp()
+        if backend_only:
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance() or QApplication(sys.argv)
+            app.setQuitOnLastWindowClosed(False)
+            from ui.bridge import Bridge
+            bridge = Bridge()
+            logger.info("JARVIS backend-only mode started; UI disabled")
+        else:
+            ui_app = JarvisApp()
+            bridge = ui_app.bridge
     except Exception as exc:
-        logger.critical("Failed to create UI: %s", exc, exc_info=True)
-        print(f"ERROR: Could not launch UI: {exc}")
+        logger.critical("Failed to create UI/backend bridge: %s", exc, exc_info=True)
+        print(f"ERROR: Could not launch JARVIS: {exc}")
         sys.exit(1)
 
-    install_diag()
+    if ui_app is not None:
+        install_diag()
 
-    try:
-        from PySide6.QtCore import QTimer
-        _diag_timer = QTimer()
-        _diag_timer.timeout.connect(ui_tick)
-        _diag_timer.start(1000)
-    except Exception:
-        pass
-
-    from monitoring.instrumentation import enabled as _diag_enabled
-    if _diag_enabled():
         try:
-            from ui.monitor import UIMonitor
-            _ui_monitor = UIMonitor(ui_app.app, ui_app.bridge)
-            _ui_monitor.install()
-            logger.info("UIMonitor installed (diag mode)")
-        except Exception as exc:
-            logger.warning("UIMonitor install failed: %s", exc)
+            from PySide6.QtCore import QTimer
+            _diag_timer = QTimer()
+            _diag_timer.timeout.connect(ui_tick)
+            _diag_timer.start(1000)
+        except Exception:
+            pass
 
-    bridge = ui_app.bridge
+        from monitoring.instrumentation import enabled as _diag_enabled
+        if _diag_enabled():
+            try:
+                from ui.monitor import UIMonitor
+                _ui_monitor = UIMonitor(ui_app.app, ui_app.bridge)
+                _ui_monitor.install()
+                logger.info("UIMonitor installed (diag mode)")
+            except Exception as exc:
+                logger.warning("UIMonitor install failed: %s", exc)
 
     watchdog_manager = WatchdogManager()
     shutdown_event = threading.Event()
@@ -331,15 +484,25 @@ def main() -> None:
         service_manager=service_manager,
         shutdown_in_progress=_shutdown_in_progress,
         shutdown_event=shutdown_event,
+        wake_word_enabled=False,
     )
 
     def _text_input_loop():
         while True:
             try:
                 line = input()
-            except (KeyboardInterrupt, EOFError):
+            except KeyboardInterrupt:
+                # Explicit user interrupt (Ctrl+C) — a deliberate shutdown.
                 _shutdown_in_progress.set()
                 command_queue.put("exit")
+                break
+            except EOFError:
+                # FIX-VOICE-RUNTIME-001: a closed/failed stdin is NOT a user
+                # shutdown request and must never terminate JARVIS.  Stop
+                # reading text commands and keep the voice/wake path alive.
+                logger.info(
+                    "Text input closed — text commands disabled; voice still active"
+                )
                 break
             line = line.strip()
             if line:
@@ -383,7 +546,7 @@ def main() -> None:
     shutdown_manager.on("stop_working_memory", working_memory.stop)
     shutdown_manager.on("stop_watchdogs", watchdog_manager.stop_all)
     shutdown_manager.on(
-        "stop_browser_service",
+        "stop_browser",
         lambda: stop_browser_service(),
     )
     shutdown_manager.on(
@@ -410,15 +573,17 @@ def main() -> None:
             logger.error("Shutdown worker failed: %s", exc, exc_info=True)
 
     def _on_about_to_quit():
-        """UI is closing — stop the owner, then run bounded shutdown."""
+        """UI is closing — keep the backend running and let it recover/reset."""
         nonlocal shutdown_thread
-        logger.info("UI closing — shutting down")
+        logger.info("UI closing — backend left running")
         try:
-            task_manager.cancel_active("app shutdown")
+            task_manager.cancel_active("ui shutdown")
         except Exception as exc:
-            logger.error("Shutdown task cancel failed: %s", exc)
-        brain.cancel_current()
-        _signal_backend_shutdown()
+            logger.error("UI shutdown task cancel failed: %s", exc)
+        try:
+            brain.cancel_current()
+        except Exception as exc:
+            logger.error("Brain cancel on UI shutdown failed: %s", exc)
         if shutdown_thread is None or not shutdown_thread.is_alive():
             shutdown_thread = threading.Thread(
                 target=_run_bounded_shutdown,
@@ -427,7 +592,26 @@ def main() -> None:
             )
             shutdown_thread.start()
 
-    ui_app.app.aboutToQuit.connect(_on_about_to_quit)
+    if ui_app is not None:
+        ui_app.app.aboutToQuit.connect(_on_about_to_quit)
+
+    if backend_only:
+        logger.info("JARVIS backend-only mode started; waiting for shutdown signal")
+        try:
+            while not _shutdown_in_progress.is_set():
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            logger.info("Backend-only run interrupted by Ctrl+C")
+            _shutdown_in_progress.set()
+            command_queue.put("exit")
+
+        logger.info("Backend-only run exiting")
+        shutdown_event.set()
+        if shutdown_thread is not None and shutdown_thread.is_alive():
+            shutdown_thread.join(timeout=12.0)
+        watchdog_manager.stop_all()
+        _release_backend_pid_file()
+        sys.exit(0)
 
     logger.info("JARVIS desktop UI starting")
     exit_code = ui_app.run()
@@ -436,6 +620,7 @@ def main() -> None:
     if shutdown_thread is not None and shutdown_thread.is_alive():
         shutdown_thread.join(timeout=12.0)
     watchdog_manager.stop_all()
+    _release_backend_pid_file()
     sys.exit(exit_code)
 
 

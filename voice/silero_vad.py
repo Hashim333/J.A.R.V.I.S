@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 _SILERO_FRAME_SAMPLES = 512
 _SILERO_FRAME_BYTES = _SILERO_FRAME_SAMPLES * 2
 
-# Probability above which a frame counts as speech / below which it counts
-# as silence (the end threshold is lower so soft trailing speech keeps the
-# utterance open through the hangover).
-_START_THRESHOLD = 0.5
-_END_THRESHOLD = 0.35
+# VOICE-FIX: onset must reject noise blips without clipping soft speech.
+# 0.55 start threshold + 5-frame majority onset below; end stays low so
+# silence still ends the utterance promptly.
+_START_THRESHOLD = 0.55
+_END_THRESHOLD = 0.25
 
 
 class SileroVAD:
@@ -60,8 +60,8 @@ class SileroVAD:
         frame_duration_ms: int = 30,
         padding_duration_ms: int = 750,
         sample_rate: int = 16000,
-        silence_hangover_ms: float = 1200.0,
-        min_speech_ms: float = 250.0,
+        silence_hangover_ms: float = 1500.0,
+        min_speech_ms: float = 300.0,
         max_utterance_ms: float = 20000.0,
         onset_frames: int | None = None,
         adaptive: bool = True,
@@ -87,6 +87,7 @@ class SileroVAD:
         self._noise_floor: float | None = None
         self._delegate: VAD | None = None
         self._silero = None
+        self._pending_silero = None
         self._onnx = onnx
         self._load_thread: threading.Thread | None = None
 
@@ -94,6 +95,9 @@ class SileroVAD:
         self._min_speech_frames = max(1, int(self._min_speech_ms / 32.0))
         self._max_utterance_frames = int(self._max_utterance_ms / 32.0)
         self._onset_frames = onset_frames or 3
+
+        # FIX-VOICE-003: track speech end time for latency logging
+        self._speech_end_time: float | None = None
 
         self._reset_state()
         self._backend = self._try_load(model, auto_load=auto_load)
@@ -148,7 +152,17 @@ class SileroVAD:
                 "Silero VAD unavailable (%s) — keeping WebRTC VAD", exc,
             )
             return
+        # Do not replace WebRTC state in the middle of an utterance. Queue
+        # the upgrade until the current delegate has returned to silence.
+        if self._delegate is not None and self._delegate.triggered:
+            self._pending_silero = silero
+            logger.info("Silero VAD ready; deferring backend swap until speech ends")
+            return
+        self._activate_silero(silero)
+
+    def _activate_silero(self, silero: object) -> None:
         self._silero = silero
+        self._pending_silero = None
         self._delegate = None
         self._backend = "silero"
         self._reset_state()
@@ -170,6 +184,7 @@ class SileroVAD:
         self._buffer = bytearray()
         self._speech_start_time: float | None = None
         self._speech_frames = 0
+        self._speech_end_time: float | None = None
 
     # ------------------------------------------------------------------
     # Configuration
@@ -180,6 +195,15 @@ class SileroVAD:
 
         Noisy environments raise the onset requirement and the speech
         probability threshold; quiet environments stay sensitive.
+
+        NOISE-FLOOR-CAP: a high floor (music / TV) escalates only to a hard
+        ceiling of 4 frames @ 0.6 probability.  Music is non-stationary so
+        the tracked floor rides up with it, and speech-over-music rarely
+        produces Silero probabilities >= 0.8 — an uncapped bar made every
+        utterance time out as ``no_speech``.  Silero itself discriminates
+        speech from music (instrumental audio scores well below 0.6);
+        Whisper's confidence gate remains the false-positive safety net
+        downstream.
         """
         self._noise_floor = noise_floor
         if self._delegate is not None:
@@ -193,12 +217,9 @@ class SileroVAD:
         elif noise_floor < 0.02:
             self._onset_frames = 4
             self._start_threshold = min(0.7, _START_THRESHOLD + 0.05)
-        elif noise_floor < 0.06:
-            self._onset_frames = 5
-            self._start_threshold = min(0.8, _START_THRESHOLD + 0.12)
         else:
-            self._onset_frames = 6
-            self._start_threshold = 0.8
+            self._onset_frames = 4
+            self._start_threshold = 0.6
         self._onset_buffer = collections.deque(maxlen=self._onset_frames)
         logger.debug(
             "SileroVAD adaptive: noise_floor=%.4f -> onset=%d start_threshold=%.2f",
@@ -224,6 +245,11 @@ class SileroVAD:
         if self._delegate is not None:
             self._delegate.reset()
         logger.debug("SileroVAD reset")
+
+    # FIX-VOICE-003: expose speech end time for latency tracking
+    @property
+    def speech_end_time(self) -> float | None:
+        return self._speech_end_time
 
     @property
     def triggered(self) -> bool:
@@ -254,6 +280,12 @@ class SileroVAD:
 
     def process_audio(self, audio_chunk: bytes) -> None:
         """Process a 16-bit PCM chunk and detect speech."""
+        if (
+            self._pending_silero is not None
+            and self._delegate is not None
+            and not self._delegate.triggered
+        ):
+            self._activate_silero(self._pending_silero)
         if self._delegate is not None:
             self._delegate.process_audio(audio_chunk)
             return
@@ -281,11 +313,23 @@ class SileroVAD:
             prob = prob.item()
         return float(prob)
 
+    @staticmethod
+    def _onset_required(onset_frames: int) -> int:
+        """Frames of the onset window that must be speech before triggering.
+
+        (FIX-003) A strict "all frames must be speech" rule delays onset by a
+        full window whenever a single low-probability frame lands inside it,
+        which is what clips the first word.  A **majority** of the window
+        (ceil of 2/3) makes onset immediate while still rejecting noise
+        blips.
+        """
+        return max(1, (int(onset_frames) * 2 + 2) // 3)
+
     def _process_frame(self, is_speech: bool, prob: float) -> None:
         if not self._triggered:
             self._onset_buffer.append(is_speech)
-            if len(self._onset_buffer) == self._onset_frames and (
-                sum(self._onset_buffer) >= self._onset_frames
+            if sum(self._onset_buffer) >= self._onset_required(
+                self._onset_frames
             ):
                 self._triggered = True
                 self._speech_start_time = time.monotonic()
@@ -299,7 +343,8 @@ class SileroVAD:
         self._ring_buffer.append(prob < self._end_threshold)
 
         if self._speech_frames >= self._max_utterance_frames:
-            logger.debug("SileroVAD SPEECH END (max utterance reached)")
+            self._speech_end_time = time.monotonic()
+            logger.debug("SileroVAD SPEECH END (max utterance reached) at t=%.3fs", self._speech_end_time)
             self._triggered = False
             self._ring_buffer.clear()
             self._safe_call(self._on_speech_ended)
@@ -314,9 +359,10 @@ class SileroVAD:
             and unvoiced > 0.9 * self._ring_buffer.maxlen
         ):
             self._triggered = False
+            self._speech_end_time = time.monotonic()
             logger.debug(
                 "SileroVAD SPEECH END (hangover) at t=%.3fs",
-                time.monotonic(),
+                self._speech_end_time,
             )
             self._ring_buffer.clear()
             self._safe_call(self._on_speech_ended)

@@ -270,7 +270,7 @@ class TestBrowserHandlerClickFirstVideo(unittest.TestCase):
             "success": True, "status": "success", "message": "Now playing.",
         }) as fake_play:
             result = handler.run(plan.steps[0])
-            fake_play.assert_called_once_with("billie eilish")
+            fake_play.assert_called_once_with("billie eilish", index=1)
         ar = ActionResult.from_handler(result)
         self.assertEqual(ar.task_result, TaskResult.SUCCESS)
 

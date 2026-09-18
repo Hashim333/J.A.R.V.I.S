@@ -7,3 +7,7 @@ vosk
 faster-whisper
 silero-vad
 pvporcupine
+
+# Offline neural TTS fallback provider (Piper).  Voice model (.onnx +
+# .onnx.json) must be downloaded separately — see voice/piper_provider.py.
+piper-tts

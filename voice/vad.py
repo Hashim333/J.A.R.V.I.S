@@ -47,7 +47,7 @@ class VAD:
         frame_duration_ms: int = 30,
         padding_duration_ms: int = 750,
         sample_rate: int = 16000,
-        silence_hangover_ms: float = 1200.0,
+        silence_hangover_ms: float = 1500.0,
         min_speech_ms: float = 250.0,
         max_utterance_ms: float = 20000.0,
         onset_frames: int | None = None,
@@ -210,12 +210,23 @@ class VAD:
 
             self._process_frame(is_speech)
 
+    @staticmethod
+    def _onset_required(onset_frames: int) -> int:
+        """Frames of the onset window that must be speech before triggering.
+
+        (FIX-003) A strict "all frames must be speech" rule delays onset by a
+        full window whenever a single low-confidence frame lands inside it,
+        clipping the first word.  A **majority** of the window (ceil of 2/3)
+        makes onset immediate while still rejecting noise blips.
+        """
+        return max(1, (int(onset_frames) * 2 + 2) // 3)
+
     def _process_frame(self, is_speech: bool) -> None:
         if not self._triggered:
-            # --- Not inside speech yet: fast onset ---
+            # --- Not inside speech yet: fast onset (majority of window) ---
             self._onset_buffer.append(is_speech)
-            if len(self._onset_buffer) == self._onset_frames and (
-                sum(self._onset_buffer) >= self._onset_frames
+            if sum(self._onset_buffer) >= self._onset_required(
+                self._onset_frames
             ):
                 self._triggered = True
                 self._speech_start_time = time.monotonic()

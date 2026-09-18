@@ -110,10 +110,14 @@ _LOCAL_COMMAND_INTENTS: frozenset[str] = frozenset({
     "unmute_volume",
     "media_pause", "media_resume", "media_next", "media_previous",
     "skip_ad", "like_video", "subscribe_channel", "continue_watching",
+    "youtube_volume_up", "youtube_volume_down", "youtube_mute",
+    "youtube_unmute", "youtube_enter_fullscreen", "youtube_exit_fullscreen",
+    "youtube_replay", "youtube_go_back",
     "scroll_page",
     # System toggles / status
     "screenshot", "lock", "sleep", "restart", "shutdown_windows",
     "shutdown", "sign_out", "cancel_shutdown",
+    "report_time",
     "set_brightness", "wifi_on", "wifi_off", "bluetooth_on",
     "bluetooth_off", "airplane_mode_on", "airplane_mode_off",
     # Settings / folders / management UIs

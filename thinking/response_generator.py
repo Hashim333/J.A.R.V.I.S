@@ -25,6 +25,45 @@ _GENERIC_MESSAGES = (
     "unknown command",
 )
 
+# FIX-VOICE-003: short response templates for deterministic commands
+_SHORT_RESPONSES = {
+    "open_app": "Opening.",
+    "close_app": "Closing.",
+    "focus_app": "Switching.",
+    "open_website": "Opening.",
+    "search": "Searching.",
+    "play_music": "Playing.",
+    "play_video": "Playing.",
+    "media_pause": "Paused.",
+    "media_resume": "Resumed.",
+    "media_next": "Next.",
+    "media_previous": "Previous.",
+    "increase_volume": "Volume up.",
+    "decrease_volume": "Volume down.",
+    "mute_volume": "Muted.",
+    "unmute_volume": "Unmuted.",
+    "set_volume": "Volume adjusted.",
+    "screenshot": "Screenshot taken.",
+    "lock": "Locking.",
+    "shutdown_windows": "Shutting down.",
+    "restart": "Restarting.",
+    "sleep": "Going to sleep.",
+    "noop": "Got it.",
+    "report_time": "Check.",
+}
+
+# FIX-VOICE-003: deterministic conversational responses for common phrases
+# These bypass the LLM entirely and return immediately
+_DETERMINISTIC_CONVERSATIONAL_RESPONSES = {
+    "can you hear me": "Yes.",
+    "can you hear me?": "Yes.",
+    "are you there": "Yes.",
+    "are you listening": "Yes.",
+    "jarvis can you hear me": "Yes.",
+    "jarvis are you there": "Yes.",
+    "jarvis are you listening": "Yes.",
+}
+
 
 class ResponseGenerator:
     def generate(
@@ -120,15 +159,21 @@ class ResponseGenerator:
 
     @staticmethod
     def _generate_success_message(intent: str, data: dict[str, Any], raw_text: str = "") -> str:
+        # FIX-VOICE-003: check for deterministic conversational responses
+        # Normalize the raw text to handle case, punctuation, and extra spaces
+        normalized = raw_text.strip().casefold().rstrip(".?")
+        if normalized in _DETERMINISTIC_CONVERSATIONAL_RESPONSES:
+            return _DETERMINISTIC_CONVERSATIONAL_RESPONSES[normalized]
+        
         if intent == "open_app":
             app = data.get("app_name") or data.get("display_name", "")
             if app:
-                return f"Opening {app}."
+                return f"{app} is now open."
             return "Opening."
         if intent == "close_app":
             app = data.get("app_name") or data.get("display_name", "")
             if app:
-                return f"Closing {app}."
+                return f"{app} has been closed."
             return "Closing."
         if intent == "focus_app":
             app = data.get("app_name") or data.get("display_name", "")
@@ -137,7 +182,7 @@ class ResponseGenerator:
             return "Switching."
         if intent == "open_website":
             site = data.get("website", "") or data.get("url", "")
-            return f"Opening {site}." if site else "Opening."
+            return f"Opened {site}." if site else "Opening."
         if intent == "search":
             query = data.get("query", "")
             provider = data.get("provider", "")
@@ -172,6 +217,11 @@ class ResponseGenerator:
             return "Going to sleep."
         if intent == "noop":
             return "Got it."
+        # FIX-VOICE-003: terse fallback for intents without entity data
+        # (media pause/next/etc.).  Contextual branches above take priority
+        # so e.g. "search" still names the query and provider.
+        if intent in _SHORT_RESPONSES:
+            return _SHORT_RESPONSES[intent]
         # Fallback: use raw_text to construct a minimal contextual reply.
         # Never claim a generic "Done." / "Completed." — reflect the request.
         if raw_text:

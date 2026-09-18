@@ -51,8 +51,9 @@ def _require_target(step: Step) -> str:
 
 
 def _require_parameter(step: Step, name: str) -> Any:
+    parameters = step.parameters or {}
     try:
-        return step.parameters[name]
+        return parameters[name]
     except KeyError:
         raise StepParameterError(
             f"Step action {step.action!r} requires parameter {name!r}."
@@ -191,7 +192,15 @@ class AppsHandler:
 
         process_name = app_info.process_name
         focus_if_running = step.parameters.get("focus_if_running", True)
-        if focus_if_running and apps.is_process_running(process_name):
+        profile = step.parameters.get("profile")
+        wants_chrome_profile = bool(
+            profile and "chrome" in app_info.canonical_name.casefold()
+        )
+        # A plain "open Chrome" reuses/focuses the running instance and never
+        # asks for a profile. Only an explicit profile request
+        # (e.g. "open Chrome Hashi") bypasses the focus shortcut so the
+        # requested profile is actually opened.
+        if focus_if_running and not wants_chrome_profile and apps.is_process_running(process_name):
             focus_result = apps.focus_process(process_name)
             if focus_result["success"]:
                 logger.info("Intent=OPEN_APPLICATION App=%s Action=focus_existing PID=window Success=True", app_info.canonical_name)
@@ -200,9 +209,12 @@ class AppsHandler:
             return {"success": True, "message": f"{app_info.canonical_name} is already running.", "details": {"action": "already_running", "app": app_info.canonical_name}}
 
         extra_args: list[str] = []
-        profile = step.parameters.get("profile")
-        if profile and "chrome" in app_info.canonical_name.casefold():
-            extra_args = [f"--profile-directory={profile}"]
+        if wants_chrome_profile:
+            try:
+                profile_dir = self._resolve_chrome_profile_dir(profile)
+            except StepParameterError as exc:
+                return {"success": False, "message": str(exc)}
+            extra_args = [f"--profile-directory={profile_dir}"]
         new_window = step.parameters.get("new_window", False)
         if new_window and any(b in app_info.canonical_name.casefold() for b in ("chrome", "edge", "msedge", "brave", "opera", "vivaldi", "firefox")):
             extra_args.append("--new-window")
@@ -233,6 +245,32 @@ class AppsHandler:
 
         logger.warning("Intent=OPEN_APPLICATION App=%s Action=verify_launch Success=False", app_info.canonical_name)
         return {"success": False, "message": f"{app_info.canonical_name} could not be verified as running after launch.", "details": {"app": app_info.canonical_name}}
+
+    @staticmethod
+    def _resolve_chrome_profile_dir(profile: str) -> str:
+        """Map a requested Chrome profile name to its profile directory.
+
+        Accepts a display name (e.g. "HASHI") or a directory (e.g.
+        "Profile 2"). Raises ``StepParameterError`` when the profile is
+        unknown so Chrome is never launched with a bogus
+        ``--profile-directory`` (which would silently create a new,
+        empty profile).
+        """
+        wanted = (profile or "").strip()
+        try:
+            known = apps._chrome_profiles()
+        except Exception:
+            known = []
+        for p in known:
+            if (p.display_name.casefold() == wanted.casefold()
+                    or p.directory.casefold() == wanted.casefold()):
+                return p.directory
+        if known:
+            available = ", ".join(p.display_name for p in known)
+            raise StepParameterError(
+                f"Chrome profile {profile!r} not found. Available: {available}."
+            )
+        return wanted
 
     # ------------------------------------------------------------------
     # Close app
@@ -559,30 +597,40 @@ class BrowserHandler:
         "youtube_like",
         "youtube_subscribe",
         "youtube_continue_watching",
+        "youtube_volume_up",
+        "youtube_volume_down",
+        "youtube_mute",
+        "youtube_unmute",
+        "youtube_enter_fullscreen",
+        "youtube_exit_fullscreen",
+        "youtube_replay",
+        "youtube_go_back",
         "scroll_page",
         "get_page_state",
         "get_selected_text",
     }
 
     def run(self, step: Step, **kwargs: Any) -> Any:
+        parameters = step.parameters or {}
         if step.action in ("navigate", "open_website"):
-            url = step.parameters.get("url") or step.target
+            url = parameters.get("url") or step.target
             if not isinstance(url, str) or not url.strip():
                 raise StepParameterError(
                     f"Step action {step.action!r} requires a non-empty 'url' parameter or target."
                 )
-            open_in_new_tab = step.parameters.get("open_in_new_tab", False)
+            open_in_new_tab = parameters.get("open_in_new_tab", False)
             return browser.open_url(url, open_in_new_tab=open_in_new_tab)
 
         if step.action in ("browser_search", "search"):
-            provider = step.parameters.get("provider", "google")
+            provider = parameters.get("provider", "google")
             query = _require_parameter(step, "query")
             return browser.search(provider, query)
 
         if step.action == "click_first_video":
-            query = step.parameters.get("query") or step.target
+            query = parameters.get("query") or step.target
+            index = parameters.get("index", 1)
             from automation import youtube
-            return youtube.play_first_result(query or "")
+            return youtube.play_first_result(query or "", index=index)
 
         if step.action == "youtube_state":
             from automation import youtube
@@ -620,8 +668,40 @@ class BrowserHandler:
             from automation import youtube
             return youtube.continue_watching()
 
+        if step.action == "youtube_volume_up":
+            from automation import youtube
+            return youtube.volume_up()
+
+        if step.action == "youtube_volume_down":
+            from automation import youtube
+            return youtube.volume_down()
+
+        if step.action == "youtube_mute":
+            from automation import youtube
+            return youtube.mute_video()
+
+        if step.action == "youtube_unmute":
+            from automation import youtube
+            return youtube.unmute_video()
+
+        if step.action == "youtube_enter_fullscreen":
+            from automation import youtube
+            return youtube.enter_fullscreen()
+
+        if step.action == "youtube_exit_fullscreen":
+            from automation import youtube
+            return youtube.exit_fullscreen()
+
+        if step.action == "youtube_replay":
+            from automation import youtube
+            return youtube.replay()
+
+        if step.action == "youtube_go_back":
+            from automation import youtube
+            return youtube.go_back()
+
         if step.action == "scroll_page":
-            direction = step.parameters.get("direction", "down")
+            direction = parameters.get("direction", "down")
             return browser.scroll(direction)
 
         if step.action == "get_page_state":
@@ -965,6 +1045,7 @@ class SystemHandler:
         "airplane_mode_on",
         "airplane_mode_off",
         "system_status",
+        "report_time",
         "sign_out",
         "cancel_shutdown",
         "open_task_manager",
@@ -1012,6 +1093,9 @@ class SystemHandler:
         if step.action == "system_status":
             return self._system_status(step)
 
+        if step.action == "report_time":
+            return self._report_time(step)
+
         if step.action == "sign_out":
             return system_ops.sign_out()
 
@@ -1058,6 +1142,17 @@ class SystemHandler:
         if delay:
             return system_ops.delayed_restart(seconds=int(delay))
         return apps.restart_computer()
+
+    @staticmethod
+    def _report_time(step: Step) -> dict:
+        import datetime
+        now = datetime.datetime.now()
+        hour = now.strftime("%I").lstrip("0") or "12"
+        return {
+            "success": True,
+            "message": f"It is {hour}:{now.strftime('%M')} {now.strftime('%p')}.",
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     @staticmethod
     def _system_status(step: Step) -> dict:

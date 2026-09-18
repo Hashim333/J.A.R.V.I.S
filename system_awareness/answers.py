@@ -323,6 +323,15 @@ _RULES: list[tuple[str, Callable[[SystemAwarenessSnapshot], str | None]]] = [
     (r"media session|what.*media", _answer_media_sessions),
 ]
 
+# Direct current-tab browser commands ("open current tab", "use current
+# tab", "in the current tab", ...) are ACTIONS on the active tab, not
+# questions about window counts. They must fall through to the browser
+# handler, so they are excluded here before any rule can match.
+_CURRENT_TAB_ACTION = re.compile(
+    r"\b(use\s+current|current\s+tab|this\s+tab|current\s+page)\b",
+    re.IGNORECASE,
+)
+
 # Question stems that must co-occur to avoid answering a plain action command.
 _QUESTION_HINTS = re.compile(
     r"(what|how|which|how many|is there|are there|do you|can you|show me|"
@@ -342,6 +351,11 @@ def answer(snapshot: SystemAwarenessSnapshot, text: str) -> str | None:
     if snapshot is None or not text or not text.strip():
         return None
     lowered = text.casefold().strip()
+    # A direct current-tab command ("open current tab", "use current tab",
+    # "in the current tab", ...) operates on the active browser tab — it is
+    # never a request for a browser-window count.
+    if _CURRENT_TAB_ACTION.search(lowered):
+        return None
     if not _QUESTION_HINTS.search(lowered):
         return None
 

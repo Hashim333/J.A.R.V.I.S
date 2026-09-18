@@ -8,10 +8,14 @@ accessibility tree.  There is no OCR, no screen-coordinate clicking and no
 image matching.
 
 Supported commands:
-  - play_first_result(query)   search + open the first *organic* result
+  - play_first_result(query, index) search + open the Nth *organic* result
   - get_state()                playing/pause/ads/playlist/volume/fullscreen/time
+  - get_session()              temporary in-RAM session state (query/title/url)
   - pause / resume
   - play_next / play_previous
+  - volume_up / volume_down / mute_video / unmute_video
+  - enter_fullscreen / exit_fullscreen
+  - replay / go_back
   - skip_ad
   - like_video / subscribe
   - continue_watching
@@ -277,21 +281,148 @@ _SUBSCRIBE_JS = """
 })()
 """
 
+# Click the Nth *organic* (non-sponsored, deduplicated) video result,
+# 1-based.  Generalises the "first result" rule so "play the second one"
+# works against the same open results page.
+_CLICK_RESULT_JS_TEMPLATE = """
+((n) => {
+  const selectors = [
+    '#contents ytd-item-section-renderer ytd-video-renderer a#video-title',
+    '#contents ytd-video-renderer a#video-title',
+    'ytd-rich-item-renderer a#video-title-link',
+    'ytd-rich-grid-media a#video-title-link',
+  ];
+  const seen = new Set();
+  const organic = [];
+  for (const sel of selectors) {
+    for (const el of document.querySelectorAll(sel)) {
+      const href = el.href || '';
+      if (href && seen.has(href)) continue;
+      seen.add(href);
+      organic.push(el);
+    }
+  }
+  const el = organic[n - 1];
+  if (!el) return { clicked: false, count: organic.length };
+  el.scrollIntoView({ block: 'center' });
+  el.click();
+  return { clicked: true, title: (el.textContent || '').trim(), index: n };
+})(%d)
+"""
+
+_VOLUME_STEP_JS_TEMPLATE = """
+((delta) => {
+  const v = document.querySelector('video');
+  if (!v) return { ok: false };
+  if (v.muted && delta > 0) v.muted = false;
+  v.volume = Math.min(1, Math.max(0, (v.volume || 0) + delta));
+  return { ok: true, volume: Math.round(v.volume * 100), muted: v.muted };
+})(%s)
+"""
+
+_MUTE_JS = """
+(() => {
+  const v = document.querySelector('video');
+  if (!v) return { ok: false };
+  v.muted = true;
+  return { ok: true, muted: true };
+})()
+"""
+
+_UNMUTE_JS = """
+(() => {
+  const v = document.querySelector('video');
+  if (!v) return { ok: false };
+  v.muted = false;
+  return { ok: true, muted: false };
+})()
+"""
+
+_ENTER_FULLSCREEN_JS = """
+(() => {
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    return { ok: true, fullscreen: true, already: true };
+  }
+  const player = document.querySelector('#movie_player')
+    || document.querySelector('.html5-video-player')
+    || document.querySelector('video');
+  if (!player) return { ok: false };
+  const req = player.requestFullscreen || player.webkitRequestFullscreen
+    || player.requestFullScreen || player.webkitRequestFullScreen;
+  if (!req) return { ok: false };
+  try { req.call(player); } catch (e) { return { ok: false }; }
+  return { ok: true, fullscreen: true };
+})()
+"""
+
+_EXIT_FULLSCREEN_JS = """
+(() => {
+  if (!(document.fullscreenElement || document.webkitFullscreenElement)) {
+    return { ok: true, fullscreen: false, already: true };
+  }
+  const exit = document.exitFullscreen || document.webkitExitFullscreen;
+  if (!exit) return { ok: false };
+  try { exit.call(document); } catch (e) { return { ok: false }; }
+  return { ok: true, fullscreen: false };
+})()
+"""
+
+_REPLAY_JS = """
+(() => {
+  const v = document.querySelector('video');
+  if (!v) return { ok: false };
+  v.currentTime = 0;
+  v.play().catch(() => {});
+  return { ok: true };
+})()
+"""
+
+_GO_BACK_JS = """
+(() => { history.back(); return { ok: true }; })()
+"""
+
+# Minimal temporary YouTube session state (in-RAM only; cleared when the
+# process exits).  Lets contextual follow-ups report what is playing even
+# before the next CDP poll.
+_SESSION: dict[str, Any] = {
+    "active": False,
+    "last_query": "",
+    "last_title": "",
+    "last_url": "",
+}
+
+
+def get_session() -> dict[str, Any]:
+    """Return a copy of the temporary YouTube session state."""
+    return dict(_SESSION)
+
+
+def _note_session(title: str = "", url: str = "", query: str | None = None) -> None:
+    if query is not None:
+        _SESSION["last_query"] = query
+    if title:
+        _SESSION["last_title"] = title
+    if url:
+        _SESSION["last_url"] = url
+    _SESSION["active"] = True
+
 
 # ---------------------------------------------------------------------------
 # Play flow
 # ---------------------------------------------------------------------------
 
 
-def play_first_result(query: str, timeout: float = 12.0) -> dict[str, Any]:
-    """Search YouTube and open the first non-sponsored video result.
+def play_first_result(query: str, timeout: float = 12.0, index: int = 1) -> dict[str, Any]:
+    """Search YouTube and open the Nth (default first) non-sponsored video
+    result.
 
     Returns a handler-style result dict consumed by
     ``ActionResult.from_handler``.  When *query* is empty the current
-    YouTube results page is used instead of searching again, so "play first
-    result" after a search reuses the open results tab.
+    YouTube results page is used instead of searching again, so "play the
+    second one" after a search reuses the open results tab.
     """
     query = (query or "").strip()
+    index = max(1, int(index or 1))
     try:
         cdp = _client()
     except Exception as exc:
@@ -323,18 +454,25 @@ def play_first_result(query: str, timeout: float = 12.0) -> dict[str, Any]:
         return _fail(f"Browser automation failed ({exc}).")
 
     try:
-        clicked = cdp.evaluate(tab, _CLICK_FIRST_ORGANIC_JS)
+        clicked = cdp.evaluate(tab, _CLICK_RESULT_JS_TEMPLATE % index)
     except CdpError as exc:
-        return _fail(f"Could not click the first result ({exc}).")
+        return _fail(f"Could not click result #{index} ({exc}).")
 
     if not (isinstance(clicked, dict) and clicked.get("clicked")):
+        found = clicked.get("count", 0) if isinstance(clicked, dict) else 0
+        message = (
+            f"I only found {found} result(s); there is no result #{index}."
+            if isinstance(clicked, dict) and found
+            else "The results loaded but I couldn't find a video to open."
+        )
         return {
             "success": False,
             "status": "retrying",
-            "message": "The results loaded but I couldn't find a video to open.",
+            "message": message,
         }
 
     if not _wait_for_watch_page(tab, timeout):
+        _note_session(query=query)
         return {
             "success": False,
             "status": "waiting",
@@ -342,8 +480,16 @@ def play_first_result(query: str, timeout: float = 12.0) -> dict[str, Any]:
         }
 
     title = (clicked.get("title") or query or "the video")
-    return _ok(f"Now playing the first result for {query!r} on YouTube." if query else f"Now playing {title!r} on YouTube.",
-               title=title)
+    _note_session(title=str(title), url=getattr(tab, "url", ""), query=query)
+    ordinal = "" if index == 1 else f" #{index}"
+    return _ok(
+        (
+            f"Now playing the{ordinal} result for {query!r} on YouTube."
+            if query
+            else f"Now playing {title!r} on YouTube."
+        ),
+        title=title,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +533,10 @@ def get_state() -> dict[str, Any]:
         "ad_skippable": bool(video.get("ad_skippable", False)),
         "playlist": video.get("playlist", {}),
     }
+    _note_session(
+        title=str(raw.get("title", "") or tab.title or ""),
+        url=str(raw.get("url", "") or tab.url or ""),
+    )
     return _ok("YouTube state.", **details)
 
 
@@ -447,6 +597,93 @@ def subscribe() -> dict[str, Any]:
     if result.get("success") and result.get("details", {}).get("already_subscribed"):
         result["message"] = "You are already subscribed to this channel."
     return result
+
+
+# ---------------------------------------------------------------------------
+# Player volume / display controls
+# ---------------------------------------------------------------------------
+
+
+def _volume_step(delta: float) -> dict[str, Any]:
+    """Step the YouTube player volume; falls back to the system volume when
+    no YouTube tab is open so the command still has an audible effect."""
+    result = _run_on_video(
+        _VOLUME_STEP_JS_TEMPLATE % delta,
+        "Turned the volume up." if delta > 0 else "Turned the volume down.",
+        "There is no video to adjust the volume of.",
+    )
+    if not result.get("success") and "No YouTube tab" in str(result.get("message", "")):
+        from automation import apps as system_apps
+
+        return (
+            system_apps.increase_volume(10) if delta > 0
+            else system_apps.decrease_volume(10)
+        )
+    return result
+
+
+def volume_up() -> dict[str, Any]:
+    return _volume_step(+0.1)
+
+
+def volume_down() -> dict[str, Any]:
+    return _volume_step(-0.1)
+
+
+def mute_video() -> dict[str, Any]:
+    result = _run_on_video(_MUTE_JS, "Muted the video.", "There is no video to mute.")
+    if not result.get("success") and "No YouTube tab" in str(result.get("message", "")):
+        from automation import apps as system_apps
+
+        return system_apps.mute_volume()
+    return result
+
+
+def unmute_video() -> dict[str, Any]:
+    result = _run_on_video(_UNMUTE_JS, "Unmuted the video.", "There is no video to unmute.")
+    if not result.get("success") and "No YouTube tab" in str(result.get("message", "")):
+        from automation import apps as system_apps
+
+        return system_apps.unmute_volume()
+    return result
+
+
+def enter_fullscreen() -> dict[str, Any]:
+    result = _run_on_video(
+        _ENTER_FULLSCREEN_JS, "Went fullscreen.", "Could not find the video player."
+    )
+    if result.get("success") and result.get("details", {}).get("already"):
+        result["message"] = "Already in fullscreen."
+    return result
+
+
+def exit_fullscreen() -> dict[str, Any]:
+    result = _run_on_video(
+        _EXIT_FULLSCREEN_JS, "Exited fullscreen.", "Could not exit fullscreen."
+    )
+    if result.get("success") and result.get("details", {}).get("already"):
+        result["message"] = "Not in fullscreen."
+    return result
+
+
+def replay() -> dict[str, Any]:
+    return _run_on_video(_REPLAY_JS, "Replaying from the start.", "There is no video to replay.")
+
+
+def go_back() -> dict[str, Any]:
+    try:
+        cdp = _client()
+    except Exception as exc:
+        return _fail(f"Browser automation unavailable ({exc}).")
+    try:
+        tab = _youtube_tab()
+        if tab is None:
+            return _fail("No YouTube tab is open.")
+        cdp.activate(tab)
+        cdp.evaluate(tab, _GO_BACK_JS)
+    except CdpError as exc:
+        return _fail(f"Browser automation failed ({exc}).")
+    return _ok("Went back.")
 
 
 def continue_watching() -> dict[str, Any]:

@@ -58,6 +58,10 @@ KNOWN_INTENTS: tuple[str, ...] = (
     "media_pause", "media_resume", "media_next", "media_previous",
     "skip_ad", "like_video", "subscribe_channel", "continue_watching",
     "scroll_page",
+    # youtube player control
+    "youtube_volume_up", "youtube_volume_down", "youtube_mute",
+    "youtube_unmute", "youtube_enter_fullscreen", "youtube_exit_fullscreen",
+    "youtube_replay", "youtube_go_back",
     # system
     "open_settings", "open_special_folder", "increase_volume",
     "decrease_volume", "set_volume", "mute_volume", "unmute_volume",
@@ -124,7 +128,7 @@ Alternatives (only for ACT): 1-2 fallback strategies that use DIFFERENT intent/e
 Known intents and their entity shapes:
 {intent_hints}
 
-History (recent commands, newest last):
+History (recent conversation, oldest last):
 {history}
 
 Current computer state:
@@ -159,7 +163,7 @@ If the answer resolves the ambiguity, mode is ACT with the concrete intent/entit
 Known intents:
 {intent_hints}
 
-History (recent commands, newest last):
+History (recent conversation, oldest last):
 {history}
 
 Live system state:
@@ -239,11 +243,15 @@ class Reasoner:
         memory: Any = None,
         world_state: Any = None,
         awareness: Any = None,
+        budget: Any = None,
     ) -> ReasonedPlan | None:
         """Reason about a fresh user utterance.
 
         Returns ``None`` (never raises) when the LLM cannot answer, so the
         caller falls back to the deterministic pipeline untouched.
+
+        ``budget`` (``brain.time_budget.TimeBudget``) bounds this LLM call so
+        it never exceeds the parent brain budget (PART 11).
         """
         if not text or not text.strip():
             return None
@@ -254,7 +262,7 @@ class Reasoner:
             awareness=self._awareness_summary(awareness),
             text=text.strip(),
         )
-        return self._ask(prompt, text)
+        return self._ask(prompt, text, budget=budget)
 
     def continue_(
         self,
@@ -264,6 +272,7 @@ class Reasoner:
         memory: Any = None,
         world_state: Any = None,
         awareness: Any = None,
+        budget: Any = None,
     ) -> ReasonedPlan | None:
         """Re-reason after the user answers a clarification question."""
         if not answer or not answer.strip():
@@ -276,7 +285,7 @@ class Reasoner:
             history=self._history(memory),
             awareness=self._awareness_summary(awareness),
         )
-        return self._ask(prompt, original_text)
+        return self._ask(prompt, original_text, budget=budget)
 
     # ------------------------------------------------------------------
     # Prompt helpers
@@ -294,15 +303,34 @@ class Reasoner:
 
     @staticmethod
     def _history(memory: Any) -> str:
+        """Render the recent conversation for the prompt.
+
+        Merges user commands and JARVIS entries (replies / action outcomes)
+        from the shared ``WorkingMemory`` into one chronological transcript
+        with explicit roles, so the model can resolve references like
+        "it" or "that" across turns.  Bounded to the most recent 16 lines.
+        """
         if memory is None:
             return "(none)"
         try:
-            recent = memory.get_recent_commands(limit=5)
+            commands = memory.get_recent_commands(limit=10) or []
         except Exception:
+            commands = []
+        try:
+            actions = memory.get_recent_actions(limit=10) or []
+        except Exception:
+            actions = []
+        lines: list[tuple[float, str]] = []
+        for entry in commands:
+            content = getattr(entry, "content", str(entry))
+            lines.append((getattr(entry, "timestamp", 0.0), f"User: {content}"))
+        for entry in actions:
+            content = getattr(entry, "content", str(entry))
+            lines.append((getattr(entry, "timestamp", 0.0), f"JARVIS: {content}"))
+        if not lines:
             return "(none)"
-        if not recent:
-            return "(none)"
-        return "; ".join(getattr(e, "content", str(e)) for e in recent)
+        lines.sort(key=lambda item: item[0])
+        return "\n".join(text for _, text in lines[-16:])
 
     @staticmethod
     def _world_summary(world_state: Any) -> str:
@@ -340,9 +368,9 @@ class Reasoner:
     # LLM round-trip
     # ------------------------------------------------------------------
 
-    def _ask(self, prompt: str, raw_text: str) -> ReasonedPlan | None:
+    def _ask(self, prompt: str, raw_text: str, budget: Any = None) -> ReasonedPlan | None:
         try:
-            raw = self._bounded_ask(prompt)
+            raw = self._bounded_ask(prompt, budget=budget)
         except Exception as exc:
             logger.warning("Reasoner: LLM unavailable (%s) — falling back to rule pipeline", exc)
             return None
@@ -351,19 +379,33 @@ class Reasoner:
             return None
         return self._parse(raw, raw_text)
 
-    def _bounded_ask(self, prompt: str) -> str | None:
-        """Call the LLM, returning ``None`` if it exceeds ``self._timeout``.
+    def _bounded_ask(self, prompt: str, budget: Any = None) -> str | None:
+        """Call the LLM, returning ``None`` if it exceeds the bound.
 
         Runs the request on a daemon worker so a hung/cold Ollama can never
-        block the pipeline past the bound.  ``None`` (timeout) is the
-        fallback signal for the caller."""
-        if not self._timeout or self._timeout <= 0:
+        block the pipeline past the bound.  When a ``budget`` (a
+        ``brain.time_budget.TimeBudget``) is provided, the request itself is
+        given the budget's child timeout so it aborts instead of lingering in
+        an abandoned worker (PART 11).  ``None`` (timeout) is the fallback
+        signal for the caller."""
+        base = self._timeout
+        request_timeout: float | None = None
+        if budget is not None:
+            if budget.expired:
+                logger.debug("Reasoner: budget exhausted before LLM call")
+                return None
+            request_timeout = budget.child_timeout(base if base and base > 0 else 6.0)
+        bound = base if request_timeout is None else request_timeout
+        if not bound or bound <= 0:
             return self._llm.ask(prompt)
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(self._llm.ask, prompt)
+        if request_timeout is None:
+            future = pool.submit(self._llm.ask, prompt)
+        else:
+            future = pool.submit(self._llm.ask, prompt, request_timeout)
         try:
-            return future.result(timeout=self._timeout)
+            return future.result(timeout=bound)
         except concurrent.futures.TimeoutError:
             return None
         finally:

@@ -62,6 +62,9 @@ class Bridge(QObject):
     subtitleChanged = Signal(str)
     conversationHistoryChanged = Signal()
     _conversation_history: list = []
+    # Last subtitle text shown (tracked so state transitions can detect a
+    # stale subtitle; see coreState setter).
+    _subtitle: str = ""
 
     # ── Wake word ─────────────────────────────────────────────────────
     wakeActiveChanged = Signal(bool)
@@ -162,10 +165,53 @@ class Bridge(QObject):
             self._core_state = state
             self.coreStateChanged.emit(state)
             logger.debug("Bridge: core → %s", state)
+            # Keep the subtitle coherent with the new state.  coreState and
+            # subtitleText travel on independent signals, so without this a
+            # transition can leave a stale subtitle on screen (e.g. THINKING
+            # while "Listening..." or a partial transcript is still shown).
+            # The backend ConversationManager/ConversationOwner stays the
+            # sole owner of state; this only refreshes the label.
+            self._sync_subtitle_for_state(state)
 
     @Slot(str)
     def set_core_state(self, state: str) -> None:
         self.coreState = state
+
+    # State labels published automatically on transitions.  Only states
+    # whose subtitle is always a fixed label are mapped here; speaking /
+    # error / offline keep whatever subtitle the backend set explicitly
+    # (response text, error message) alongside the transition.
+    _STATE_SUBTITLES = {
+        "listening": "Listening...",
+        "thinking": "Thinking...",
+    }
+    # Subtitles that describe listening and must not survive a return to
+    # idle (replaced with the idle label below).
+    _STALE_LISTENING_SUBTITLES = frozenset({"Listening...", "I'm still listening."})
+    _IDLE_SUBTITLE = "Ready when you are."
+
+    def _sync_subtitle_for_state(self, state: str) -> None:
+        """Publish a state-label subtitle when the current one is stale.
+
+        Never touches conversation history (state labels are chrome, not
+        conversation) and never overwrites content subtitles except when
+        they describe a different state than the one just entered.
+        """
+        if state == "thinking":
+            if self._subtitle != self._STATE_SUBTITLES["thinking"]:
+                self._publish_state_subtitle(self._STATE_SUBTITLES["thinking"])
+        elif state == "listening":
+            if self._subtitle == self._STATE_SUBTITLES["thinking"]:
+                self._publish_state_subtitle(self._STATE_SUBTITLES["listening"])
+        elif state == "idle":
+            if self._subtitle in self._STALE_LISTENING_SUBTITLES:
+                self._publish_state_subtitle(self._IDLE_SUBTITLE)
+
+    def _publish_state_subtitle(self, text: str) -> None:
+        """Emit a state-label subtitle without recording history."""
+        self._subtitle = text
+        self.subtitleChanged.emit(text)
+        logger.debug("Bridge: state subtitle → %r", text)
 
     @Slot(str)
     def set_mode(self, state: str) -> None:
@@ -200,9 +246,26 @@ class Bridge(QObject):
 
     @Slot(str)
     def show_subtitle(self, text: str) -> None:
-        self.subtitleChanged.emit(text)
-        if text:
-            self.add_conversation_entry("JARVIS", text)
+        cleaned = (text or "").strip()
+
+        if cleaned in self._STATE_SUBTITLES.values():
+            if self._core_state == "thinking" and cleaned == self._STATE_SUBTITLES["listening"]:
+                logger.debug("Bridge: corrected stale listening subtitle while thinking")
+                cleaned = self._STATE_SUBTITLES["thinking"]
+            elif self._core_state == "listening" and cleaned == self._STATE_SUBTITLES["thinking"]:
+                logger.debug("Bridge: corrected stale thinking subtitle while listening")
+                cleaned = self._STATE_SUBTITLES["listening"]
+            elif self._core_state == "speaking" and cleaned in self._STATE_SUBTITLES.values():
+                logger.debug("Bridge: ignored stale state subtitle while speaking")
+                return
+
+        if cleaned in self._STALE_LISTENING_SUBTITLES and self._core_state == "idle":
+            cleaned = self._IDLE_SUBTITLE
+
+        self._subtitle = cleaned
+        self.subtitleChanged.emit(cleaned)
+        if cleaned:
+            self.add_conversation_entry("JARVIS", cleaned)
 
     @Slot(str, str)
     def add_conversation_entry(self, speaker: str, text: str) -> None:

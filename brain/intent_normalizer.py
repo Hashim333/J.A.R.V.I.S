@@ -12,6 +12,8 @@ class Intent(Enum):
     EXIT = "EXIT"
     CANCEL = "CANCEL"
     UNKNOWN = "UNKNOWN"
+    # FIX-VOICE-003: conversational intent for "can you hear me?"
+    CONVERSATIONAL = "CONVERSATIONAL"
 
 
 _NORMALIZER_MAP: dict[frozenset[str], Intent] = {
@@ -23,10 +25,26 @@ _NORMALIZER_MAP: dict[frozenset[str], Intent] = {
     frozenset({"exit", "quit", "shutdown", "turn off", "close", "bye"}): Intent.EXIT,
 }
 
+# FIX-VOICE-003: deterministic conversational intent patterns
+_CONVERSATIONAL_PATTERNS = {
+    "can you hear me",
+    "can you hear me?",
+    "are you there",
+    "are you listening",
+    "jarvis can you hear me",
+    "jarvis are you there",
+    "jarvis are you listening",
+}
+
 
 def normalize(text: str) -> Intent:
     normalized = text.casefold().strip()
     normalized = _strip_punctuation(normalized)
+    
+    # FIX-VOICE-003: check for deterministic conversational patterns first
+    if normalized in _CONVERSATIONAL_PATTERNS:
+        return Intent.CONVERSATIONAL
+    
     for phrases, intent in _NORMALIZER_MAP.items():
         if normalized in phrases:
             return intent

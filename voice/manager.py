@@ -25,10 +25,17 @@ from typing import Any, Callable
 
 from config.settings import settings
 from voice.elevenlabs_provider import ElevenLabsProvider
+from voice.piper_provider import PiperProvider
 from voice.provider import VoiceProvider, VoiceProviderError
 from voice.system_provider import SystemProvider
 
 logger = logging.getLogger(__name__)
+
+# PART 9: cap how long the worker waits for a single utterance's playback to
+# finish.  Normal TTS responses finish in seconds; a provider that reports
+# "playing" but never stops must not wedge the speech worker (which would
+# stall queued acks like "Yes?" and block the conversation loop's waits).
+_PLAYBACK_MAX_WAIT_SECONDS = 30.0
 
 
 class VoiceManager:
@@ -52,6 +59,10 @@ class VoiceManager:
         self._worker_start_lock = threading.Lock()
         self._stop_worker = threading.Event()
         self._current_text: str | None = None
+        # Set when stop()/cancel_all() interrupts the in-flight utterance.
+        # An interrupted utterance still counts as delivered (the user cut
+        # real audio short) — it must never trigger fallback/retry loops.
+        self._interrupted = False
 
         # Speech-activity lifecycle: every enqueued utterance is counted as
         # "pending" from enqueue until its playback (or failure) fully
@@ -63,6 +74,16 @@ class VoiceManager:
         self._speech_finished_event = threading.Event()
         self._speech_finished_event.set()
         self.on_speech_finished: Callable[[], None] | None = None
+        # Provider-agnostic TTS lifecycle hooks, fired by the speech worker
+        # around EVERY utterance (including fallback deliveries) in a
+        # try/finally so the "finished" hook always runs: run.py uses
+        # these for the mic-mute echo guard on providers that cannot feed
+        # a PCM echo reference (e.g. the system SAPI voice).  Unlike the
+        # player callbacks they fire regardless of which provider (or
+        # fallback) actually delivered the audio, so a runtime provider
+        # swap can never leave the microphone muted — or unguarded.
+        self.on_utterance_started: Callable[[], None] | None = None
+        self.on_utterance_finished: Callable[[], None] | None = None
 
         # Load the configured provider
         try:
@@ -120,6 +141,7 @@ class VoiceManager:
     def stop(self, reason: str = "voice_manager.stop", caller: str = "unknown") -> None:
         """Stop current speech immediately."""
         self._current_text = None
+        self._interrupted = True
         self._log_stop_request(reason=reason, caller=caller)
         try:
             self._provider.stop()
@@ -161,6 +183,8 @@ class VoiceManager:
             self._pending_utterances = 0
             self._speech_finished_event.set()
         self.on_speech_finished = None
+        self.on_utterance_started = None
+        self.on_utterance_finished = None
         logger.info("VoiceManager: shut down")
 
     def pause(self) -> None:
@@ -307,6 +331,33 @@ class VoiceManager:
         logger.warning("VoiceManager: %s", msg)
         self._provider = self._system_provider()
 
+    def _fallback_to_piper(self, reason: str = "") -> None:
+        """Switch to the local Piper provider (optimal offline fallback).
+
+        When the Piper voice model file is missing, Piper's own ``speak()``
+        will fail anyway — skip straight to the system voice (last resort)
+        so the failed utterance never silently disappears.
+        """
+        if isinstance(self._provider, PiperProvider):
+            return  # already using piper
+        piper = self._piper_provider()
+        if not piper.model_available:
+            msg = f"Switching to Piper (local) voice provider"
+            if reason:
+                msg += f": {reason}"
+            self._diagnostics.append(msg)
+            logger.warning("VoiceManager: %s", msg)
+            self._fallback_to_system(
+                f"Piper voice model missing ({piper.model_path})"
+            )
+            return
+        msg = f"Switching to Piper (local) voice provider"
+        if reason:
+            msg += f": {reason}"
+        self._diagnostics.append(msg)
+        logger.warning("VoiceManager: %s", msg)
+        self._provider = piper
+
     # ------------------------------------------------------------------
     # Speech worker
     # ------------------------------------------------------------------
@@ -334,21 +385,23 @@ class VoiceManager:
                 break
 
             self._current_text = text
+            self._interrupted = False
             start = time.monotonic()
-            success = False
-
+            started_hook = self.on_utterance_started
+            if started_hook is not None:
+                try:
+                    started_hook()
+                except Exception as exc:
+                    logger.error("VoiceManager: on_utterance_started hook failed: %s", exc)
             try:
-                success = self._provider.speak(text)
-            except Exception as exc:
-                logger.error("VoiceManager: provider.speak() raised: %s", exc)
-
-            # Providers may return before the audio actually finishes
-            # (async playback via a background process / VoicePlayer). Wait
-            # for real completion before pulling the next queue item — the
-            # worker must never start a new utterance while the previous
-            # one is still playing, otherwise sentences get cut off.
-            if success:
-                self._wait_for_playback_end(text)
+                success = self._speak_with_fallback(text)
+            finally:
+                finished_hook = self.on_utterance_finished
+                if finished_hook is not None:
+                    try:
+                        finished_hook()
+                    except Exception as exc:
+                        logger.error("VoiceManager: on_utterance_finished hook failed: %s", exc)
 
             elapsed = (time.monotonic() - start) * 1000
             self._current_text = None
@@ -363,46 +416,108 @@ class VoiceManager:
                     "VoiceManager: FAILED (%d chars, %.0f ms): '%s'",
                     len(text), elapsed, text[:60],
                 )
-                # Fallback for ElevenLabs failures
-                if not isinstance(self._provider, SystemProvider):
-                    self._fallback_to_system(
-                        f"speak() returned False for '{text[:40]}'"
-                    )
-
             self._decrement_pending()
 
         logger.info("VoiceManager: worker stopped")
 
-    def _wait_for_playback_end(self, text: str) -> None:
+    def _playback_consumed(self) -> bool:
+        """True when the current provider actually emitted audio.
+
+        FIX 1: providers backed by VoicePlayer measure real bytes written;
+        a 0-byte "success" (e.g. a stream that died before the first chunk)
+        is a failure, never OK.  Providers without byte accounting (system
+        voice) keep the legacy verdict.  An interrupted utterance always
+        counts as delivered — the user cut real audio short.
+        """
+        if self._interrupted:
+            return True
+        player = getattr(self._provider, "player", None)
+        consumed = getattr(player, "last_play_bytes", None) if player is not None else None
+        if isinstance(consumed, bool):
+            # Defensive: never treat a mock/flag as a byte count.
+            return True
+        if isinstance(consumed, int):
+            if consumed > 0:
+                return True
+            logger.warning(
+                "VoiceManager: provider reported success but 0 bytes reached "
+                "the device (error=%r)",
+                getattr(player, "last_play_error", None),
+            )
+            return False
+        return True
+
+    def _speak_with_fallback(self, text: str) -> bool:
+        """Deliver one utterance, retrying it after provider fallback."""
+        try:
+            if self._provider.speak(text):
+                self._wait_for_playback_end(text)
+                if self._playback_consumed():
+                    return True
+                logger.warning(
+                    "VoiceManager: no audio consumed for '%s' — failing over",
+                    text[:40],
+                )
+        except Exception as exc:
+            logger.error("VoiceManager: provider.speak() raised: %s", exc)
+
+        reason = f"speak() failed for '{text[:40]}'"
+        if isinstance(self._provider, ElevenLabsProvider):
+            self._fallback_to_piper(reason)
+        elif not isinstance(self._provider, SystemProvider):
+            self._fallback_to_system(reason)
+
+        try:
+            success = self._provider.speak(text)
+        except Exception as exc:
+            logger.error("VoiceManager: fallback provider.speak() raised: %s", exc)
+            return False
+        if success:
+            self._wait_for_playback_end(text)
+            return self._playback_consumed()
+        return False
+
+    def _wait_for_playback_end(self, text: str) -> bool:
         """Block until the provider's audio has actually finished playing.
 
         Async providers (PowerShell subprocess, VoicePlayer) only report
         ``is_playing`` True once playback has begun, so give them a short
         startup window before concluding the utterance already finished
         (i.e. a synchronous provider).
+
+        Returns True when playback was observed at any point (used with
+        byte accounting to reach an honest verdict).
         """
-        time.sleep(0.15)
-        startup_deadline = time.monotonic() + 1.5
-        playing = self._provider.is_playing
+        # VOICE-FIX: streaming providers report is_playing almost
+        # immediately — keep the startup grace short so the worker does not
+        # idle before observing playback.
+        time.sleep(0.05)
+        observed = bool(self._provider.is_playing)
+        startup_deadline = time.monotonic() + 5.0
+        playing = observed
         while not playing and time.monotonic() < startup_deadline:
             if self._stop_worker.is_set():
-                return
+                return observed
             time.sleep(0.05)
             playing = self._provider.is_playing
+            observed = observed or bool(playing)
 
         if not playing:
-            return
+            return observed
 
-        deadline = time.monotonic() + 120.0
+        deadline = time.monotonic() + _PLAYBACK_MAX_WAIT_SECONDS
         while self._provider.is_playing:
+            observed = True
             if self._stop_worker.is_set():
                 break
             if time.monotonic() >= deadline:
                 logger.warning(
-                    "VoiceManager: playback did not finish within 120s — moving on"
+                    "VoiceManager: playback did not finish within %.0fs — moving on",
+                    _PLAYBACK_MAX_WAIT_SECONDS,
                 )
                 break
             time.sleep(0.05)
+        return observed
 
     # ------------------------------------------------------------------
     # Settings helpers
@@ -416,6 +531,12 @@ class VoiceManager:
     def _system_provider(self) -> SystemProvider:
         return SystemProvider(voice_id=self._voice_id())
 
+    def _piper_provider(self) -> PiperProvider:
+        return PiperProvider(
+            model_path=self._piper_model_path(),
+            voice_name=self._piper_voice_name(),
+        )
+
     def _voice_id(self) -> str:
         return str(getattr(self._settings, "voice_id", "") or "").strip()
 
@@ -428,6 +549,17 @@ class VoiceManager:
     def _elevenlabs_api_key(self) -> str:
         return str(
             getattr(self._settings, "elevenlabs_api_key", "") or ""
+        ).strip()
+
+    def _piper_model_path(self) -> str:
+        return str(
+            getattr(self._settings, "piper_voice_model_path", "") or ""
+        ).strip()
+
+    def _piper_voice_name(self) -> str:
+        return str(
+            getattr(self._settings, "piper_voice_name", "en_US-lessac-medium")
+            or "en_US-lessac-medium"
         ).strip()
 
     def _voice_stability(self) -> float | None:

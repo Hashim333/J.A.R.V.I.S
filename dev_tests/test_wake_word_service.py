@@ -1,12 +1,16 @@
 """
 dev_tests/test_wake_word_service.py
 
-Unit tests for the WakeWordService.
+Unit tests for the WakeWordService adapter under VOICE-PIPELINE-004.
+
+JARVIS now operates WITHOUT a wake word (direct listening while IDLE), so the
+wake detector stays disabled: ``start`` / ``reset_for_wake`` are no-ops and
+Vosk never loads.  ``stop`` / ``shutdown`` remain defensive pause calls.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
 import threading
+from unittest.mock import MagicMock
 
 from services.base_service import ServiceStatus
 from services.service_manager import ServiceManager
@@ -17,13 +21,15 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
     """Tests the service lifecycle of WakeWordService."""
 
     def setUp(self) -> None:
-        """Set up the test case."""
+        """Set up the test case with a mock session attached."""
         self.wake_word_event = threading.Event()
         self.mock_mic_stream = MagicMock()
+        self.mock_session = MagicMock()
         self.service = WakeWordService(
             wake_word_detected_event=self.wake_word_event,
             microphone_stream=self.mock_mic_stream,
         )
+        self.service.set_session(self.mock_session)
         self.manager = ServiceManager()
         self.manager.register(self.service.name, self.service)
 
@@ -31,62 +37,49 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
         """Verify the service starts in the STOPPED state."""
         self.assertEqual(self.service.status, ServiceStatus.STOPPED)
 
-    def test_start_sets_consumer(self) -> None:
-        """Verify start() sets the audio consumer on the MicrophoneStream."""
+    def test_initialize_is_noop_and_does_not_arm_detection(self) -> None:
+        """initialize() succeeds and never arms the wake detector."""
         self.manager.initialize_all()
         self.manager.start_all()
         self.assertEqual(self.service.status, ServiceStatus.RUNNING)
-        self.mock_mic_stream.set_consumer.assert_called_once()
+        self.mock_session.start_wake_detection.assert_not_called()
+        self.mock_mic_stream.set_consumer.assert_not_called()
         self.manager.stop_all()
 
-    def test_stop_clears_consumer(self) -> None:
-        """Verify stop() clears the audio consumer."""
-        self.manager.initialize_all()
-        self.manager.start_all()
-        self.manager.stop_all()
-        self.assertEqual(self.service.status, ServiceStatus.STOPPED)
-        self.mock_mic_stream.set_consumer.assert_called_with(None)
+    def test_start_is_noop_under_direct_listening(self) -> None:
+        """VOICE-PIPELINE-004: start() must NOT arm wake detection."""
+        self.service.start()
+        self.mock_session.start_wake_detection.assert_not_called()
+        self.mock_session.reset_wake.assert_not_called()
+        self.mock_mic_stream.set_consumer.assert_not_called()
 
-    def test_restart_sets_consumer_twice(self) -> None:
-        """Verify restart() clears consumer, then re-sets it."""
-        self.manager.initialize_all()
-        self.manager.start_all()
-        self.mock_mic_stream.set_consumer.assert_called_once()
+    def test_reset_for_wake_is_inert(self) -> None:
+        """VOICE-PIPELINE-004: reset_for_wake() must not re-arm detection."""
+        self.service._command_audio = object()
+        self.service.reset_for_wake()
+        self.mock_session.start_wake_detection.assert_not_called()
+        self.mock_session.reset_wake.assert_not_called()
+        self.assertIsNone(self.service._command_audio)
 
-        self.manager.restart(self.service.name)
-        self.assertEqual(self.service.status, ServiceStatus.RUNNING)
-        # stop() + start() = 2 more calls beyond the initial start()
-        self.assertEqual(self.mock_mic_stream.set_consumer.call_count, 3)
+    def test_stop_pauses_detection_defensively(self) -> None:
+        """stop() remains a defensive pause call on the session."""
+        self.service.stop()
+        self.mock_session.stop_wake_detection.assert_called_once()
 
-        self.manager.stop_all()
-
-    def test_shutdown_clears_consumer(self) -> None:
-        """Verify shutdown() clears the consumer but does not close the stream."""
-        self.manager.initialize_all()
-        self.manager.start_all()
-        self.manager.shutdown_all()
-        self.mock_mic_stream.set_consumer.assert_called_with(None)
+    def test_shutdown_pauses_detection_without_closing_stream(self) -> None:
+        """shutdown() pauses detection but never closes the shared stream."""
+        self.service.shutdown()
+        self.mock_session.stop_wake_detection.assert_called_once()
         self.mock_mic_stream.shutdown.assert_not_called()
 
-    def test_initialization_failure_sets_status_to_failed(self) -> None:
-        """Verify that a failure during initialization sets the service status to FAILED."""
-        import voice.wakeword
-        original = voice.wakeword.WakeWordDetector
-        voice.wakeword.WakeWordDetector = MagicMock(
-            side_effect=Exception("Initialization failed"),
-        )
-        try:
-            service = WakeWordService(
-                wake_word_detected_event=threading.Event(),
-                microphone_stream=MagicMock(),
-            )
-            manager = ServiceManager()
-            manager.register(service.name, service)
+    def test_get_command_audio_returns_stored_audio(self) -> None:
+        """get_command_audio() returns the last captured wake audio."""
+        class _Audio:
+            frame_data = b"x" * 16
 
-            manager.initialize_all()
-            self.assertEqual(service.status, ServiceStatus.FAILED)
-        finally:
-            voice.wakeword.WakeWordDetector = original
+        self.service._on_wake_word(_Audio())
+        self.assertTrue(self.wake_word_event.is_set())
+        self.assertIsInstance(self.service.get_command_audio(), _Audio)
 
 
 if __name__ == "__main__":

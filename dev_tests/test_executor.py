@@ -6,7 +6,6 @@ Unit tests for the Executor and Registry.
 
 import unittest
 from typing import Any
-from unittest.mock import MagicMock
 
 from brain.execution_plan import ExecutionPlan, Step
 from executor.executor import Executor
@@ -74,7 +73,7 @@ class TestExecutor(unittest.TestCase):
         response = self.executor.execute(plan)
 
         self.assertFalse(response.success)
-        self.assertIn("Step 0 (action='failing_action') failed:", response.message)
+        self.assertEqual(response.message, "I couldn't complete that request.")
         self.assertIn("RuntimeError: Handler failed as requested.", response.error)
         self.assertIsNone(second_handler.called_with_step)  # Second step never ran
 
@@ -90,7 +89,7 @@ class TestExecutor(unittest.TestCase):
         response = self.executor.execute(plan)
 
         self.assertFalse(response.success)
-        self.assertIn("Step 0 (action='unregistered_action') failed:", response.message)
+        self.assertEqual(response.message, "I couldn't complete that request.")
         self.assertIn("KeyError: 'No handler registered for action", response.error)
 
     def test_execute_empty_plan(self) -> None:
@@ -103,6 +102,16 @@ class TestExecutor(unittest.TestCase):
 
         self.assertFalse(response.success)
         self.assertEqual(response.message, "I don't know how to do that yet.")
+
+    def test_browser_search_with_none_parameters_does_not_crash_on_get(self) -> None:
+        """BrowserHandler treats None parameters as an empty dict."""
+        from automation.handlers import BrowserHandler, StepParameterError
+
+        handler = BrowserHandler()
+
+        with self.assertRaisesRegex(StepParameterError, "requires parameter 'query'"):
+            handler.run(Step(action="search", parameters=None))
+
 
 
 class TestRegistry(unittest.TestCase):

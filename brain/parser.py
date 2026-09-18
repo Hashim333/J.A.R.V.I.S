@@ -115,6 +115,14 @@ class Parser:
     _CONTINUE_WATCHING = ("continue watching", "resume watching", "keep watching",
                           "continue where i left off", "resume where i left off",
                           "continue the video", "continue the show")
+    _FULLSCREEN = ("go fullscreen", "go full screen", "enter fullscreen",
+                   "enter full screen", "fullscreen", "full screen")
+    _EXIT_FULLSCREEN = ("exit fullscreen", "exit full screen", "leave fullscreen",
+                        "leave full screen", "close fullscreen")
+    _REPLAY = ("replay", "replay this video", "replay the video", "replay this song",
+               "replay the song", "restart this video", "restart the video",
+               "restart this song", "start over")
+    _GO_BACK = ("go back",)
     _SCROLL_PAGE = ("scroll down", "scroll up", "scroll to bottom", "scroll to top",
                     "scroll down the page", "scroll up the page", "page down", "page up",
                     "scroll down a bit", "scroll up a bit", "scroll down a little",
@@ -128,6 +136,21 @@ class Parser:
     _BROWSER_MODIFIERS: frozenset[str] = frozenset({
         "new window", "another window", "new tab", "another tab",
         "new instance", "separate window",
+    })
+    # Direct current-tab commands: explicit operations on the active browser
+    # tab/window. These must reach the browser handler and must never be
+    # answered as system-awareness questions or mis-parsed as app names.
+    _CURRENT_TAB_FOCUS: frozenset[str] = frozenset({
+        "current tab", "this tab",
+        "open current tab", "open this tab",
+        "use current tab", "use this tab", "use current",
+        "focus current tab", "focus this tab",
+        "switch to current tab", "switch to this tab",
+        "go to current tab", "go to this tab",
+        "in current tab", "in this tab",
+    })
+    _CURRENT_TAB_CLOSE: frozenset[str] = frozenset({
+        "close current tab", "close this tab",
     })
     _VOLUME_UP = ("increase volume", "raise volume", "turn up volume", "volume up")
     _VOLUME_DOWN = ("decrease volume", "lower volume", "turn down volume", "volume down")
@@ -269,6 +292,9 @@ class Parser:
         "bing": "bing",
         "duckduckgo": "duckduckgo",
         "reddit": "reddit",
+        "web": "google",
+        "the web": "google",
+        "internet": "google",
     }
 
     # ------------------------------------------------------------------
@@ -378,9 +404,20 @@ class Parser:
         r"(?:with\s+)?(?:profile\s+)?(\d+|[\w\s]+)$", re.IGNORECASE
     )
 
-    # Search pattern: "search <query> on <provider>"
+    # Search pattern: "search <query> on <provider>" — also accepts
+    # "find X on YouTube", "look up X in Wikipedia", etc.
     _SEARCH_ON_PATTERN = re.compile(
-        r"search\s+(.+?)\s+on\s+(.+)$", re.IGNORECASE
+        r"(?:search|find|look\s+up)\s+(.+?)\s+(?:on|in)\s+(.+)$",
+        re.IGNORECASE,
+    )
+
+    # Time-of-day questions (answered locally, no LLM round-trip).
+    _TIME_QUESTION_PATTERNS = (
+        re.compile(r"^what time is it(?: right now| now)?$"),
+        re.compile(r"^whats?\s+(?:is\s+)?(?:the\s+)?(?:current\s+)?time$"),
+        re.compile(r"^tell me\s+(?:the\s+)?(?:current\s+)?time$"),
+        re.compile(r"^tell me what\s+(?:the\s+)?time\s+it\s+is$"),
+        re.compile(r"^do you know what\s+(?:the\s+)?time\s+it\s+is$"),
     )
 
     # Compound splitter: "open Chrome and search ChatGPT"
@@ -529,16 +566,24 @@ class Parser:
 
         for phrase in self._VOLUME_UP:
             if phrase in normalized:
-                return self._volume_cmd(raw_text, "increase_volume", normalized, phrase)
+                return self._volume_cmd(raw_text, "youtube_volume_up", normalized, phrase)
         for phrase in self._VOLUME_DOWN:
             if phrase in normalized:
-                return self._volume_cmd(raw_text, "decrease_volume", normalized, phrase)
+                return self._volume_cmd(raw_text, "youtube_volume_down", normalized, phrase)
         for phrase in self._UNMUTE:
             if phrase in normalized:
-                return ParsedCommand(raw_text=raw_text, intent="unmute_volume", entities={})
+                return ParsedCommand(raw_text=raw_text, intent="youtube_unmute", entities={})
         for phrase in self._MUTE:
             if phrase in normalized:
-                return ParsedCommand(raw_text=raw_text, intent="mute_volume", entities={})
+                return ParsedCommand(raw_text=raw_text, intent="youtube_mute", entities={})
+
+        # Direct current-tab browser commands ("open current tab",
+        # "use current tab", "in the current tab", ...). These operate on the
+        # active browser tab/window via the browser handler — checked before
+        # media/app parsing so they are never misread as app names.
+        current_tab_result = self._parse_current_tab(normalized, raw_text)
+        if current_tab_result:
+            return current_tab_result
 
         # Media / playback control: pause, resume, next, skip ad, like,
         # subscribe, continue watching, scroll.  Matched before search/play
@@ -546,6 +591,11 @@ class Parser:
         media_result = self._parse_media(normalized, raw_text)
         if media_result:
             return media_result
+
+        # Time-of-day questions: "what time is it"
+        time_result = self._parse_time(normalized, raw_text)
+        if time_result:
+            return time_result
 
         # Close all applications
         if normalized in {"close all applications", "close everything", "close all windows", "close all apps"}:
@@ -556,6 +606,21 @@ class Parser:
         vision_result = self._parse_vision(normalized, raw_text)
         if vision_result:
             return vision_result
+
+        # Resolve known application/browser phrases before the file parser.
+        # Phrases such as "open the Chrome browser" contain file-like words
+        # but are unambiguously application commands.
+        app_result = self._parse_app_command(normalized, raw_text)
+        if app_result:
+            app_name = app_result.entities.get("app_name", "")
+            original_app = app_result.entities.get("original_app", "")
+            if (
+                app_result.intent == "open_website"
+                or app_result.entities.get("new_window")
+                or app_name in self._APP_SYNONYMS.values()
+                or original_app in self._APP_SYNONYMS
+            ):
+                return app_result
 
         # File commands: open, find, copy, move, rename, delete
         file_result = self._parse_file_command(normalized, raw_text, raw_text)
@@ -610,6 +675,40 @@ class Parser:
 
         return None
 
+    def _parse_current_tab(self, normalized: str, raw_text: str) -> ParsedCommand | None:
+        """Parse direct current-tab commands.
+
+        "open current tab" / "use current tab" / "in the current tab" (and
+        similar) focus the active browser tab/window; "close current tab"
+        closes it. Both use the existing browser/app handlers.
+        """
+        if normalized in self._CURRENT_TAB_FOCUS:
+            return ParsedCommand(
+                raw_text=raw_text,
+                intent="focus_app",
+                entities={"app_name": "chrome", "original_app": "current tab"},
+            )
+        if normalized in self._CURRENT_TAB_CLOSE:
+            return ParsedCommand(
+                raw_text=raw_text,
+                intent="close_current_tab",
+                entities={},
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # Time parsing
+    # ------------------------------------------------------------------
+
+    def _parse_time(self, normalized: str, raw_text: str) -> ParsedCommand | None:
+        """Parse time-of-day questions ("what time is it", ...)."""
+        for pattern in self._TIME_QUESTION_PATTERNS:
+            if pattern.match(normalized):
+                return ParsedCommand(
+                    raw_text=raw_text, intent="report_time", entities={},
+                )
+        return None
+
     # ------------------------------------------------------------------
     # Search parsing
     # ------------------------------------------------------------------
@@ -620,13 +719,19 @@ class Parser:
         match = self._SEARCH_ON_PATTERN.match(normalized)
         if match:
             query = match.group(1).strip()
+            if query.startswith("for "):
+                query = query[4:].strip()
             provider_raw = match.group(2).strip()
-            provider = self._SEARCH_PROVIDERS.get(provider_raw, provider_raw)
-            return ParsedCommand(
-                raw_text=raw_text,
-                intent="search",
-                entities={"query": query, "provider": provider},
-            )
+            provider = self._SEARCH_PROVIDERS.get(provider_raw)
+            # Only route through an explicitly known provider (youtube,
+            # google, github, ...). An unknown "on/in X" still falls back
+            # to a plain Google search rather than mis-routing.
+            if query and provider:
+                return ParsedCommand(
+                    raw_text=raw_text,
+                    intent="search",
+                    entities={"query": query, "provider": provider, "provider_explicit": True},
+                )
 
         # "search <query>" or "search for <query>"
         search_verbs = ("search", "search for", "look up", "find", "google")
@@ -672,6 +777,22 @@ class Parser:
         for phrase in self._CONTINUE_WATCHING:
             if self._media_match(clean, phrase):
                 return ParsedCommand(raw_text=raw_text, intent="continue_watching", entities={})
+
+        for phrase in self._EXIT_FULLSCREEN:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="youtube_exit_fullscreen", entities={})
+
+        for phrase in self._FULLSCREEN:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="youtube_enter_fullscreen", entities={})
+
+        for phrase in self._REPLAY:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="youtube_replay", entities={})
+
+        for phrase in self._GO_BACK:
+            if self._media_match(clean, phrase):
+                return ParsedCommand(raw_text=raw_text, intent="youtube_go_back", entities={})
 
         for phrase in self._MEDIA_PAUSE:
             if self._media_match(clean, phrase):
@@ -736,6 +857,27 @@ class Parser:
             return True
         return False
 
+    _ORDINAL_WORDS = {
+        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    }
+    _RESULT_ORDINAL_PATTERN = re.compile(
+        r"^(first|second|third|fourth|fifth|[1-9])(?:st|nd|rd|th)?"
+        r"\s*(?:one|result|video|song|track)?$"
+    )
+
+    @classmethod
+    def _parse_result_ordinal(cls, rest: str) -> int:
+        """Return the 1-based result index for phrases like "first one",
+        "second result", "3rd video", or a bare digit; 0 if not an ordinal."""
+        text = (rest or "").strip()
+        match = cls._RESULT_ORDINAL_PATTERN.match(text)
+        if not match:
+            return 0
+        token = match.group(1)
+        if token.isdigit():
+            return int(token)
+        return cls._ORDINAL_WORDS.get(token, 0)
+
     # ------------------------------------------------------------------
     # Play music parsing
     # ------------------------------------------------------------------
@@ -763,12 +905,25 @@ class Parser:
                         intent="open_app",
                         entities={"app_name": app_name, "original_app": rest},
                     )
-                # "play first result" → reuse the open results page
+                # "play first result" / "play the second one" → reuse the
+                # open results page with an ordinal index.
                 if rest in ("first result", "first video", "top result"):
                     return ParsedCommand(
                         raw_text=raw_text,
                         intent="play_music",
                         entities={"query": "", "provider": "youtube", "first_result": True},
+                    )
+                ordinal_index = self._parse_result_ordinal(rest)
+                if ordinal_index:
+                    return ParsedCommand(
+                        raw_text=raw_text,
+                        intent="play_music",
+                        entities={
+                            "query": "",
+                            "provider": "youtube",
+                            "first_result": ordinal_index == 1,
+                            "index": ordinal_index,
+                        },
                     )
                 # Default: play_music
                 return ParsedCommand(
@@ -1591,7 +1746,9 @@ class Parser:
                 rest_text = text[len(browser):].strip()
                 # Only treat as profile if the trailing part is a single word
                 # (not a multi-word app name)
-                if " " not in rest_text:
+                if " " not in rest_text and rest_text.casefold() not in {
+                    "browser", "app", "application",
+                }:
                     profile = rest_text
                     rest = browser
                     return profile, rest

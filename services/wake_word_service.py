@@ -11,6 +11,11 @@ echo-cancelled, noise-suppressed audio.  This service therefore becomes a
 thin adapter over the session's wake detection so its public API
 (``start`` / ``stop`` / ``reset_for_wake`` / ``get_command_audio``) and its
 role as a registered service remain unchanged.
+
+VOICE-PIPELINE-004: JARVIS operates WITHOUT a wake word — the owner enters
+the listen/capture loop directly when IDLE.  The wake detector therefore
+stays disabled: ``start`` and ``reset_for_wake`` are no-ops so Vosk never
+loads, while ``stop`` / ``shutdown`` remain as defensive pause calls.
 """
 
 from __future__ import annotations
@@ -29,10 +34,10 @@ class WakeWordService(BaseService):
     """
     Adapter for wake-word detection delegated to the DuplexVoiceSession.
 
-    The session performs detection on echo-cancelled audio (so JARVIS's own
-    TTS and background music cannot wake it) and calls ``on_wake_word`` with
-    the captured command audio; this service stores that audio and sets the
-    ``wake_word_detected`` event.
+    VOICE-PIPELINE-004: wake detection is DISABLED by default (direct
+    listening, no wake word).  ``start`` / ``reset_for_wake`` are no-ops so
+    Vosk never loads.  ``stop`` / ``shutdown`` remain defensive pause calls
+    for service lifecycle compatibility.
     """
 
     def __init__(
@@ -54,36 +59,31 @@ class WakeWordService(BaseService):
     def set_session(self, session: Any) -> None:
         """Attach the full-duplex session that owns wake detection."""
         self._session = session
-        if session is not None:
-            session.on_wake_word = self._on_wake_word
 
     def initialize(self) -> None:
-        """No-op — the session lazily creates its wake detector."""
-        logger.info("WakeWordService initialized (delegates to duplex session)")
+        """No-op — VOICE-PIPELINE-004 keeps wake detection disabled."""
+        logger.info("WakeWordService initialized (wake detection disabled)")
 
     # ------------------------------------------------------------------
     # Public API (unchanged)
     # ------------------------------------------------------------------
 
     def reset_for_wake(self) -> None:
-        """Reset detection and re-arm for the next wake word."""
-        logger.info("WakeWordService resetting for next wake word")
+        """No-op under VOICE-PIPELINE-004 (direct listening, no wake word).
+
+        JARVIS listens for commands directly while IDLE, so the wake detector
+        stays disabled (Vosk never loads).  The conversation manager still
+        calls this on every return to idle; the call is intentionally inert.
+        """
         self._command_audio = None
-        if self._session is not None:
-            try:
-                self._session.reset_wake()
-                self._session.start_wake_detection()
-            except Exception as exc:
-                logger.error("reset_for_wake failed: %s", exc)
 
     def start(self) -> None:
-        """Begin listening for the wake word (session-owned consumer)."""
-        logger.info("WakeWordService starting — listening for wake word")
-        if self._session is not None:
-            try:
-                self._session.start_wake_detection()
-            except Exception as exc:
-                logger.error("WakeWordService.start failed: %s", exc)
+        """No-op under VOICE-PIPELINE-004 (direct listening, no wake word).
+
+        The wake detector must not be armed, so ``start`` never arms it and
+        Vosk remains inactive.
+        """
+        pass
 
     def stop(self) -> None:
         """Pause wake-word detection."""

@@ -42,7 +42,9 @@ def _feed(vad: SileroVAD, frames: int, prob_model: FakeSilero) -> None:
 
 
 class TestSileroStateMachine(unittest.TestCase):
-    def test_onset_requires_n_consecutive_speech_frames(self) -> None:
+    def test_onset_triggers_on_majority_of_window(self) -> None:
+        # (FIX-003) onset fires on a majority of the window (2 of 3), so a
+        # single low-probability frame cannot delay / clip the first word.
         model = FakeSilero(0.9)
         started = []
         vad = SileroVAD(
@@ -53,11 +55,25 @@ class TestSileroStateMachine(unittest.TestCase):
             onset_frames=3,
             auto_load=False,
         )
-        _feed(vad, 2, model)
+        _feed(vad, 1, model)
         self.assertFalse(vad.triggered)
         _feed(vad, 1, model)
         self.assertTrue(vad.triggered)
         self.assertEqual(len(started), 1)
+
+    def test_single_speech_frame_never_triggers(self) -> None:
+        model = FakeSilero(0.9)
+        vad = SileroVAD(
+            model=model,
+            silence_hangover_ms=320.0,
+            min_speech_ms=250.0,
+            onset_frames=3,
+            auto_load=False,
+        )
+        _feed(vad, 1, model)  # 1 of 3
+        model.probability = 0.1
+        _feed(vad, 2, model)  # 1 of 3 total -> below majority
+        self.assertFalse(vad.triggered)
 
     def test_low_probability_frames_never_trigger(self) -> None:
         model = FakeSilero(0.1)
@@ -119,8 +135,16 @@ class TestSileroNoiseFloor(unittest.TestCase):
     def test_noisy_floor_raises_onset_and_threshold(self) -> None:
         vad = SileroVAD(model=FakeSilero(), auto_load=False)
         vad.set_noise_floor(0.08)
-        self.assertEqual(vad.onset_frames, 6)
-        self.assertGreaterEqual(vad._start_threshold, 0.8)
+        # NOISE-FLOOR-CAP: loud floors (music) escalate only to the hard
+        # ceiling (4 frames @ 0.6) so speech-over-music still triggers.
+        self.assertEqual(vad.onset_frames, 4)
+        self.assertEqual(vad._start_threshold, 0.6)
+
+    def test_music_floor_never_exceeds_cap(self) -> None:
+        vad = SileroVAD(model=FakeSilero(), auto_load=False)
+        vad.set_noise_floor(0.30)
+        self.assertEqual(vad.onset_frames, 4)
+        self.assertLessEqual(vad._start_threshold, 0.6)
 
 
 class TestSileroFallback(unittest.TestCase):

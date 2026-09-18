@@ -53,11 +53,17 @@ MAX_CONSECUTIVE_ERRORS = 5
 
 
 class FinalTranscript:
-    """A finalized speech segment with an acceptance decision."""
+    """A finalized speech segment with an acceptance decision.
+
+    (FIX-003) ``word_confidences`` / ``sentence_confidences`` /
+    ``min_word_confidence`` are optional per-word / per-sentence confidence
+    metrics (populated by the Whisper engine; empty for the Vosk path).
+    """
 
     __slots__ = (
         "text", "confidence", "accepted", "duration_ms",
         "rejected_reason", "pass_used",
+        "word_confidences", "sentence_confidences", "min_word_confidence",
     )
 
     def __init__(
@@ -68,6 +74,9 @@ class FinalTranscript:
         duration_ms: float = 0.0,
         rejected_reason: str = "",
         pass_used: str = "pass1",
+        word_confidences: tuple[tuple[str, float], ...] = (),
+        sentence_confidences: tuple[tuple[str, float], ...] = (),
+        min_word_confidence: float | None = None,
     ) -> None:
         self.text = text
         self.confidence = confidence
@@ -75,6 +84,9 @@ class FinalTranscript:
         self.duration_ms = duration_ms
         self.rejected_reason = rejected_reason
         self.pass_used = pass_used
+        self.word_confidences = word_confidences
+        self.sentence_confidences = sentence_confidences
+        self.min_word_confidence = min_word_confidence
 
     @property
     def is_empty(self) -> bool:

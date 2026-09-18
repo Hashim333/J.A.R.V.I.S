@@ -95,11 +95,20 @@ class WorldModel:
         )
 
     def stop(self) -> None:
-        """Signal the background loop to stop and wait for it."""
+        """Signal the background loop to stop and wait for it.
+
+        The loop only performs read-only collection and publishes under a
+        lock, so abandoning a still-blocked collector after a bounded wait
+        is safe (the thread is daemon and holds no resources that need
+        releasing).
+        """
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=5.0)
-            logger.info("WorldModel: stopped")
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("WorldModel: collector thread still blocked after 2s — continuing shutdown")
+            else:
+                logger.info("WorldModel: stopped")
 
     # ── Collector registration ───────────────────────────────────────
 
@@ -168,6 +177,8 @@ class WorldModel:
             fragments: dict[str, Any] = {}
 
             for collector in self._collectors:
+                if self._stop.is_set():
+                    break
                 cid = id(collector)
                 if now - last_collected[cid] >= collector.poll_interval:
                     try:

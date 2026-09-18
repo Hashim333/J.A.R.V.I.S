@@ -25,6 +25,11 @@ class Watchdog:
         self._running = False
         self._thread: threading.Thread | None = None
         self._stalled = False
+        # Wakes the monitor thread immediately on stop(): without this the
+        # thread sleeps ``timeout / 4`` (up to ~37 s for the backend-loop
+        # watchdog) and every stop() burns its full 1 s join timeout,
+        # stalling shutdown by ~1 s per watchdog.
+        self._wake = threading.Event()
 
     def start(self) -> None:
         with self._lock:
@@ -33,6 +38,7 @@ class Watchdog:
             self._running = True
             self._last_heartbeat = time.monotonic()
             self._stalled = False
+        self._wake.clear()
         self._thread = threading.Thread(target=self._monitor, daemon=True)
         self._thread.start()
         logger.info("Watchdog[%s] started (timeout=%.1fs)", self.name, self._timeout)
@@ -42,6 +48,7 @@ class Watchdog:
             if not self._running:
                 return
             self._running = False
+        self._wake.set()
         logger.info("Watchdog[%s] stopped", self.name)
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -58,6 +65,7 @@ class Watchdog:
                 logger.info("Watchdog[%s] recovered after stall", self.name)
 
     def _monitor(self) -> None:
+        interval = max(0.05, self._timeout / 4.0)
         while True:
             with self._lock:
                 if not self._running:
@@ -75,7 +83,9 @@ class Watchdog:
                             self._on_stall(self.name)
                         except Exception as exc:
                             logger.error("Watchdog[%s] stall callback failed: %s", self.name, exc)
-            time.sleep(self._timeout / 4.0)
+            # Event wait (not sleep) so stop() wakes the thread instantly.
+            if self._wake.wait(timeout=interval):
+                return
 
 
 class WatchdogManager:

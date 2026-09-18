@@ -1,4 +1,0 @@
-Loading: C:\Users\muham\OneDrive\Desktop\JARVIS\ui\qml\v4\MainWindow.qml
-QML WARN: [file:///C:/Users/muham/OneDrive/Desktop/JARVIS/ui/qml/v4/MainWindow.qml: No such file or directory]
-Root objects: 0
-Done

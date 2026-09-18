@@ -35,7 +35,14 @@ from monitoring.pipeline_trace import (
     stage_entry as _stage_entry,
     stage_exit as _stage_exit,
 )
+from monitoring.turn_trace import mark as turn_mark
 from services.conversation_manager import ConversationManager, ConversationState
+from services.silence_gate import is_silence_or_garbage
+from thinking.speech_intelligence import (
+    SpeechAction,
+    SpeechIntelligenceLayer,
+    SpeechTranscript,
+)
 from voice.duplex import CaptureResult
 
 logger = logging.getLogger(__name__)
@@ -48,7 +55,12 @@ _MAX_CONSECUTIVE_FAILED_LISTENS = 3
 _CONVERSATION_AUTO_SLEEP_SECONDS = 30.0
 _CONVERSATION_CONFIRMATION_TIMEOUT_SECONDS = 15.0
 _WAKE_IDLE_TIMEOUT_SECONDS = 30.0
-_MAX_WAKE_NO_SPEECH_ROUNDS = 5
+_MAX_WAKE_NO_SPEECH_ROUNDS = 2
+_MAX_WAKE_REPEAT_ROUNDS = 2
+# PART 3: the wake-to-command listen window waits for *speech start* for a
+# SHORT time and then returns to wake/idle — it never sits silent for the
+# full 30 s.  (The speech-end wait is owned by the capture VAD, not here.)
+_WAKE_LISTEN_TIMEOUT_SECONDS = 5.0
 
 _WAKE_PHRASE = "jarvis"
 _WAKE_PATTERN = re.compile(rf'\b{re.escape(_WAKE_PHRASE)}\b', re.IGNORECASE)
@@ -81,6 +93,8 @@ class ConversationOwner:
         service_manager,
         shutdown_in_progress: threading.Event,
         shutdown_event: threading.Event,
+        speech_intelligence: SpeechIntelligenceLayer | None = None,
+        wake_word_enabled: bool | None = None,
     ) -> None:
         self._conversation_manager = conversation_manager
         self._bridge = bridge
@@ -97,6 +111,19 @@ class ConversationOwner:
         self._service_manager = service_manager
         self._shutdown_in_progress = shutdown_in_progress
         self._shutdown_event = shutdown_event
+        self._speech_intelligence = speech_intelligence or SpeechIntelligenceLayer()
+        # VOICE-PIPELINE-004: single source of truth for direct-listening mode.
+        # Defaults to the WAKE_WORD_ENABLED setting; tests may inject explicitly.
+        if wake_word_enabled is None:
+            from config.settings import WAKE_WORD_ENABLED
+
+            wake_word_enabled = WAKE_WORD_ENABLED
+        self._wake_word_enabled = bool(wake_word_enabled)
+        # Microphone recovery: next allowed restart attempt (monotonic).
+        self._mic_retry_at = 0.0
+        # Whether the mic-unavailable error is currently published (so the
+        # recovery loop publishes it once instead of spamming history).
+        self._mic_error_published = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -120,8 +147,37 @@ class ConversationOwner:
         bridge.set_mic_status(True)
         bridge.set_speaker_status(True)
         from config.settings import settings
-        bridge.set_provider("Ollama")
+        # Never claim LLM reasoning when the provider is down.  Health is
+        # probed once here (lazy, cached); per-call fail-fast in the
+        # provider keeps later commands fast — no health check per request.
+        try:
+            _reasoner = getattr(self._brain, "reasoner", None)
+            if _reasoner is None:
+                _reasoner = getattr(self._brain, "_reasoner", None)
+            _llm = getattr(_reasoner, "_llm", None) if _reasoner is not None else None
+            if _llm is not None and hasattr(_llm, "provider_name"):
+                _provider_name = _llm.provider_name
+                _llm_ok = _llm.health_check()
+            else:
+                # Brain does not expose its reasoner: probe once via a
+                # throwaway dispatcher (startup only — never per request).
+                from brain.llm import LLM as _LLM
+
+                _probe = _LLM()
+                _provider_name = _probe.provider_name
+                _llm_ok = _probe.health_check()
+        except Exception:
+            _provider_name = "rules"
+            _llm_ok = False
+        bridge.set_provider(
+            _provider_name if _llm_ok else f"Rules ({_provider_name} offline)"
+        )
         bridge.set_model(settings.model)
+        if not _llm_ok:
+            logger.warning(
+                "LLM reasoning OFF at startup (provider=%s) — "
+                "rule pipeline active", _provider_name,
+            )
 
         # The wake-word path only runs while the conversation state is IDLE.
         # The manager defaults to STANDBY, so arm it explicitly or the wake
@@ -160,457 +216,621 @@ class ConversationOwner:
                 if self._shutdown_in_progress.is_set():
                     logger.info("Conversation owner shutdown requested — exiting loop")
                     break
-                bridge.set_backend_heartbeat()
-                self._watchdog_manager.kick("backend_loop")
-                self._watchdog_manager.kick("conversation")
-
-                # ── Check for expired confirmation ──
-                if (
-                    self._conversation_manager.has_pending_confirmation
-                    and self._conversation_manager.is_expired
-                ):
-                    logger.info("Confirmation expired — discarding stored plan")
-                    self._conversation_manager.on_timeout()
-
-                # ── Time out any task that outlived its deadline ──
-                expired_tasks = self._task_manager.check_timeouts()
-                if expired_tasks:
-                    for expired in expired_tasks:
-                        logger.warning(
-                            "Task %s expired (deadline) — marked FAILED",
-                            expired.task_id,
-                        )
-
-                # ============================================================
-                # Text commands (blocking wait with timeout)
-                # ============================================================
                 try:
-                    command = self._command_queue.get(timeout=_BACKEND_QUEUE_TIMEOUT)
+                    bridge.set_backend_heartbeat()
+                    self._watchdog_manager.kick("backend_loop")
+                    self._watchdog_manager.kick("conversation")
 
-                    if normalize_intent(command) == Intent.EXIT:
-                        logger.info("Shutdown via text command")
-                        break
+                    # ── Check for expired confirmation ──
+                    if (
+                        self._conversation_manager.has_pending_confirmation
+                        and self._conversation_manager.is_expired
+                    ):
+                        logger.info("Confirmation expired — discarding stored plan")
+                        self._conversation_manager.on_timeout()
 
-                    if self._shutdown_in_progress.is_set():
-                        logger.info("Shutdown requested — skipping queued command")
-                        break
+                    # ── Time out any task that outlived its deadline ──
+                    expired_tasks = self._task_manager.check_timeouts()
+                    if expired_tasks:
+                        for expired in expired_tasks:
+                            logger.warning(
+                                "Task %s expired (deadline) — marked FAILED",
+                                expired.task_id,
+                            )
 
-                    self._brain.cancel_current()
+                    # ============================================================
+                    # Text commands (blocking wait with timeout)
+                    # ============================================================
+                    try:
+                        command = self._command_queue.get(timeout=_BACKEND_QUEUE_TIMEOUT)
 
-                    if normalize_intent(command) == Intent.HELP:
-                        bridge.show_subtitle(
-                            "Commands: help, exit | open/close <app> | "
-                            "search <q> on <site>"
-                        )
-                        continue
+                        if normalize_intent(command) == Intent.EXIT:
+                            logger.info("Shutdown via text command")
+                            break
 
-                    if self._conversation_manager.is_exit_command(command):
-                        bridge.show_subtitle(
-                            "Ending conversation. Say 'JARVIS' or type a command."
-                        )
-                        self._conversation_manager.return_to_idle("exit command")
-                        bridge.set_core_state("idle")
-                        continue
+                        if self._shutdown_in_progress.is_set():
+                            logger.info("Shutdown requested — skipping queued command")
+                            break
 
-                    # ── Check pending confirmation BEFORE processing ──
-                    if self._check_pending_confirmation(command):
-                        continue
-
-                    logger.info("Processing text: '%s'", command)
-                    logger.info("Recognized text: %r", command)
-                    bridge.add_conversation_entry("USER", command)
-                    self._run_command(command)
-                    if self._conversation_manager.has_pending_confirmation:
-                        self._conversation_manager.reset_activity()
-                    else:
-                        self._conversation_manager.transition_to_active(
-                            "command complete"
-                        )
-                    continue
-
-                except queue.Empty:
-                    pass
-
-                # ============================================================
-                # Voice (wake-word)
-                # ============================================================
-                if self._conversation_manager.state in (ConversationState.IDLE,):
-                    if self._wake_word_detected.is_set():
-                        wake_start = _stage_entry("backend.wake_command")
-                        self._wake_word_detected.clear()
                         self._brain.cancel_current()
-                        self._conversation_manager.on_wake_word()
-                        bridge.wakeActive = True
-                        bridge.set_core_state("listening")
-                        bridge.show_subtitle("Listening...")
 
-                        self._watchdog_manager.kick("backend_loop")
-                        self._watchdog_manager.kick("conversation")
-                        # Confirm aloud ("Yes?") WITHOUT muting the mic: the echo
-                        # canceller removes JARVIS's own voice from the capture, so
-                        # the user can start speaking the moment they hear it — the
-                        # first word is recovered from the pre-roll buffer.
-                        try:
-                            self._voice_engine.speak("Yes?")
-                        except Exception:
-                            pass
-                        # Let the short prompt finish so JARVIS never hears its own
-                        # "Yes?" as the start of the command.
-                        self._wait_for_speech_end(timeout=6.0)
-
-                        # ── Wake-to-command listen loop (Req #1/#2/#3) ──
-                        handled = False
-                        no_speech_rounds = 0
-                        while not handled:
-                            if self._shutdown_in_progress.is_set():
-                                handled = True
-                                break
-                            # Never starve queued text commands during a long wait.
-                            if self._command_queue.qsize() > 0:
-                                handled = True
-                                break
-                            self._watchdog_manager.kick("backend_loop")
-                            self._watchdog_manager.kick("conversation")
-                            bridge.set_core_state("listening")
-                            bridge.wakeActive = True
-                            bridge.show_subtitle("Listening...")
-                            try:
-                                with Timer("capture_command"):
-                                    result = self._duplex_session.capture_command(
-                                        timeout=_WAKE_IDLE_TIMEOUT_SECONDS,
-                                        on_partial=lambda text: bridge.show_subtitle(text),
-                                    )
-                            except Exception as exc:
-                                logger.error(
-                                    "Voice capture failed: %s", exc, exc_info=True
-                                )
-                                result = CaptureResult(
-                                    "", 0.0, False, reason="capture_error"
-                                )
-                            bridge.wakeActive = False
-                            # Safety: never leave the mic muted after capture.
-                            self._microphone_stream.unmute()
-
-                            if result.success and result.text:
-                                command_text = result.text.strip()
-                                stripped = (
-                                    self._strip_wake_word(command_text) or command_text
-                                )
-
-                                if self._conversation_manager.is_exit_command(stripped):
-                                    bridge.show_subtitle("Ending conversation.")
-                                    self._speak_with_retry("Goodbye.")
-                                    self._wait_for_speech_end(timeout=10.0)
-                                    self._conversation_manager.return_to_idle(
-                                        "exit command"
-                                    )
-                                    bridge.set_core_state("idle")
-                                    _stage_exit(
-                                        "backend.wake_command", wake_start, status="EXIT"
-                                    )
-                                    handled = True
-                                    break
-
-                                # ── Check pending confirmation BEFORE processing ──
-                                if self._check_pending_confirmation(stripped):
-                                    _stage_exit(
-                                        "backend.wake_command",
-                                        wake_start,
-                                        status="CONFIRMATION",
-                                    )
-                                    handled = True
-                                    break
-
-                                bridge.add_conversation_entry("USER", stripped)
-                                logger.info(
-                                    "Recognized text: %r (confidence=%.3f)",
-                                    stripped, result.confidence,
-                                )
-                                logger.info(
-                                    "Processing voice: '%s' (speech confidence=%.3f)",
-                                    stripped, result.confidence,
-                                )
-                                self._run_command(
-                                    stripped,
-                                    speech_confidence=result.confidence,
-                                    speech_recognition_ms=result.recognition_ms,
-                                )
-                                # Requirement #9: stay engaged for follow-ups instead
-                                # of dropping straight back to wake mode.
-                                if self._conversation_manager.has_pending_confirmation:
-                                    self._conversation_manager.reset_activity()
-                                else:
-                                    self._conversation_manager.transition_to_active(
-                                        "command complete"
-                                    )
-                                _stage_exit(
-                                    "backend.wake_command", wake_start, status="OK"
-                                )
-                                handled = True
-                                break
-
-                            # ── Capture failed: respond and KEEP LISTENING ──
-                            reason = result.reason or ""
-                            text = (result.text or "").strip()
-
-                            if reason == "no_speech":
-                                no_speech_rounds += 1
-                                logger.info(
-                                    "WAKE_CAPTURE no speech after %.0fs (round %d) — prompting",
-                                    _WAKE_IDLE_TIMEOUT_SECONDS, no_speech_rounds,
-                                )
-                                if no_speech_rounds >= _MAX_WAKE_NO_SPEECH_ROUNDS:
-                                    bridge.show_subtitle(
-                                        "I'll be here. Say 'JARVIS' when you need me."
-                                    )
-                                    self._speak_with_retry(
-                                        "I'll be here. Say JARVIS when you need me."
-                                    )
-                                    self._wait_for_speech_end(timeout=10.0)
-                                    self._conversation_manager.return_to_idle(
-                                        "no speech"
-                                    )
-                                    bridge.set_core_state("idle")
-                                    _stage_exit(
-                                        "backend.wake_command",
-                                        wake_start,
-                                        status="NO_SPEECH",
-                                    )
-                                    handled = True
-                                    break
-                                # Requirement #3: say "I'm still listening." and stay
-                                # listening — never exit just because the timer ran out.
-                                bridge.show_subtitle("I'm still listening.")
-                                self._speak_with_retry("I'm still listening.")
-                                self._wait_for_speech_end(timeout=10.0)
-                                continue
-
-                            if not text:
-                                # Requirement #8: empty recognition is never NO_COMMAND.
-                                logger.info(
-                                    "WAKE_CAPTURE empty recognition — asking to repeat"
-                                )
-                                bridge.show_subtitle("I didn't catch that.")
-                                self._speak_with_retry("I didn't catch that.")
-                                self._wait_for_speech_end(timeout=10.0)
-                                continue
-
-                            if reason == "low confidence":
-                                # Requirement #6: never execute a low-confidence command.
-                                logger.info(
-                                    "WAKE_CAPTURE low confidence (%.3f) — asking to repeat",
-                                    result.confidence,
-                                )
-                                bridge.show_subtitle(
-                                    "Sorry sir, could you repeat that?"
-                                )
-                                self._speak_with_retry(
-                                    "Sorry sir, could you repeat that?"
-                                )
-                                self._wait_for_speech_end(timeout=10.0)
-                                continue
-
-                            # Requirement #7: partial words / other rejections.
-                            logger.info(
-                                "WAKE_CAPTURE rejected (%s) — asking to repeat", reason
-                            )
+                        if normalize_intent(command) == Intent.HELP:
                             bridge.show_subtitle(
-                                "I didn't catch that. Could you repeat it?"
+                                "Commands: help, exit | open/close <app> | "
+                                "search <q> on <site>"
                             )
-                            self._speak_with_retry(
-                                "I didn't catch that. Could you repeat it?"
-                            )
-                            self._wait_for_speech_end(timeout=10.0)
                             continue
 
-                # ============================================================
-                # Voice (active conversation / awaiting confirmation)
-                # ============================================================
-                elif self._conversation_manager.state in (
-                    ConversationState.ACTIVE_CONVERSATION,
-                    ConversationState.WAITING_CONFIRMATION,
-                ):
-                    if self._shutdown_in_progress.is_set():
-                        continue
-
-                    if self._command_queue.qsize() > 0:
-                        logger.debug(
-                            "Queued commands pending (%d) — skipping voice listen",
-                            self._command_queue.qsize(),
-                        )
-                        continue
-
-                    # Expiry is only judged once JARVIS has actually finished
-                    # speaking — a long TTS response must never look like silence.
-                    if (
-                        self._voice_engine.is_speaking
-                        or self._voice_engine.queue_size > 0
-                    ):
-                        self._voice_engine.start_barge_in()
-                        time.sleep(0.05)
-                        continue
-
-                    self._voice_engine.stop_barge_in()
-
-                    if self._conversation_manager.is_expired:
-                        logger.info(
-                            "Conversation timed out after %.0fs",
-                            self._conversation_manager._activity_timeout,
-                        )
-                        self._conversation_manager.on_timeout()
-                        bridge.set_core_state("idle")
-                        bridge.show_subtitle(
-                            "Conversation timed out. Say 'JARVIS' or type a command."
-                        )
-                        self._voice_engine.stop_barge_in()
-                        continue
-
-                    # A fresh 30 s of true silence starts now that JARVIS has
-                    # finished speaking (Requirement #9).
-                    self._conversation_manager.reset_activity()
-                    listen_to = min(
-                        _CONVERSATION_AUTO_SLEEP_SECONDS,
-                        max(1.0, self._conversation_manager.remaining_time),
-                    )
-                    bridge.set_core_state("listening")
-                    bridge.show_subtitle("Listening...")
-                    active_start = _stage_entry("backend.conversation_listen")
-                    try:
-                        with Timer("capture_command"):
-                            result = self._duplex_session.capture_command(
-                                timeout=listen_to,
-                                on_partial=lambda text: bridge.show_subtitle(text),
-                            )
-                    except Exception as exc:
-                        logger.error("Listen failed: %s", exc)
-                        bridge.show_subtitle("Could not listen. Please try again.")
-                        self._microphone_stream.unmute()
-                        _stage_exit(
-                            "backend.conversation_listen", active_start, status="FAIL"
-                        )
-                        time.sleep(0.5)
-                        continue
-                    self._microphone_stream.unmute()
-                    _stage_exit(
-                        "backend.conversation_listen", active_start, status="OK"
-                    )
-
-                    if result.success and result.text:
-                        text = result.text.strip()
-                        consecutive_failed_listens = 0
-
-                        if self._conversation_manager.is_exit_command(text):
+                        if self._conversation_manager.is_exit_command(command):
                             bridge.show_subtitle("Ending conversation.")
-                            self._speak_with_retry("Goodbye.")
-                            self._wait_for_speech_end(timeout=10.0)
                             self._conversation_manager.return_to_idle("exit command")
                             bridge.set_core_state("idle")
                             continue
 
-                        stripped = self._strip_wake_word(text) or text
-
                         # ── Check pending confirmation BEFORE processing ──
-                        if self._check_pending_confirmation(stripped):
-                            self._conversation_manager.reset_activity()
+                        if self._check_pending_confirmation(command):
                             continue
 
-                        bridge.add_conversation_entry("USER", stripped)
-                        logger.info(
-                            "Recognized text: %r (confidence=%.3f)",
-                            stripped, result.confidence,
-                        )
-                        logger.info(
-                            "Processing conversation: '%s' (speech confidence=%.3f)",
-                            stripped, result.confidence,
-                        )
-                        self._run_command(
-                            stripped,
-                            speech_confidence=result.confidence,
-                        )
-                        # Requirement #9: a follow-up command keeps the conversation
-                        # open — it only ends on timeout / sleep / goodbye / cancel /
-                        # 30 s of true silence.
+                        logger.info("Processing text: '%s'", command)
+                        logger.info("Recognized text: %r", command)
+                        bridge.add_conversation_entry("USER", command)
+                        self._run_command_safe(command)
                         if self._conversation_manager.has_pending_confirmation:
                             self._conversation_manager.reset_activity()
                         else:
                             self._conversation_manager.transition_to_active(
                                 "command complete"
                             )
-                    else:
-                        reason = result.reason or ""
-                        text = (result.text or "").strip()
+                        continue
 
-                        if reason == "no_speech":
-                            # 30 s of true silence -> end the conversation (#9).
+                    except queue.Empty:
+                        pass
+
+                    # ============================================================
+                    # Voice (direct listening / wake-gated)
+                    # ============================================================
+                    if self._conversation_manager.state in (ConversationState.IDLE,):
+                        # VOICE-PIPELINE-004: when WAKE_WORD_ENABLED=false the owner
+                        # must NOT wait for WakeWordService — it enters the
+                        # capture/listen path immediately, and the state machine
+                        # records what actually happens (LISTENING), never a
+                        # fabricated WAKE_DETECTED / "wake word heard" transition.
+                        wake_event = self._wake_word_detected.is_set()
+                        enter_listen = (not self._wake_word_enabled) or wake_event
+                        if enter_listen:
+                            wake_start = _stage_entry("backend.wake_command")
+                            self._brain.cancel_current()
+                            if wake_event:
+                                # A real wake word was heard — represent it honestly.
+                                self._wake_word_detected.clear()
+                                self._conversation_manager.on_wake_word()
+                                wake_active = True
+                            else:
+                                # Direct listening — no wake word involved at all.
+                                self._conversation_manager.on_listening()
+                                wake_active = False
+                            # Gate entry too: never publish LISTENING (or run
+                            # a capture below) while the mic path is dead. A
+                            # dead mic reports honest error + restart
+                            # attempt; the outer loop re-gates next pass.
+                            if not self._ensure_listening_ready():
+                                self._handle_listening_not_ready(bridge)
+                                _stage_exit(
+                                    "backend.wake_command", wake_start,
+                                    status="MIC_NOT_READY",
+                                )
+                                time.sleep(0.5)
+                                continue
+                            bridge.wakeActive = wake_active
+                            bridge.set_core_state("listening")
+                            bridge.show_subtitle("Listening...")
+                            logger.info("TURN LISTENING READY (direct/wake entry)")
+
+                            self._watchdog_manager.kick("backend_loop")
+                            self._watchdog_manager.kick("conversation")
+                            # Confirm aloud ("Yes?") WITHOUT muting the mic: the echo
+                            # canceller removes JARVIS's own voice from the capture, so
+                            # the user can start speaking the moment they hear it — the
+                            # first word is recovered from the pre-roll buffer.
+                            # FIX-VOICE-001: no spoken ack after the wake word.  An
+                            # audible "Yes?" re-triggers JARVIS's own mic and burns
+                            # the first words of the user's command, so the ack is
+                            # silenced (subtitle only).
+                            # PART 8: the wake ack must never delay mic capture.  The
+                            # capture starts immediately below — any word spoken right
+                            # after "Yes?" is recovered from the pre-roll, and the echo
+                            # canceller prevents JARVIS hearing its own "Yes?".
+
+                            # ── Listen-to-command loop (direct or wake-gated) ──
+                            handled = False
+                            no_speech_rounds = 0
+                            repeat_rounds = 0
+                            while not handled:
+                                if self._shutdown_in_progress.is_set():
+                                    handled = True
+                                    break
+                                # Never starve queued text commands during a long wait.
+                                if self._command_queue.qsize() > 0:
+                                    handled = True
+                                    break
+                                self._watchdog_manager.kick("backend_loop")
+                                self._watchdog_manager.kick("conversation")
+                                # LISTENING is published only after the mic
+                                # path is verified really ready (consumer
+                                # attached, capture thread alive, unmuted) —
+                                # the backend owns state, the UI only reflects
+                                # it.  A dead mic skips capture this pass
+                                # (honest error + restart attempt) instead of
+                                # faking "listening" while deaf.
+                                if not self._ensure_listening_ready():
+                                    self._handle_listening_not_ready(bridge)
+                                    time.sleep(0.5)
+                                    continue
+                                bridge.set_core_state("listening")
+                                bridge.wakeActive = wake_active
+                                bridge.show_subtitle("Listening...")
+                                logger.debug("TURN LISTENING READY (capture pass)")
+                                try:
+                                    with Timer("capture_command"):
+                                        result = self._duplex_session.capture_command(
+                                            timeout=_WAKE_LISTEN_TIMEOUT_SECONDS,
+                                            on_partial=lambda text: bridge.show_subtitle(text),
+                                        )
+                                except Exception as exc:
+                                    logger.error(
+                                        "Voice capture failed: %s", exc, exc_info=True
+                                    )
+                                    result = CaptureResult(
+                                        "", 0.0, False, reason="capture_error"
+                                    )
+                                bridge.wakeActive = False
+                                # Safety: never leave the mic muted after capture.
+                                self._microphone_stream.unmute()
+                                logger.debug("TURN MIC REARMED (post-capture)")
+
+                                if result.success and result.text:
+                                    command_text = result.text.strip()
+                                    stripped = (
+                                        self._strip_wake_word(command_text) or command_text
+                                    )
+
+                                    if self._conversation_manager.is_exit_command(stripped):
+                                        bridge.show_subtitle("Ending conversation.")
+                                        self._speak_with_retry("Goodbye.")
+                                        self._wait_for_speech_end(timeout=10.0)
+                                        self._conversation_manager.return_to_idle(
+                                            "exit command"
+                                        )
+                                        bridge.set_core_state("idle")
+                                        _stage_exit(
+                                            "backend.wake_command", wake_start, status="EXIT"
+                                        )
+                                        handled = True
+                                        break
+
+                                    # ── Check pending confirmation BEFORE processing ──
+                                    if self._check_pending_confirmation(stripped):
+                                        _stage_exit(
+                                            "backend.wake_command",
+                                            wake_start,
+                                            status="CONFIRMATION",
+                                        )
+                                        handled = True
+                                        break
+
+                                    bridge.add_conversation_entry("USER", stripped)
+                                    turn_mark(
+                                        "UTTERANCE_ACCEPTED",
+                                        gen=getattr(self._duplex_session, "capture_generation", None),
+                                        text_len=len(stripped),
+                                        confidence=round(float(result.confidence), 3),
+                                    )
+                                    turn_mark(
+                                        "CONVERSATION_EVENT_QUEUED",
+                                        gen=getattr(self._duplex_session, "capture_generation", None),
+                                    )
+                                    logger.info(
+                                        "Recognized text: %r (confidence=%.3f)",
+                                        stripped, result.confidence,
+                                    )
+                                    logger.info(
+                                        "Processing voice: '%s' (speech confidence=%.3f)",
+                                        stripped, result.confidence,
+                                    )
+                                    self._run_command_safe(
+                                        stripped,
+                                        speech_confidence=result.confidence,
+                                        speech_recognition_ms=result.recognition_ms,
+                                        word_confidences=result.word_confidences,
+                                        min_word_confidence=result.min_word_confidence,
+                                        speech_seconds=result.speech_seconds,
+                                    )
+                                    # Requirement #9: stay engaged for follow-ups instead
+                                    # of dropping straight back to wake mode.
+                                    if self._conversation_manager.has_pending_confirmation:
+                                        self._conversation_manager.reset_activity()
+                                    else:
+                                        self._conversation_manager.transition_to_active(
+                                            "command complete"
+                                        )
+                                    _stage_exit(
+                                        "backend.wake_command", wake_start, status="OK"
+                                    )
+                                    handled = True
+                                    break
+
+                                # ── Capture failed: respond and KEEP LISTENING ──
+                                reason = result.reason or ""
+                                text = (result.text or "").strip()
+
+                                if reason == "no_speech":
+                                    no_speech_rounds += 1
+                                    logger.info(
+                                        "WAKE_CAPTURE no speech after %.0fs (round %d) — prompting",
+                                        _WAKE_LISTEN_TIMEOUT_SECONDS, no_speech_rounds,
+                                    )
+                                    if no_speech_rounds >= _MAX_WAKE_NO_SPEECH_ROUNDS:
+                                        # FIX-NO-WAKE-ECHO: end silently with a
+                                        # short neutral note.  Speaking "Say JARVIS"
+                                        # aloud plays the wake phrase through the
+                                        # speakers — residual echo re-triggers the
+                                        # wake detector the moment it is re-armed,
+                                        # and the 10 s TTS wait delays conversation
+                                        # end without value.
+                                        bridge.show_subtitle("Ready when you are.")
+                                        if not self._wake_word_enabled:
+                                            no_speech_rounds = 0
+                                            continue
+                                        self._conversation_manager.return_to_idle(
+                                            "no speech"
+                                        )
+                                        # DIRECT-LISTEN-STABLE: with the wake word
+                                        # disabled the UI holds one stable
+                                        # listening/ready state — never bouncing
+                                        # idle <-> listening between captures.
+                                        if self._wake_word_enabled:
+                                            bridge.set_core_state("idle")
+                                        _stage_exit(
+                                            "backend.wake_command",
+                                            wake_start,
+                                            status="NO_SPEECH",
+                                        )
+                                        handled = True
+                                        break
+                                    # Requirement #3: stay listening — never exit just
+                                    # because the timer ran out.  VOICE-PIPELINE-004:
+                                    # silent background — never speak "I'm still
+                                    # listening."; subtitle only, keep listening.
+                                    bridge.show_subtitle("I'm still listening.")
+                                    self._wait_for_speech_end(timeout=10.0)
+                                    continue
+
+                                # PART 13: silence / noise / empty / garbage never starts
+                                # a repeat loop — it returns to wake/idle quietly.  A
+                                # decoder run-away (pathological repetition), an empty
+                                # recognition, a fragment, or a cancelled capture are not
+                                # "I didn't understand you" situations.
+                                if is_silence_or_garbage(text, reason):
+                                    logger.info(
+                                        "WAKE_CAPTURE %s (text=%r) — returning to idle",
+                                        reason or "empty", text,
+                                    )
+                                    bridge.show_subtitle("Ready when you are.")
+                                    if not self._wake_word_enabled:
+                                        continue
+                                    self._conversation_manager.return_to_idle(
+                                        "no speech"
+                                    )
+                                    # DIRECT-LISTEN-STABLE (see above).
+                                    if self._wake_word_enabled:
+                                        bridge.set_core_state("idle")
+                                    handled = True
+                                    break
+
+                                if reason == "low confidence":
+                                    # Requirement #6: never execute a low-confidence
+                                    # command.  One concise repeat-ask, then we return
+                                    # to idle — never an endless loop (PART 13).
+                                    repeat_rounds += 1
+                                    if repeat_rounds >= _MAX_WAKE_REPEAT_ROUNDS:
+                                        logger.info(
+                                            "WAKE_CAPTURE low confidence repeated %d "
+                                            "rounds — returning to idle",
+                                            repeat_rounds,
+                                        )
+                                        bridge.show_subtitle("Ready when you are.")
+                                        if not self._wake_word_enabled:
+                                            repeat_rounds = 0
+                                            continue
+                                        self._conversation_manager.return_to_idle(
+                                            "repeat limit"
+                                        )
+                                        # DIRECT-LISTEN-STABLE (see above).
+                                        if self._wake_word_enabled:
+                                            bridge.set_core_state("idle")
+                                        handled = True
+                                        break
+                                    logger.info(
+                                        "WAKE_CAPTURE low confidence (%.3f) — asking to repeat",
+                                        result.confidence,
+                                    )
+                                    bridge.show_subtitle(
+                                        "Sorry sir, could you repeat that?"
+                                    )
+                                    self._wait_for_speech_end(timeout=10.0)
+                                    continue
+
+                                # Requirement #7: partial words / other rejections.
+                                logger.info(
+                                    "WAKE_CAPTURE rejected (%s) — returning to idle", reason
+                                )
+                                bridge.show_subtitle("Ready when you are.")
+                                if not self._wake_word_enabled:
+                                    continue
+                                self._conversation_manager.return_to_idle(
+                                    "rejected capture"
+                                )
+                                # DIRECT-LISTEN-STABLE (see above).
+                                if self._wake_word_enabled:
+                                    bridge.set_core_state("idle")
+                                handled = True
+                                break
+
+                    # ============================================================
+                    # Voice (active conversation / awaiting confirmation)
+                    # ============================================================
+                    elif self._conversation_manager.state in (
+                        ConversationState.ACTIVE_CONVERSATION,
+                        ConversationState.WAITING_CONFIRMATION,
+                    ):
+                        if self._shutdown_in_progress.is_set():
+                            continue
+
+                        if self._command_queue.qsize() > 0:
+                            logger.debug(
+                                "Queued commands pending (%d) — skipping voice listen",
+                                self._command_queue.qsize(),
+                            )
+                            continue
+
+                        # Expiry is only judged once JARVIS has actually finished
+                        # speaking — a long TTS response must never look like silence.
+                        # FIX 2: single authoritative predicate.  is_speaking is
+                        # False while an utterance is still being generated
+                        # (dequeued, HTTP in flight), which used to start a
+                        # fresh capture mid-generation; is_busy covers queued
+                        # + generating + playing so listening never starts early.
+                        _engine_busy = getattr(self._voice_engine, "is_busy", None)
+                        if _engine_busy is None:
+                            _engine_busy = (
+                                bool(self._voice_engine.is_speaking)
+                                or self._voice_engine.queue_size > 0
+                            )
+                        if _engine_busy:
+                            self._voice_engine.start_barge_in()
+                            time.sleep(0.05)
+                            continue
+
+                        self._voice_engine.stop_barge_in()
+
+                        if self._conversation_manager.is_expired:
                             logger.info(
-                                "Conversation ended — no speech for %.0fs", listen_to
+                                "Conversation timed out after %.0fs",
+                                self._conversation_manager._activity_timeout,
                             )
                             self._conversation_manager.on_timeout()
                             bridge.set_core_state("idle")
-                            bridge.show_subtitle(
-                                "Conversation timed out. Say 'JARVIS' or type a command."
-                            )
+                            bridge.show_subtitle("Conversation timed out.")
                             self._voice_engine.stop_barge_in()
                             continue
 
-                        consecutive_failed_listens += 1
-                        if (
-                            consecutive_failed_listens
-                            >= _MAX_CONSECUTIVE_FAILED_LISTENS
-                        ):
-                            logger.warning(
-                                "No speech understood after %d attempts — ending conversation",
-                                consecutive_failed_listens,
-                            )
-                            bridge.show_subtitle(
-                                "I couldn't hear you. Let's pick this up later — say 'JARVIS' when ready."
-                            )
-                            self._speak_with_retry(
-                                "I couldn't hear you. Let's pick this up later. Say JARVIS when ready."
-                            )
-                            self._wait_for_speech_end(timeout=10.0)
-                            self._conversation_manager.on_timeout()
-                            bridge.set_core_state("idle")
-                            continue
-
-                        # The user spoke but was not understood — this is activity,
-                        # so restart the silence window and ask them to repeat.
+                        # A fresh 30 s of true silence starts now that JARVIS has
+                        # finished speaking (Requirement #9).
                         self._conversation_manager.reset_activity()
-                        if reason == "low confidence":
+                        listen_to = min(
+                            _CONVERSATION_AUTO_SLEEP_SECONDS,
+                            max(1.0, self._conversation_manager.remaining_time),
+                        )
+                        # Record the true per-turn lifecycle (LISTENING ->
+                        # THINKING -> SPEAKING -> LISTENING).  Confirmation
+                        # state is preserved so its shorter expiry keeps
+                        # applying while awaiting the reply.
+                        if (
+                            self._conversation_manager.state
+                            == ConversationState.ACTIVE_CONVERSATION
+                        ):
+                            self._conversation_manager.on_listening()
+                        # LISTENING is published only after the mic path is
+                        # verified really ready (see IDLE branch above).
+                        # A dead mic skips capture this pass (honest error
+                        # + restart attempt) instead of faking "listening".
+                        if not self._ensure_listening_ready():
+                            self._handle_listening_not_ready(bridge)
+                            time.sleep(0.5)
+                            continue
+                        bridge.set_core_state("listening")
+                        bridge.show_subtitle("Listening...")
+                        logger.info("TURN LISTENING READY (conversation follow-up)")
+                        active_start = _stage_entry("backend.conversation_listen")
+                        try:
+                            with Timer("capture_command"):
+                                result = self._duplex_session.capture_command(
+                                    timeout=listen_to,
+                                    on_partial=lambda text: bridge.show_subtitle(text),
+                                )
+                        except Exception as exc:
+                            logger.error("Listen failed: %s", exc)
+                            bridge.show_subtitle("Could not listen. Please try again.")
+                            self._microphone_stream.unmute()
+                            _stage_exit(
+                                "backend.conversation_listen", active_start, status="FAIL"
+                            )
+                            time.sleep(0.5)
+                            continue
+                        self._microphone_stream.unmute()
+                        logger.debug("TURN MIC REARMED (conversation post-capture)")
+                        _stage_exit(
+                            "backend.conversation_listen", active_start, status="OK"
+                        )
+
+                        if result.success and result.text:
+                            text = result.text.strip()
+                            consecutive_failed_listens = 0
+
+                            if self._conversation_manager.is_exit_command(text):
+                                bridge.show_subtitle("Ending conversation.")
+                                self._speak_with_retry("Goodbye.")
+                                self._wait_for_speech_end(timeout=10.0)
+                                self._conversation_manager.return_to_idle("exit command")
+                                bridge.set_core_state("idle")
+                                continue
+
+                            stripped = self._strip_wake_word(text) or text
+
+                            # ── Check pending confirmation BEFORE processing ──
+                            if self._check_pending_confirmation(stripped):
+                                self._conversation_manager.reset_activity()
+                                continue
+
+                            bridge.add_conversation_entry("USER", stripped)
+                            turn_mark(
+                                "UTTERANCE_ACCEPTED",
+                                gen=getattr(self._duplex_session, "capture_generation", None),
+                                text_len=len(stripped),
+                                confidence=round(float(result.confidence), 3),
+                            )
+                            turn_mark(
+                                "CONVERSATION_EVENT_QUEUED",
+                                gen=getattr(self._duplex_session, "capture_generation", None),
+                            )
                             logger.info(
-                                "Conversation low confidence (%.3f) — asking to repeat",
-                                result.confidence,
+                                "Recognized text: %r (confidence=%.3f)",
+                                stripped, result.confidence,
+                            )
+                            logger.info(
+                                "Processing conversation: '%s' (speech confidence=%.3f)",
+                                stripped, result.confidence,
+                            )
+                            self._run_command_safe(
+                                stripped,
+                                speech_confidence=result.confidence,
+                                word_confidences=result.word_confidences,
+                                min_word_confidence=result.min_word_confidence,
+                                speech_seconds=result.speech_seconds,
+                            )
+                            # Requirement #9: a follow-up command keeps the conversation
+                            # open — it only ends on timeout / sleep / goodbye / cancel /
+                            # 30 s of true silence.
+                            if self._conversation_manager.has_pending_confirmation:
+                                self._conversation_manager.reset_activity()
+                            else:
+                                self._conversation_manager.transition_to_active(
+                                    "command complete"
+                                )
+                        else:
+                            reason = result.reason or ""
+                            text = (result.text or "").strip()
+
+                            if reason == "no_speech":
+                                # 30 s of true silence -> end the conversation (#9).
+                                logger.info(
+                                    "Conversation ended — no speech for %.0fs", listen_to
+                                )
+                                self._conversation_manager.on_timeout()
+                                bridge.set_core_state("idle")
+                                bridge.show_subtitle("Conversation timed out.")
+                                self._voice_engine.stop_barge_in()
+                                continue
+
+                            # PART 13: silence / noise / empty / garbage is not "I
+                            # didn't catch you" — it ends the conversation quietly
+                            # (true silence), never a repeat loop.
+                            if is_silence_or_garbage(text, reason):
+                                logger.info(
+                                    "Conversation ended — %s (text=%r)",
+                                    reason or "empty", text,
+                                )
+                                self._conversation_manager.on_timeout()
+                                bridge.set_core_state("idle")
+                                bridge.show_subtitle("Conversation timed out.")
+                                self._voice_engine.stop_barge_in()
+                                continue
+
+                            consecutive_failed_listens += 1
+                            if (
+                                consecutive_failed_listens
+                                >= _MAX_CONSECUTIVE_FAILED_LISTENS
+                            ):
+                                logger.warning(
+                                    "No speech understood after %d attempts — ending conversation",
+                                    consecutive_failed_listens,
+                                )
+                                bridge.show_subtitle(
+                                    "I couldn't hear you. Let's pick this up later."
+                                )
+                                self._conversation_manager.on_timeout()
+                                bridge.set_core_state("idle")
+                                continue
+
+                            # The user spoke but was not understood — this is activity,
+                            # so restart the silence window and ask them to repeat once.
+                            self._conversation_manager.reset_activity()
+                            if reason == "low confidence":
+                                logger.info(
+                                    "Conversation low confidence (%.3f) — asking to repeat",
+                                    result.confidence,
+                                )
+                                bridge.show_subtitle(
+                                    "Sorry sir, could you repeat that?"
+                                )
+                                self._wait_for_speech_end(timeout=10.0)
+                                continue
+                            logger.info(
+                                "Conversation rejected (%s) — asking to repeat", reason
                             )
                             bridge.show_subtitle(
-                                "Sorry sir, could you repeat that?"
-                            )
-                            self._speak_with_retry(
-                                "Sorry sir, could you repeat that?"
+                                "I didn't catch that. Please try again."
                             )
                             self._wait_for_speech_end(timeout=10.0)
-                            continue
-                        logger.info(
-                            "Conversation rejected (%s) — asking to repeat", reason
-                        )
-                        bridge.show_subtitle(
-                            "I didn't catch that. Please try again."
-                        )
-                        self._speak_with_retry(
-                            "I didn't catch that. Please try again."
-                        )
-                        self._wait_for_speech_end(timeout=10.0)
 
-                time.sleep(_BACKEND_LOOP_SLEEP)
+                    time.sleep(_BACKEND_LOOP_SLEEP)
+                except Exception as exc:
+                    # FIX-VOICE-RUNTIME-001: a recoverable runtime error
+                    # must NEVER terminate JARVIS.  Log it, restore a usable
+                    # state, and keep the persistent loop running.
+                    logger.error("[RUNTIME] recoverable error: %s", exc, exc_info=True)
+                    try:
+                        self._microphone_stream.unmute()
+                    except Exception:
+                        pass
+                    try:
+                        self._conversation_manager.return_to_idle("runtime error")
+                    except Exception:
+                        pass
+                    try:
+                        bridge.set_core_state("idle")
+                        bridge.show_subtitle(
+                            "Something went wrong. I'm still here."
+                        )
+                    except Exception:
+                        pass
+                    logger.warning("[RUNTIME] returning to listening after recoverable error")
+                    time.sleep(_BACKEND_LOOP_SLEEP)
+                    continue
 
         except Exception as exc:
-            logger.error("Conversation owner error: %s", exc, exc_info=True)
+            logger.critical("[RUNTIME] conversation owner fatal error: %s", exc, exc_info=True)
             try:
                 bridge.set_core_state("error")
                 bridge.show_subtitle("An error occurred — check the logs.")
             except Exception:
                 pass
         finally:
-            logger.info("Conversation owner loop shutting down")
+            # FIX-VOICE-003: disable automatic shutdown. Only legitimate
+            # shutdown (user closing window, Ctrl+C) should terminate.
+            # Recoverable errors return to idle mode instead of quitting.
+            # The finally block now only handles cleanup, not shutdown.
+            logger.info("[RUNTIME] conversation owner cleanup")
             try:
                 bridge.set_core_state("offline")
             except Exception:
@@ -621,19 +841,104 @@ class ConversationOwner:
                 logger.warning("Service shutdown issues: %s", failures)
             self._microphone_stream.shutdown()
             logger.info("Conversation owner shut down")
+            # FIX-VOICE-003: DO NOT call QCoreApplication.quit() here.
+            # The application should only quit when explicitly requested
+            # via the shutdown_in_progress event or text command.
+            # Signal loop completion (cleanup is finished) — this is a
+            # completion notification, not a quit request.
             try:
                 self._shutdown_event.set()
-                from PySide6.QtCore import QMetaObject, Qt, QCoreApplication
-                QMetaObject.invokeMethod(
-                    QCoreApplication.instance(), "quit",
-                    Qt.ConnectionType.QueuedConnection,
-                )
             except Exception:
                 pass
 
     # ------------------------------------------------------------------
     # Watchdog recovery
     # ------------------------------------------------------------------
+
+    def _ensure_listening_ready(self) -> bool:
+        """Verify the microphone path is really ready before LISTENING.
+
+        LISTENING must mean: the capture thread runs, the duplex session
+        still owns the mic consumer, the mic is not muted, and no stale
+        capture state lingers.  Anything broken here is self-healed
+        (consumer restored, mic unmuted, capture state reset) so a
+        published "listening" UI state can never mask a dead mic.
+        Returns True when the path is ready (healed or already healthy).
+        """
+        try:
+            consumer_ok = self._microphone_stream.consumer_is(
+                self._duplex_session.process_chunk
+            )
+        except Exception as exc:
+            logger.error("Listening readiness: consumer check failed: %s", exc)
+            consumer_ok = False
+        if not consumer_ok:
+            logger.warning(
+                "Listening readiness: mic consumer not owned by duplex — "
+                "restoring (was: %s)",
+                type(getattr(
+                    self._microphone_stream, "_consumer", None
+                )).__name__,
+            )
+            try:
+                self._microphone_stream.set_consumer(
+                    self._duplex_session.process_chunk
+                )
+            except Exception as exc:
+                logger.error("Listening readiness: consumer restore failed: %s", exc)
+                return False
+        try:
+            running = bool(self._microphone_stream.is_running)
+        except Exception:
+            running = True
+        if not running:
+            logger.error("Listening readiness: capture thread not running")
+            return False
+        try:
+            if self._microphone_stream.is_muted:
+                logger.warning(
+                    "Listening readiness: mic muted (owners=%s) — unmuting",
+                    self._microphone_stream.mute_owners,
+                )
+                self._microphone_stream.unmute()
+        except Exception as exc:
+            logger.error("Listening readiness: unmute failed: %s", exc)
+            return False
+        self._mic_error_published = False
+        return True
+
+    def _handle_listening_not_ready(self, bridge) -> None:
+        """Mic path not ready: never publish LISTENING.
+
+        Publishes an honest ``error`` state (once, not spamming history)
+        and periodically attempts a capture-thread restart, so a dead
+        microphone is revived instead of running deaf forever behind a
+        fake "listening" display.
+        """
+        try:
+            running = bool(self._microphone_stream.is_running)
+        except Exception:
+            running = True
+        if not running:
+            now = time.monotonic()
+            if now >= self._mic_retry_at:
+                self._mic_retry_at = now + 5.0
+                try:
+                    self._microphone_stream.shutdown()
+                except Exception as exc:
+                    logger.error("Mic recovery shutdown failed: %s", exc)
+                try:
+                    self._microphone_stream.start()
+                    logger.info("Mic recovery: capture thread restart attempted")
+                except Exception as exc:
+                    logger.error("Mic recovery restart failed: %s", exc)
+        if not self._mic_error_published:
+            self._mic_error_published = True
+            try:
+                bridge.set_core_state("error")
+                bridge.show_subtitle("Microphone unavailable — retrying.")
+            except Exception:
+                pass
 
     def _on_backend_stall(self, name: str) -> None:
         """Recovery attempt when the backend loop stalls: cancel the hung
@@ -651,6 +956,13 @@ class ConversationOwner:
         except Exception as exc:
             logger.error("Backend recovery: brain.cancel_current failed: %s", exc)
         try:
+            # A capture wedged in finalize/decode also stalls the loop —
+            # abort it (generation-tagged: a stale cancel can never kill
+            # the next turn's capture once the loop resumes).
+            self._duplex_session.cancel_capture()
+        except Exception as exc:
+            logger.error("Backend recovery: cancel_capture failed: %s", exc)
+        try:
             self._bridge.set_core_state("offline")
             self._bridge.show_subtitle(
                 "Core Offline — backend stalled. Attempting to recover..."
@@ -660,8 +972,11 @@ class ConversationOwner:
 
     def _on_conversation_stall(self, name: str) -> None:
         """Recovery when a conversation stalls (e.g. stuck listening):
-        force the conversation back to Idle so the UI can never remain in
-        LISTENING indefinitely."""
+        reset capture state and force the conversation back to Idle so
+        the UI can never remain in LISTENING indefinitely.  The reset
+        explicitly re-arms the listening path: with the wake word
+        disabled the owner re-enters capture on its next loop pass;
+        with the wake word enabled it waits for a genuine wake event."""
         logger.critical(
             "Conversation watchdog: '%s' stalled — forcing idle", name
         )
@@ -674,13 +989,19 @@ class ConversationOwner:
         except Exception as exc:
             logger.error("Conversation recovery: cancel_capture failed: %s", exc)
         try:
+            reset = getattr(self._duplex_session, "reset_capture_state", None)
+            if callable(reset):
+                reset()
+        except Exception as exc:
+            logger.error("Conversation recovery: reset_capture_state failed: %s", exc)
+        try:
             self._microphone_stream.unmute()
         except Exception:
             pass
         try:
             self._bridge.set_core_state("idle")
             self._bridge.show_subtitle(
-                "Conversation recovered. Say 'JARVIS' or type a command."
+                "Conversation recovered."
             )
         except Exception:
             pass
@@ -694,6 +1015,9 @@ class ConversationOwner:
         command: str,
         speech_confidence: float | None = None,
         speech_recognition_ms: float | None = None,
+        word_confidences: tuple[tuple[str, float], ...] = (),
+        min_word_confidence: float | None = None,
+        speech_seconds: float | None = None,
     ):
         """Run one command as a managed task.
 
@@ -702,13 +1026,56 @@ class ConversationOwner:
         response, waits for speech, finalizes the task, and always returns the
         backend to Idle — even on timeout, exception, or cancellation.
         """
+        # FIX-002/FIX-003: gate voice transcripts through the Speech
+        # Intelligence Layer so the planner never receives a raw STT
+        # transcript.  Text commands (no speech confidence) pass through
+        # unchanged.
+        if speech_confidence is not None:
+            command = self._apply_speech_intelligence(
+                command, speech_confidence,
+                word_confidences=word_confidences,
+                min_word_confidence=min_word_confidence,
+                speech_seconds=speech_seconds,
+            )
+            if command is None:
+                return None
+
         task_started = time.monotonic()
+        turn_mark(
+            "CONVERSATION_EVENT_CONSUMED",
+            gen=getattr(self._duplex_session, "capture_generation", None),
+            text_len=len(command),
+        )
         task = self._task_manager.create_task(command)
+        self._task_manager.start_task(task)
         self._brain.cancel_current()
         self._register_task_cleanup(task)
+        self._conversation_manager.on_command_received()
         self._bridge.set_core_state("thinking")
         self._bridge.set_current_task(command)
+        logger.info("TURN THINKING START command=%r", command)
+        turn_mark(
+            "THINKING_START",
+            gen=getattr(self._duplex_session, "capture_generation", None),
+        )
         response = None
+        # Watchdog progress: brain.process() (online LLM) can legitimately
+        # take tens of seconds.  Kick both watchdogs periodically while it
+        # runs so a healthy long turn is never misreported as a stall.
+        _brain_done = threading.Event()
+
+        def _kick_while_thinking() -> None:
+            while not _brain_done.wait(timeout=10.0):
+                try:
+                    self._watchdog_manager.kick("backend_loop")
+                    self._watchdog_manager.kick("conversation")
+                except Exception:
+                    pass
+
+        _kicker = threading.Thread(
+            target=_kick_while_thinking, name="brain-progress-kick", daemon=True,
+        )
+        _kicker.start()
         try:
             self._watchdog_manager.kick("backend_loop")
             response = self._brain.process(
@@ -720,6 +1087,7 @@ class ConversationOwner:
             logger.error("Brain process failed: %s", exc, exc_info=True)
             response = None
         finally:
+            _brain_done.set()
             self._bridge.set_current_task("")
             brain_ms = (time.monotonic() - task_started) * 1000.0
             if speech_recognition_ms is not None:
@@ -732,14 +1100,35 @@ class ConversationOwner:
                 )
 
         if response is not None:
+            logger.info("TURN RESPONSE READY command=%r", command)
+            turn_mark(
+                "RESPONSE_READY",
+                gen=getattr(self._duplex_session, "capture_generation", None),
+                success=bool(getattr(response, "success", False)),
+            )
             self._present_response(response)
             if getattr(response, "needs_clarification", False):
                 self._store_pending_from_response(response, command)
 
         # Cap the wait so a TTS failure never freezes the loop.
         self._wait_for_speech_end(timeout=30.0)
+        logger.info("TURN TTS PLAYBACK END command=%r", command)
+        try:
+            self._microphone_stream.unmute()
+        except Exception:
+            pass
+        logger.info("TURN MIC REARMED command=%r", command)
+        turn_mark(
+            "MIC_REARM",
+            gen=getattr(self._duplex_session, "capture_generation", None),
+        )
         self._finalize_task(task, response)
-        self._bridge.set_core_state("idle")
+        # FIX 2: no unconditional idle here.  Every caller transitions the
+        # manager next (usually to ACTIVE) and the loop publishes the
+        # matching UI state (listening) — a forced idle would flash a false
+        # IDLE in the middle of an engaged conversation and break the
+        # THINKING → SPEAKING → LISTENING determinism.  Genuine ends
+        # (exit/timeout/error) publish idle explicitly at their own sites.
 
         total_ms = (time.monotonic() - task_started) * 1000.0
         data = getattr(response, "data", {}) or {}
@@ -756,6 +1145,75 @@ class ConversationOwner:
             total_ms,
         )
         return response
+
+    def _run_command_safe(self, *args, **kwargs):
+        """PART 12: run a command without ever letting an unexpected failure
+        escape to the outer loop (which would tear the whole owner down).  A
+        command failure is recovered to Idle and the loop keeps running."""
+        try:
+            return self._run_command(*args, **kwargs)
+        except Exception as exc:
+            logger.error(
+                "Command execution failed — recovering to idle: %s",
+                exc, exc_info=True,
+            )
+            try:
+                self._microphone_stream.unmute()
+            except Exception:
+                pass
+            try:
+                self._conversation_manager.return_to_idle("command error")
+            except Exception:
+                pass
+            try:
+                self._bridge.set_core_state("idle")
+                self._bridge.show_subtitle(
+                    "Something went wrong with that command. Please try again."
+                )
+            except Exception:
+                pass
+            return None
+
+    def _apply_speech_intelligence(
+        self,
+        command: str,
+        speech_confidence: float,
+        word_confidences: tuple[tuple[str, float], ...] = (),
+        min_word_confidence: float | None = None,
+        speech_seconds: float | None = None,
+    ) -> str | None:
+        """Run one voice transcript through the Speech Intelligence Layer.
+
+        Returns the corrected command text for the planner, or ``None`` when
+        the utterance was refused / a disambiguation question was asked (in
+        which case JARVIS has already responded and nothing must execute).
+        """
+        decision = self._speech_intelligence.process(
+            SpeechTranscript(
+                text=command,
+                confidence=speech_confidence,
+                word_confidences=word_confidences,
+                min_word_confidence=min_word_confidence,
+                speech_seconds=speech_seconds,
+            )
+        )
+        if decision.action in (SpeechAction.REFUSE, SpeechAction.ASK):
+            message = self._sanitize_voice_response(decision.text)
+            self._bridge.show_subtitle(decision.text)
+            # FIX 2: refusal/ASK speech is real TTS — publish SPEAKING like
+            # every other response so THINKING → SPEAKING → LISTENING stays
+            # deterministic instead of speaking under a stale LISTENING.
+            self._bridge.set_core_state("speaking")
+            self._conversation_manager.on_speaking()
+            self._speak_with_retry(message)
+            self._wait_for_speech_end(timeout=10.0)
+            return None
+        if decision.action is SpeechAction.CORRECT:
+            logger.info(
+                "Speech Intelligence: corrected %r -> %r (%s)",
+                command, decision.text, decision.reason,
+            )
+        return decision.text
 
     def _present_response(self, response) -> None:
         bridge = self._bridge
@@ -774,6 +1232,13 @@ class ConversationOwner:
                     except Exception as exc:
                         logger.error("VoiceEngine cancel_all failed: %s", exc)
                     bridge.set_core_state("speaking")
+                    self._conversation_manager.on_speaking()
+                    logger.info("TURN TTS START chars=%d", len(message))
+                    turn_mark(
+                        "TTS_REQUEST_START",
+                        gen=getattr(self._duplex_session, "capture_generation", None),
+                        chars=len(message),
+                    )
                     self._speak_with_retry(message)
         if not getattr(response, "success", True):
             task_result = getattr(response, "task_result", None)
@@ -793,6 +1258,7 @@ class ConversationOwner:
         logger.info(
             "Routing '%s' to resolve_context (pending confirmation exists)", text
         )
+        self._conversation_manager.on_command_received()
         self._bridge.set_core_state("thinking")
         try:
             response = self._brain.resolve_context(text)
@@ -813,6 +1279,8 @@ class ConversationOwner:
                 self._conversation_manager.reset_activity()
         else:
             self._conversation_manager.return_to_idle("resolve_context error")
+            # FIX 2: genuine conversation end — publish idle with the manager.
+            self._bridge.set_core_state("idle")
 
         return True
 

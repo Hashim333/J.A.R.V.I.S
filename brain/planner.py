@@ -381,6 +381,12 @@ class Planner:
         app = parsed.entities.get("app_name")
         return [self._step("focus_app", app, {}, f"Focus {app}.")]
 
+    def _build_close_current_tab(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step(
+            "close_current_tab", None, {},
+            "Close the current browser tab.",
+        )]
+
     def _build_restart_app(self, parsed: ParsedCommand) -> list[Step]:
         app = parsed.entities.get("app_name")
         return [self._step("restart_app", app, {}, f"Restart {app}.")]
@@ -420,11 +426,18 @@ class Planner:
 
     def _build_play_music(self, parsed: ParsedCommand) -> list[Step]:
         query = parsed.entities.get("query", "")
-        if not query:
+        if not query or parsed.entities.get("first_result"):
+            index = parsed.entities.get("index", 1)
+            try:
+                index = max(1, int(index))
+            except (TypeError, ValueError):
+                index = 1
+            label = f"#{index} " if index > 1 else ""
             return [self._step(
-                "click_first_video", None,
-                {"query": ""},
-                "Open the first YouTube result.",
+                "click_first_video",
+                None,
+                {"query": "", "index": index},
+                f"Open the {label}YouTube result.",
             )]
         return [self._step(
             "search", None,
@@ -455,6 +468,30 @@ class Planner:
 
     def _build_continue_watching(self, parsed: ParsedCommand) -> list[Step]:
         return [self._step("youtube_continue_watching", None, {}, "Continue watching.")]
+
+    def _build_youtube_volume_up(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_volume_up", None, {}, "Turn the volume up.")]
+
+    def _build_youtube_volume_down(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_volume_down", None, {}, "Turn the volume down.")]
+
+    def _build_youtube_mute(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_mute", None, {}, "Mute the video.")]
+
+    def _build_youtube_unmute(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_unmute", None, {}, "Unmute the video.")]
+
+    def _build_youtube_enter_fullscreen(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_enter_fullscreen", None, {}, "Go fullscreen.")]
+
+    def _build_youtube_exit_fullscreen(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_exit_fullscreen", None, {}, "Exit fullscreen.")]
+
+    def _build_youtube_replay(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_replay", None, {}, "Replay the video.")]
+
+    def _build_youtube_go_back(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("youtube_go_back", None, {}, "Go back.")]
 
     def _build_scroll_page(self, parsed: ParsedCommand) -> list[Step]:
         direction = parsed.entities.get("direction", "down")
@@ -629,6 +666,9 @@ class Planner:
         query = parsed.entities.get("query", "all")
         return [self._step("system_status", None, {"query": query}, f"Get system status: {query}.")]
 
+    def _build_report_time(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step("report_time", None, {}, "Report the current time.")]
+
     def _build_sign_out(self, parsed: ParsedCommand) -> list[Step]:
         return [self._step("sign_out", None, {}, "Sign out.")]
 
@@ -774,6 +814,7 @@ class Planner:
         "open_app": _build_open_app,
         "close_app": _build_close_app,
         "focus_app": _build_focus_app,
+        "close_current_tab": _build_close_current_tab,
         "restart_app": _build_restart_app,
         "minimize_app": _build_minimize_app,
         "maximize_app": _build_maximize_app,
@@ -790,6 +831,14 @@ class Planner:
         "like_video": _build_like_video,
         "subscribe_channel": _build_subscribe_channel,
         "continue_watching": _build_continue_watching,
+        "youtube_volume_up": _build_youtube_volume_up,
+        "youtube_volume_down": _build_youtube_volume_down,
+        "youtube_mute": _build_youtube_mute,
+        "youtube_unmute": _build_youtube_unmute,
+        "youtube_enter_fullscreen": _build_youtube_enter_fullscreen,
+        "youtube_exit_fullscreen": _build_youtube_exit_fullscreen,
+        "youtube_replay": _build_youtube_replay,
+        "youtube_go_back": _build_youtube_go_back,
         "scroll_page": _build_scroll_page,
         "compound": _build_compound,
         "open_special_folder": _build_open_special_folder,
@@ -819,6 +868,7 @@ class Planner:
         "airplane_mode_on": _build_airplane_mode_on,
         "airplane_mode_off": _build_airplane_mode_off,
         "system_status": _build_system_status,
+        "report_time": _build_report_time,
         "sign_out": _build_sign_out,
         "cancel_shutdown": _build_cancel_shutdown,
         "open_task_manager": _build_open_task_manager,

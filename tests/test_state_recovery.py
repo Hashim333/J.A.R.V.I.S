@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 from models.response import Response
 from models.task_result import TaskResult
-from services.conversation_manager import ConversationManager
+from services.conversation_manager import ConversationManager, ConversationState
 from services.conversation_owner import ConversationOwner
 from tasks.task_manager import TaskManager, TaskStatus
 
@@ -67,7 +67,12 @@ class TestCommandOutcomeRecovery(unittest.TestCase):
         self.assertIsNone(response)
         self.assertEqual(tm.last_task.status, TaskStatus.FAILED)
         self.assertTrue(tm.last_task.cancel_event.is_set())
-        bridge.set_core_state.assert_any_call("idle")
+        # Continuous-conversation contract (FIX 2): _run_command never
+        # forces idle mid-conversation — the caller transitions to ACTIVE
+        # / LISTENING next.  The command must still end in a DEFINED
+        # state (THINKING published), never stuck or silent.
+        bridge.set_core_state.assert_any_call("thinking")
+        self.assertEqual(cm.state, ConversationState.THINKING)
         self.assertIsNone(tm.active_task)
 
     def test_timeout_finalizes_failed_with_reason(self) -> None:
@@ -95,7 +100,11 @@ class TestCommandOutcomeRecovery(unittest.TestCase):
 
         self.assertEqual(tm.last_task.status, TaskStatus.SUCCESS)
         self.assertFalse(tm.last_task.cancel_event.is_set())
-        bridge.set_core_state.assert_any_call("idle")
+        # Continuous-conversation contract (FIX 2): see above — the turn
+        # ends in defined THINKING state; the loop transitions to ACTIVE
+        # and re-arms LISTENING next.
+        bridge.set_core_state.assert_any_call("thinking")
+        self.assertEqual(cm.state, ConversationState.THINKING)
 
     def test_no_response_finalizes_failed(self) -> None:
         owner, *_ = _make_owner()
@@ -171,6 +180,28 @@ class TestConversationBackToIdle(unittest.TestCase):
         cm.enter_active_conversation("after")
         cm.return_to_idle("recovery")
         self.assertEqual(cm.state.value, "IDLE")
+
+
+class TestSubtitleStateConsistency(unittest.TestCase):
+    def test_stale_listening_label_does_not_overwrite_thinking_state(self) -> None:
+        from ui.bridge import Bridge
+
+        bridge = Bridge()
+        bridge.set_core_state("thinking")
+        bridge.show_subtitle("Listening...")
+
+        self.assertEqual(bridge.coreState, "thinking")
+        self.assertEqual(bridge._subtitle, "Thinking...")
+
+    def test_stale_thinking_label_does_not_overwrite_listening_state(self) -> None:
+        from ui.bridge import Bridge
+
+        bridge = Bridge()
+        bridge.set_core_state("listening")
+        bridge.show_subtitle("Thinking...")
+
+        self.assertEqual(bridge.coreState, "listening")
+        self.assertEqual(bridge._subtitle, "Listening...")
 
 
 if __name__ == "__main__":

@@ -1164,13 +1164,10 @@ def _open_chrome(
                 f"{', '.join(p.display_name for p in known_profiles)}."
             )
 
-    if voice_input is None:
-        return _launch("chrome")
-
-    known_profiles = _chrome_profiles()
-    selected = _select_chrome_profile(known_profiles, voice_input)
-
-    return _launch("chrome", [f"--profile-directory={selected.directory}"])
+    # A plain "open Chrome" always launches the normal/default profile.
+    # Voice profile selection is reserved for explicit profile requests
+    # (handled above via *profile*), never for an ordinary open.
+    return _launch("chrome")
 
 
 def open_app(

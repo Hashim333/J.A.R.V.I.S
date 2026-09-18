@@ -128,8 +128,11 @@ class SystemAwarenessService:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=5.0)
-            logger.info("SystemAwarenessService: stopped")
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("SystemAwarenessService: collector thread still blocked after 2s — continuing shutdown")
+            else:
+                logger.info("SystemAwarenessService: stopped")
 
     # ── Public query API ──────────────────────────────────────────────
 
@@ -156,6 +159,8 @@ class SystemAwarenessService:
             now = time.monotonic()
 
             for collector in self._collectors:
+                if self._stop.is_set():
+                    break
                 cid = id(collector)
                 if now - last_collected[cid] >= collector.poll_interval:
                     try:

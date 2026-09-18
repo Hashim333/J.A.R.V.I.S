@@ -25,6 +25,7 @@ from typing import Any, Callable
 import speech_recognition as sr
 
 from monitoring.pipeline_trace import stage_entry, stage_exit
+from monitoring.turn_trace import mark as turn_mark
 from voice.audio_lock import audio_lock
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,11 @@ class MicrophoneStream:
         self._processor = None
         self._on_audio_level: Callable[[float], None] | None = None
         self._muted: bool = False
+        # Mute ownership (FIX 3): each mute() names its owner so overlapping
+        # mute requests from different subsystems cannot cancel each other,
+        # and the mic can never be left muted by a lost unmute.  unmute()
+        # with no owner still clears everything (legacy safety-restore).
+        self._mute_owners: set[str] = set()
 
     def _probe_default_input_format(self) -> None:
         """Log the PyAudio default input format before opening the stream."""
@@ -149,15 +155,72 @@ class MicrophoneStream:
         """Register a callback for periodic audio level reports (0.0-1.0)."""
         self._on_audio_level = callback
 
-    def mute(self) -> None:
-        """Mute mic processing. Audio chunks are discarded until unmute()."""
-        self._muted = True
-        logger.debug("MicrophoneStream: muted")
+    def mute(self, owner: str = "default") -> None:
+        """Mute mic processing. Audio chunks are discarded until unmute().
 
-    def unmute(self) -> None:
-        """Restore mic processing."""
-        self._muted = False
-        logger.debug("MicrophoneStream: unmuted")
+        The mute is recorded under *owner* so overlapping mutes from
+        different subsystems are reference-counted instead of clobbering
+        each other (FIX 3).
+        """
+        with self._lock:
+            self._mute_owners.add(owner)
+            self._muted = True
+        logger.debug("MicrophoneStream: muted (owner=%s owners=%s)", owner, sorted(self._mute_owners))
+
+    def unmute(self, owner: str | None = None) -> None:
+        """Restore mic processing.
+
+        With *owner* given, only that owner's mute is released (the mic
+        stays muted while other owners hold it).  With no owner, all mutes
+        are cleared — the legacy safety-restore semantic every existing
+        caller relies on (FIX 3).
+        """
+        with self._lock:
+            if owner is None:
+                self._mute_owners.clear()
+            else:
+                self._mute_owners.discard(owner)
+            self._muted = bool(self._mute_owners)
+        logger.debug("MicrophoneStream: unmuted (owner=%s muted=%s)", owner, self._muted)
+
+    @property
+    def mute_owners(self) -> tuple[str, ...]:
+        """Owners currently holding a mic mute (diagnostics)."""
+        with self._lock:
+            return tuple(sorted(self._mute_owners))
+
+    @property
+    def is_running(self) -> bool:
+        """True while the capture thread is running (mic open)."""
+        return self._is_running
+
+    @property
+    def is_muted(self) -> bool:
+        """True while mic processing is muted (chunks discarded)."""
+        with self._lock:
+            return self._muted
+
+    def consumer_is(self, callback: Callable[[bytes], None] | None) -> bool:
+        """True when *callback* is the currently attached audio consumer.
+
+        The conversation owner uses this to verify — before publishing
+        LISTENING — that the full-duplex session still owns the mic feed
+        (no previous capture cancellation, barge-in teardown, or legacy
+        one-shot capture left a different consumer attached).
+        """
+        if callback is None:
+            return self._consumer is None
+        if self._consumer is callback:
+            return True
+        owner_self = getattr(callback, "__self__", None)
+        current_self = getattr(self._consumer, "__self__", None)
+        return (
+            owner_self is not None
+            and current_self is not None
+            and owner_self is current_self
+            and getattr(callback, "__func__", None)
+            == getattr(self._consumer, "__func__", None)
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -261,11 +324,18 @@ class MicrophoneStream:
         logger.info("Microphone stream paused (consumer set to None)")
 
     def shutdown(self) -> None:
-        """Fully stop the microphone stream.  Idempotent — safe to call multiple times."""
+        """Fully stop the microphone stream.  Idempotent — safe to call multiple times.
+
+        Restart-capable: the started flag is reset so a later ``start()``
+        re-opens the device.  This is what lets listening recovery revive
+        a dead capture thread (device error) instead of running deaf
+        forever — mute ownership is also cleared so a dead generation can
+        never mute a restarted stream.
+        """
         logger.info("Microphone stream shutting down")
         with self._lock:
-            if not self._is_running:
-                logger.debug("shutdown() called but not running")
+            if not self._started:
+                logger.debug("shutdown() called but not started")
                 return
             self._is_running = False
 
@@ -305,6 +375,13 @@ class MicrophoneStream:
         with self._lock:
             self._stream = None
             self._microphone = None
+            self._started = False
+            # Fresh slate for any future restart: a dead generation must
+            # never mute a restarted stream.  (The attached consumer is
+            # intentionally preserved so the duplex keeps owning the feed.)
+            self._mute_owners.clear()
+            self._muted = False
+            self._resample_state = None
         logger.info("Microphone stream fully shut down")
 
     # ------------------------------------------------------------------
@@ -398,6 +475,7 @@ class MicrophoneStream:
 
                 consumer = self._consumer
                 if consumer is not None and not self._muted:
+                    turn_mark("MIC_CHUNK_RECEIVED", bytes=len(audio_chunk))
                     try:
                         consumer(audio_chunk)
                     except Exception as exc:
@@ -444,6 +522,18 @@ class MicrophoneStream:
         """
         from voice.vad import VAD
 
+        # VOICE-FIX: single microphone consumer — the full-duplex session
+        # owns the consumer for the life of the app.  A legacy one-shot
+        # capture must never silently steal it (that races STT/TTS/state).
+        consumer = self._consumer
+        owner = getattr(consumer, "__self__", None)
+        if owner is not None and type(owner).__name__ == "DuplexVoiceSession":
+            logger.warning(
+                "capture_utterance refused — DuplexVoiceSession owns the "
+                "microphone consumer (use duplex_session.capture_command)"
+            )
+            return None
+
         start = stage_entry("capture_utterance", input_=timeout)
 
         buffer = bytearray()
@@ -463,8 +553,10 @@ class MicrophoneStream:
             old_consumer = self._consumer
             self._consumer = _consumer
             # Echo-prevention may have muted the mic right before capture.
-            # Force it open for the duration of this capture.
-            was_muted = self._muted
+            # Force it open for the duration of this capture, remembering
+            # exactly whose mutes were active (FIX 3: ownership-safe).
+            saved_owners = set(self._mute_owners)
+            self._mute_owners.clear()
             self._muted = False
 
         captured = done.wait(timeout=timeout)
@@ -473,7 +565,10 @@ class MicrophoneStream:
             # Only restore if our consumer is still active (not swapped by another caller)
             if self._consumer is _consumer:
                 self._consumer = old_consumer
-            self._muted = was_muted  # restore the pre-capture mute state
+            # Restore the pre-capture mute owners (unioned with any muting
+            # requested during the capture — never silently drop either).
+            self._mute_owners |= saved_owners
+            self._muted = bool(self._mute_owners)
 
         if captured and buffer:
             logger.info(

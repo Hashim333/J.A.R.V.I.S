@@ -5,35 +5,35 @@ Registry maps action strings to handler instances.
 
 It stores and returns handlers only. Executor remains responsible for
 calling handler.run(step).
+
+The core register/get_handler behavior is defined exactly once in
+``executor.registry.Registry``; this class only adds default-handler
+registration and lookup helpers on top of that single definition.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from executor.registry import Registry as _BaseRegistry
 
-class Registry:
-    """Store and retrieve handlers by action string."""
 
-    __slots__ = ("_handlers",)
+class Registry(_BaseRegistry):
+    """Store and retrieve handlers by action string (with defaults)."""
 
     def __init__(self) -> None:
-        self._handlers: dict[str, Any] = {}
+        super().__init__()
         self._register_default_handlers()
 
     def register(self, action: str, handler: Any) -> None:
         """Register a handler instance for an action string."""
         self._validate_action(action)
-        self._handlers[action] = handler
+        super().register(action, handler)
 
     def get_handler(self, action: str) -> Any:
         """Return the handler registered for an action string."""
         self._validate_action(action)
-
-        try:
-            return self._handlers[action]
-        except KeyError:
-            raise KeyError(f"No handler registered for action: {action!r}") from None
+        return super().get_handler(action)
 
     def is_registered(self, action: str) -> bool:
         """Return True when an action has a registered handler."""
@@ -113,6 +113,14 @@ class Registry:
             "youtube_like",
             "youtube_subscribe",
             "youtube_continue_watching",
+            "youtube_volume_up",
+            "youtube_volume_down",
+            "youtube_mute",
+            "youtube_unmute",
+            "youtube_enter_fullscreen",
+            "youtube_exit_fullscreen",
+            "youtube_replay",
+            "youtube_go_back",
             "scroll_page",
             "get_page_state",
             "get_selected_text",
@@ -219,7 +227,7 @@ class Registry:
             "set_brightness", "wifi_on", "wifi_off",
             "bluetooth_on", "bluetooth_off",
             "airplane_mode_on", "airplane_mode_off",
-            "system_status", "sign_out", "cancel_shutdown",
+            "system_status", "report_time", "sign_out", "cancel_shutdown",
             "open_task_manager", "open_device_manager", "open_control_panel",
             "format_drive", "kill_process",
         ):

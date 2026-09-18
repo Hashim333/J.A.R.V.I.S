@@ -16,7 +16,6 @@ import time
 from typing import Callable
 
 import automation.ui_detector as ui
-from voice.selection_manager import VoiceSelectionManager
 
 logger = logging.getLogger(__name__)
 
@@ -102,44 +101,11 @@ def _handle_chrome_picker(
                 "details": {"available_profiles": names},
             }
 
-    # No profile specified — ask the user
-    if len(names) == 1:
-        # Only one profile, select it automatically
-        logger.info("INTERACTIVE_LAUNCH chrome auto_select=%s", names[0])
-        ui.click_element(profile_cards[0])
-        _wait_for_chrome_ready(process_name)
-        return {
-            "success": True,
-            "message": f"Opened Chrome with {names[0]} profile.",
-            "details": {"action": "auto_selected", "profile": names[0]},
-        }
-
-    # Multiple profiles — ask user with VoiceSelectionManager
-    manager = VoiceSelectionManager(voice_input=voice_input)
-    selected_name = manager.select(names, header="I found multiple Chrome profiles.")
-    if selected_name is None:
-        return {
-            "success": False,
-            "message": "Cancelled Chrome profile selection.",
-            "details": {"action": "cancelled"},
-        }
-
-    selected_idx = _find_profile_by_name(names, selected_name)
-    if selected_idx is None:
-        return {
-            "success": False,
-            "message": f"I couldn't find a profile named '{selected_name}'.",
-            "details": {"available_profiles": names},
-        }
-
-    logger.info("INTERACTIVE_LAUNCH chrome user_selected=%s", selected_name)
-    ui.click_element(profile_cards[selected_idx])
-    _wait_for_chrome_ready(process_name)
-    return {
-        "success": True,
-        "message": f"Opened Chrome with {selected_name} profile.",
-        "details": {"action": "user_selected", "profile": selected_name},
-    }
+    # No profile specified — a plain "open Chrome" must never trigger a
+    # voice profile question. Chrome opens with its normal/default profile
+    # on its own; only an explicit profile request may select one.
+    logger.info("INTERACTIVE_LAUNCH chrome result=no_profile_requested")
+    return None
 
 
 def _handle_premiere_launch(

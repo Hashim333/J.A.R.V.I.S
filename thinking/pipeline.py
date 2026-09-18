@@ -57,6 +57,34 @@ _PRIMARY_ENTITY: dict[str, str] = {
     "close_app": "app_name",
 }
 
+# DevTools ports probed for browser verification (mirrors
+# ``automation.browser_service`` without ever launching a browser).
+_CDP_VERIFY_PORTS: tuple[int, ...] = tuple(range(9222, 9231))
+
+
+def _cdp_browser_tabs() -> list[tuple[str, str]] | None:
+    """Return ``[(url, title)]`` for the live CDP browser tabs.
+
+    This inspects the same DevTools endpoint the executor drives (the
+    managed Chrome, or an already-attached debug-enabled browser) — never
+    a different browser context.  Returns ``None`` when no DevTools
+    endpoint is reachable (CDP unavailable), or the tab list otherwise
+    (possibly empty).  Never raises and never launches a browser.
+    """
+    try:
+        from automation.cdp import CdpBrowser
+    except Exception:
+        return None
+    for port in _CDP_VERIFY_PORTS:
+        try:
+            client = CdpBrowser(port)
+            if not client.is_reachable():
+                continue
+            return [(t.url or "", t.title or "") for t in client.list_tabs()]
+        except Exception:
+            continue
+    return None
+
 
 class PipelineEngine:
     def __init__(
@@ -118,6 +146,7 @@ class PipelineEngine:
         self._pending_switch_original_question: str = ""
         # ASR confidence of the current utterance (None for typed input).
         self._speech_confidence: float | None = None
+        self._budget: Any = None
         self._request_started_at: float = 0.0
 
     @property
@@ -132,6 +161,7 @@ class PipelineEngine:
         confirmed: bool = False,
         cancel_event: Any = None,
         speech_confidence: float | None = None,
+        time_budget: Any = None,
     ) -> ModelResponse:
         logger.info(
             "Pipeline INPUT: %r confirmed=%s speech_confidence=%s",
@@ -140,6 +170,7 @@ class PipelineEngine:
         )
         self._speech_confidence = speech_confidence
         self._request_started_at = time.monotonic()
+        self._budget = time_budget
         result = self._process_inner(text, confirmed, cancel_event)
         return self._with_speech_confidence(result)
 
@@ -198,7 +229,7 @@ class PipelineEngine:
         # never reach the executor. Action categories continue to the
         # Parser → Planner → Executor path below.
         cls_start = stage_entry("pipeline.classify", input_=text)
-        classification = self._classifier.classify(text)
+        classification = self._classifier.classify(text, time_budget=self._budget)
         stage_exit("pipeline.classify", cls_start, status=classification.category.value)
         self._log_classification(text, classification)
 
@@ -378,7 +409,7 @@ class PipelineEngine:
         try:
             return self._reasoner.reason(
                 text, memory=self._working_memory, world_state=world,
-                awareness=awareness,
+                awareness=awareness, budget=self._budget,
             )
         except Exception as exc:
             logger.warning("Reasoner.reason raised %s — falling back to rule pipeline", exc, exc_info=True)
@@ -399,7 +430,7 @@ class PipelineEngine:
             return self._reasoner.continue_(
                 original_text=text, question=question, answer=answer,
                 memory=self._working_memory, world_state=world,
-                awareness=awareness,
+                awareness=awareness, budget=self._budget,
             )
         except Exception as exc:
             logger.warning("Reasoner.continue_ raised %s — falling back", exc, exc_info=True)
@@ -701,7 +732,7 @@ class PipelineEngine:
 
         # -- 9. Verify against the plan's verification spec --
         verify_start = stage_entry("pipeline.verify")
-        verification, ver_diag = self._try_verify(response, recognized, plan)
+        verification, ver_diag = self._try_verify(response, recognized, plan, cancel_event=cancel_event)
         stage_exit("pipeline.verify", verify_start, status="PASS" if verification.passed else "FAIL", output=verification.message)
 
         # Task verifier asked the user something (not a strategy retry).
@@ -901,7 +932,8 @@ class PipelineEngine:
 
     @timed("pipeline.resolve_context")
     @log_duration()
-    def resolve_context(self, answer: str, cancel_event: Any = None) -> ModelResponse:
+    def resolve_context(self, answer: str, cancel_event: Any = None, time_budget: Any = None) -> ModelResponse:
+        self._budget = time_budget
         # -- Pending reasoner (LLM) clarification: re-reason with the answer --
         if self._pending_reasoned is not None:
             return self._continue_reasoning(answer, cancel_event)
@@ -952,7 +984,7 @@ class PipelineEngine:
             self._task_supervisor.start_supervision(refined.plan.intent, len(refined.plan.steps))
             response, diag = self._try_execute(refined.plan, recognized, cancel_event=cancel_event)
             self._task_supervisor.end_supervision()
-            verification, ver_diag = self._try_verify(response, recognized, refined.plan)
+            verification, ver_diag = self._try_verify(response, recognized, refined.plan, cancel_event=cancel_event)
             if not verification.passed:
                 self._log_verification_outcome(verification)
                 return ModelResponse(
@@ -997,7 +1029,7 @@ class PipelineEngine:
                 self._pending_recognized = None
                 self._original_text = ""
                 logger.info("Confirmation ACCEPTED — re-processing '%s' with confirmed=True", text)
-                return self.process(text, confirmed=True)
+                return self.process(text, confirmed=True, time_budget=self._budget)
 
             if verdict == "negative":
                 self._pending_parsed = None
@@ -1087,7 +1119,7 @@ class PipelineEngine:
         response, diag = self._try_execute(plan, recognized, cancel_event=cancel_event)
         self._task_supervisor.end_supervision()
 
-        verification, ver_diag = self._try_verify(response, recognized, plan)
+        verification, ver_diag = self._try_verify(response, recognized, plan, cancel_event=cancel_event)
         if not verification.passed:
             self._log_verification_outcome(verification)
             return ModelResponse(
@@ -1214,7 +1246,7 @@ class PipelineEngine:
             if self._context_manager is not None:
                 self._context_manager.clarification.clear_pending()
             logger.info("Context switch ACCEPTED — re-processing '%s'", new_text)
-            return self.process(new_text)
+            return self.process(new_text, time_budget=self._budget)
 
         if verdict == "negative":
             # Keep the original request; re-ask its pending question.
@@ -1804,7 +1836,7 @@ class PipelineEngine:
                                  error=f"{type(exc).__name__}: {exc}",
                                  task_result=TaskResult.INTERNAL_ERROR), diag
 
-    def _try_verify(self, response: Any, recognized: Any, plan: Any = None) -> tuple[Any, DiagnosticReport | None]:
+    def _try_verify(self, response: Any, recognized: Any, plan: Any = None, cancel_event: Any = None) -> tuple[Any, DiagnosticReport | None]:
         try:
             # The action already failed — do not run (or report) world-state
             # verification: the failure message must reach the user as-is
@@ -1818,7 +1850,7 @@ class PipelineEngine:
 
             checks = self._plan_verification_checks(plan)
             if checks:
-                passed, message = self._run_verification_checks(checks)
+                passed, message = self._run_verification_checks(checks, cancel_event=cancel_event)
                 logger.info("IntelligentPlanner VERIFICATION: passed=%s %s", passed, message)
                 details = {"verified_response": response}
                 if passed:
@@ -1860,14 +1892,23 @@ class PipelineEngine:
             return []
         return checks
 
-    def _run_verification_checks(self, checks: list[VerificationCheck]) -> tuple[bool, str]:
+    def _run_verification_checks(self, checks: list[VerificationCheck], cancel_event: Any = None) -> tuple[bool, str]:
         """Verify each check against the live world state.
 
         The world model is background-polled, so a check is retried until
         its ``timeout`` so it can observe the state after execution.
+        When *cancel_event* is set (superseded task / brain deadline hit)
+        the poll aborts immediately instead of orphaning up to ``timeout``
+        seconds of background verification work.
         """
         if self._world_state is None:
             return False, "world state unavailable — cannot verify"
+
+        def _cancelled() -> bool:
+            try:
+                return cancel_event is not None and bool(cancel_event.is_set())
+            except Exception:
+                return False
 
         for check in checks:
             kind = check.kind
@@ -1876,12 +1917,16 @@ class PipelineEngine:
             deadline = time.monotonic() + max(0.5, check.timeout)
             last_message = "no result yet"
             while True:
+                if _cancelled():
+                    return False, "verification cancelled"
                 try:
                     ws = self._world_state.current()
                 except Exception as exc:
                     logger.warning("World state unavailable during verification: %s", exc)
                     ws = None
                 if ws is None:
+                    if _cancelled():
+                        return False, "verification cancelled"
                     return False, "world state unavailable — cannot verify"
                 passed, message = self._check_world(kind, check, ws)
                 if passed or time.monotonic() >= deadline:
@@ -1892,6 +1937,8 @@ class PipelineEngine:
                         )
                     return passed, message
                 last_message = message
+                if _cancelled():
+                    return False, "verification cancelled"
                 time.sleep(0.4)
         return True, "all verification checks passed"
 
@@ -1906,14 +1953,35 @@ class PipelineEngine:
             return ok, f"application '{target}' closed" if ok else f"application '{target}' still running"
         if kind == "url_loaded":
             urls = [b.active_url for b in ws.browsers.values() if b.active_url]
-            ok = any(target and target.casefold() in (u or "").casefold() for u in urls)
-            return ok, f"url '{target}' loaded" if ok else f"url '{target}' not found in active tabs"
+            # Inspect the same browser instance the executor drove: the
+            # live CDP tabs are authoritative, the background-polled world
+            # state is only a fallback.
+            cdp_tabs = _cdp_browser_tabs()
+            if cdp_tabs is not None:
+                urls = urls + [url for url, _title in cdp_tabs if url]
+            if urls:
+                ok = any(target and target.casefold() in (u or "").casefold() for u in urls)
+                return ok, f"url '{target}' loaded" if ok else f"url '{target}' not found in active tabs"
+            if cdp_tabs is None:
+                # CDP is unavailable so the result cannot be observed — a
+                # successfully executed operation must not be reported as
+                # failed on that basis.
+                return True, f"url '{target}' assumed loaded (browser state unavailable for verification)"
+            return False, f"url '{target}' not found in active tabs"
         if kind == "tab_open":
+            fields: list[str] = []
             for b in ws.browsers.values():
                 for win in b.windows:
-                    for field in (win.active_tab_url, win.active_tab_title):
-                        if target and target.casefold() in (field or "").casefold():
-                            return True, f"tab matching '{target}' found"
+                    fields.extend([win.active_tab_url or "", win.active_tab_title or ""])
+            cdp_tabs = _cdp_browser_tabs()
+            if cdp_tabs is not None:
+                for url, title in cdp_tabs:
+                    fields.extend([url, title])
+            if not fields and cdp_tabs is None:
+                return True, f"tab matching '{target}' assumed open (browser state unavailable for verification)"
+            for field in fields:
+                if target and target.casefold() in (field or "").casefold():
+                    return True, f"tab matching '{target}' found"
             return False, f"no tab matching '{target}'"
         if kind == "media_playing":
             ok = bool(ws.video_playing)

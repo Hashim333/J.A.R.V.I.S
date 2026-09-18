@@ -61,18 +61,21 @@ class ResponseFormatter:
             )
 
         if task_result == TaskResult.INTERNAL_ERROR:
-            base = f"Internal error: {message}"
+            # ARCH-002 / NO INTERNAL ERROR SPEECH: a raw internal
+            # failure must never reach the user face.  Only debug
+            # surfaces get the technical detail.
             if debug and diagnostic:
-                base += f"\n  Component: {diagnostic.component}"
-                base += f"\n  Exception: {diagnostic.exception}"
+                base = (
+                    f"Internal error: {message}"
+                    f"\n  Component: {diagnostic.component}"
+                    f"\n  Exception: {diagnostic.exception}"
+                )
+            else:
+                base = "I ran into an unexpected problem. Please try again."
             return base
 
         if task_result == TaskResult.FAILED:
-            base = self._format_failure(response, diagnostic)
-            if debug and diagnostic:
-                base += f"\n  Component: {diagnostic.component}"
-                base += f"\n  Exception: {diagnostic.exception}"
-            return base
+            return self._format_failure(response, diagnostic, debug=debug)
 
         # Fallback for any unclassified failure
         if debug and response.error:
@@ -141,18 +144,27 @@ class ResponseFormatter:
             return f"Playing '{query}'." if query else "Playing music."
         return "Understood."
 
-    def _format_failure(self, response: Any, diagnostic: Any) -> str:
-        parts = [f"Task: {response.message or 'Unknown task'}"]
-        if diagnostic:
-            parts.append(f"Component: {diagnostic.component}")
-            parts.append(f"Reason: {diagnostic.reason or diagnostic.exception or 'Unknown'}")
-            if diagnostic.recovery_attempted:
-                parts.append(f"Recovery: {diagnostic.recovery_attempted}")
-                if diagnostic.recovery_success:
-                    parts.append("Recovery succeeded.")
-                else:
-                    parts.append("Recovery failed.")
-        parts.append("Result: FAILED")
+    def _format_failure(self, response: Any, diagnostic: Any, *, debug: bool = False) -> str:
+        """Render a failed task as a short, natural user-facing response.
+
+        ARCH-002 / NO INTERNAL ERROR SPEECH: execution metadata (component
+        names, exception texts, ``Task:`` / ``Result: FAILED`` scaffolding,
+        raw diagnostics) must never be spoken or printed as the user
+        response.  ``message`` is surfaced as a calm short sentence and the
+        technical detail is only appended when ``debug`` is requested.
+        """
+        message = (response.message or "").strip()
+        if not message or message.casefold() == "unknown task":
+            return "I couldn't complete that action."
+        parts = [message]
+        if debug:
+            if diagnostic is not None:
+                parts.append(f"Component: {diagnostic.component}")
+                reason = diagnostic.reason or diagnostic.exception or "Unknown"
+                parts.append(f"Reason: {reason}")
+                if diagnostic.recovery_attempted:
+                    parts.append(f"Recovery: {diagnostic.recovery_attempted}")
+            parts.append("Result: FAILED")
         return "\n".join(parts)
 
     @staticmethod

@@ -127,6 +127,17 @@ class BrowserCollector(BaseCollector):
                     tabs.append({"title": title, "url": url})
                 if t.get("active"):
                     active_url = url
+            # Chrome's /json target list carries no "active" flag, so an
+            # active tab is never reported and downstream consumers (e.g.
+            # url_loaded verification) always see an empty active URL.
+            # Fall back to the first http(s) tab so the snapshot reflects
+            # the browser that is actually open.
+            if not active_url:
+                for t in tabs:
+                    url = t.get("url", "")
+                    if url.startswith(("http://", "https://")):
+                        active_url = url
+                        break
             return tabs, active_url
         except Exception:
             return [], None
