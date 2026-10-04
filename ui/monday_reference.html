@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>JARVIS</title>
+<style>
+  :root{
+    --idle: #ff8000;
+    --idle-core: #fcf5cd;
+    --active: #14a4ed;
+    --active-core: #d8f3ff;
+    --bg: #05070a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    width:100%;height:100%;background:var(--bg);
+    overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;
+  }
+  #stage{
+    position:relative;width:100vw;height:100vh;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    cursor:pointer;user-select:none;
+  }
+  canvas{position:absolute;top:0;left:0;}
+
+  /* status label above orb */
+  .status{
+    position:relative;z-index:5;
+    font-size:15px;letter-spacing:6px;font-weight:600;
+    text-transform:uppercase;
+    color:var(--idle);
+    margin-bottom:18px;
+    transition:color .6s ease;
+    opacity:.9;
+  }
+  .status.active{color:var(--active);}
+
+  /* orb wrapper for glow */
+  .orb-wrap{
+    position:relative;
+    width:min(48vh,420px);height:min(48vh,420px);
+    display:flex;align-items:center;justify-content:center;
+    z-index:4;
+    pointer-events:none;
+  }
+
+  /* caption line, minimal, only shows during listening/speaking */
+  .caption{
+    position:relative;z-index:5;
+    margin-top:22px;
+    min-height:24px;
+    font-size:18px;font-weight:300;color:#d9dde3;
+    letter-spacing:.3px;
+    opacity:0;transition:opacity .4s ease;
+    text-align:center;max-width:70vw;
+  }
+  .caption.show{opacity:1;}
+
+  /* mic hint */
+  .hint{
+    position:absolute;bottom:34px;left:50%;transform:translateX(-50%);
+    font-size:11px;letter-spacing:3px;color:#4a5058;text-transform:uppercase;
+    z-index:5;
+  }
+
+  .clock{
+    position:absolute;top:26px;left:50%;transform:translateX(-50%);
+    font-size:13px;letter-spacing:2px;color:#5b6470;
+    z-index:5;font-variant-numeric:tabular-nums;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="fx"></canvas>
+  <div class="clock" id="clock"></div>
+
+  <div class="status" id="status">Idle</div>
+  <div class="orb-wrap" id="orbWrap"></div>
+  <div class="caption" id="caption"></div>
+  <div class="hint">tap orb — space to toggle</div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('fx');
+  const ctx = canvas.getContext('2d');
+  const stage = document.getElementById('stage');
+  const orbWrap = document.getElementById('orbWrap');
+  const statusEl = document.getElementById('status');
+  const caption = document.getElementById('caption');
+  const clockEl = document.getElementById('clock');
+
+  let W, H, cx, cy, DPR;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 3);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W+'px';
+    canvas.style.height = H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    cx = W/2; cy = H/2;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- state ----
+  let state = 'idle'; // 'idle' | 'active'
+  let t = 0;
+
+  const COLORS = {
+    idle:   {
+      ring:'255,128,0', particle:'255,170,60',
+      coreHi:'#fff6df', coreMid:'#ffb347'
+    },
+    active: {
+      ring:'20,164,237', particle:'120,215,255',
+      coreHi:'#eaf9ff', coreMid:'#5fc4ff'
+    }
+  };
+
+  // orbiting particles (outer dust)
+  const particles = [];
+  const N = 130;
+  for(let i=0;i<N;i++){
+    particles.push({
+      a: Math.random()*Math.PI*2,
+      r: 150 + Math.random()*230,
+      speed: (Math.random()*0.35+0.1) * (Math.random()<0.5?1:-1),
+      tilt: Math.random()*Math.PI,
+      size: Math.random()*1.7+0.5,
+      phase: Math.random()*Math.PI*2,
+      z: Math.random()
+    });
+  }
+
+  // ---- TRUE geodesic hex/pentagon sphere (Goldberg dual of a subdivided icosahedron) ----
+  // This is the real "soccer-ball / geodesic dome" construction: hexagon cells everywhere,
+  // pentagon cells only at the 12 original icosahedron vertices — exactly the reference look.
+  function buildGeodesicSphere(subdiv){
+    const phi = (1+Math.sqrt(5))/2;
+    let verts = [
+      [-1,phi,0],[1,phi,0],[-1,-phi,0],[1,-phi,0],
+      [0,-1,phi],[0,1,phi],[0,-1,-phi],[0,1,-phi],
+      [phi,0,-1],[phi,0,1],[-phi,0,-1],[-phi,0,1]
+    ].map(v=>{
+      const len = Math.hypot(v[0],v[1],v[2]);
+      return {x:v[0]/len,y:v[1]/len,z:v[2]/len};
+    });
+    let faces = [
+      [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],
+      [1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+      [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],
+      [4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]
+    ];
+    const cache = {};
+    function midpoint(a,b){
+      const key = a<b ? a+'_'+b : b+'_'+a;
+      if(cache[key]!==undefined) return cache[key];
+      const va=verts[a], vb=verts[b];
+      const mx=(va.x+vb.x)/2, my=(va.y+vb.y)/2, mz=(va.z+vb.z)/2;
+      const len = Math.hypot(mx,my,mz);
+      verts.push({x:mx/len,y:my/len,z:mz/len});
+      const idx = verts.length-1;
+      cache[key]=idx;
+      return idx;
+    }
+    for(let s=0;s<subdiv;s++){
+      const nf=[];
+      for(const f of faces){
+        const [a,b,c]=f;
+        const ab=midpoint(a,b), bc=midpoint(b,c), ca=midpoint(c,a);
+        nf.push([a,ab,ca],[b,bc,ab],[c,ca,bc],[ab,bc,ca]);
+      }
+      faces=nf;
+    }
+
+    // face centroids, pushed onto the sphere — these become the hex/pentagon corner points
+    const centroids = faces.map(([a,b,c])=>{
+      const va=verts[a], vb=verts[b], vc=verts[c];
+      const mx=(va.x+vb.x+vc.x)/3, my=(va.y+vb.y+vc.y)/3, mz=(va.z+vb.z+vc.z)/3;
+      const len = Math.hypot(mx,my,mz);
+      return {x:mx/len, y:my/len, z:mz/len};
+    });
+
+    // edge -> [faceIdx, faceIdx] map (manifold, exactly two faces per edge)
+    const edgeFaces = {};
+    faces.forEach((f,fi)=>{
+      const [a,b,c]=f;
+      [[a,b],[b,c],[c,a]].forEach(([x,y])=>{
+        const key = x<y ? x+'_'+y : y+'_'+x;
+        (edgeFaces[key] = edgeFaces[key]||[]).push(fi);
+      });
+    });
+
+    // faces touching each vertex
+    const facesAtVertex = Array.from({length:verts.length}, ()=>[]);
+    faces.forEach((f,fi)=>{ f.forEach(v=>facesAtVertex[v].push(fi)); });
+
+    function vEdges(fi, v){
+      const f = faces[fi];
+      const others = f.filter(x=>x!==v);
+      return [[v,others[0]].sort((p,q)=>p-q), [v,others[1]].sort((p,q)=>p-q)];
+    }
+    function edgeKey(e){ return e[0]+'_'+e[1]; }
+    function edgesEqual(e1,e2){ return e1[0]===e2[0] && e1[1]===e2[1]; }
+
+    // for each vertex, walk the fan of surrounding faces in order -> hexagon (or pentagon) ring
+    const cells = [];
+    for(let v=0; v<verts.length; v++){
+      const fv = facesAtVertex[v];
+      if(fv.length < 3) continue;
+      const ordered = [fv[0]];
+      let current = fv[0];
+      let edges = vEdges(current, v);
+      let travEdge = edges[0];
+      for(let step=0; step<fv.length-1; step++){
+        const onEdge = edgeFaces[edgeKey(travEdge)];
+        const next = onEdge[0]===current ? onEdge[1] : onEdge[0];
+        if(next===undefined) break;
+        ordered.push(next);
+        const nEdges = vEdges(next, v);
+        travEdge = edgesEqual(nEdges[0],travEdge) ? nEdges[1] : nEdges[0];
+        current = next;
+      }
+      cells.push(ordered);
+    }
+    return {centroids, cells};
+  }
+  const geo = buildGeodesicSphere(2); // 320 faces -> 162 hex/pentagon cells, dome-scale facets
+
+  // sparkle points sit at the same face centroids — some cells get a bright node (big), most don't (small)
+  const sparklePts = geo.centroids.map((c,i)=>({
+    ...c,
+    isBig: (i % 7 === 0),
+    tw: Math.random()*Math.PI*2,
+    tws: 0.5 + Math.random()*1.3
+  }));
+
+  function rotateY(p, ang){
+    const c=Math.cos(ang), s=Math.sin(ang);
+    return { x: p.x*c + p.z*s, y: p.y, z: -p.x*s + p.z*c };
+  }
+  function rotateX(p, ang){
+    const c=Math.cos(ang), s=Math.sin(ang);
+    return { x: p.x, y: p.y*c - p.z*s, z: p.y*s + p.z*c };
+  }
+
+  function radius(){
+    return Math.min(W,H) * 0.155;
+  }
+
+  const projCentroids = new Array(geo.centroids.length);
+  let spin = 0; // continuous one-direction rotation accumulator (never reverses — real circulation)
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    const col = COLORS[state];
+    const baseR = radius();
+    const pulse = state==='active'
+      ? 1 + Math.sin(t*3.2)*0.045
+      : 1 + Math.sin(t*1.1)*0.018;
+    const sphereR = baseR * pulse;
+
+    // ---- soft bloom behind everything ----
+    const bloomR = sphereR * (state==='active'?7.5:6.2);
+    const bloom = ctx.createRadialGradient(cx,cy,sphereR*0.2,cx,cy,bloomR);
+    bloom.addColorStop(0, `rgba(${col.ring},0.24)`);
+    bloom.addColorStop(0.35, `rgba(${col.ring},0.09)`);
+    bloom.addColorStop(1, `rgba(${col.ring},0)`);
+    ctx.fillStyle = bloom;
+    ctx.beginPath(); ctx.arc(cx,cy,bloomR,0,Math.PI*2); ctx.fill();
+
+    // ---- concentric orbit rings ----
+    const ringCount = 4;
+    for(let i=0;i<ringCount;i++){
+      const rr = sphereR * (2.2 + i*0.55);
+      const rot = t * (0.05 + i*0.015) * (i%2===0?1:-1);
+      const alpha = 0.10 - i*0.016;
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(${col.ring},${Math.max(alpha,0.02)})`;
+      ctx.lineWidth = 1;
+      const segs = 120;
+      for(let s=0;s<=segs;s++){
+        const ang = rot + (s/segs)*Math.PI*2;
+        const wobble = Math.sin(ang*6 + t*2)*rr*0.008;
+        const x = cx + Math.cos(ang)*(rr+wobble);
+        const y = cy + Math.sin(ang)*(rr+wobble)*0.92;
+        if(s===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+
+    // ---- outer dust particles (with faint sparkle trail) ----
+    for(const p of particles){
+      p.a += p.speed * 0.012 * (state==='active'?1.8:1);
+      const rr = (sphereR*1.9 + p.r*0.55*pulse) * (state==='active'?1.06:1);
+      const x = cx + Math.cos(p.a)*rr;
+      const y = cy + Math.sin(p.a)*rr*Math.cos(p.tilt)*0.5;
+      const flick = 0.3 + Math.abs(Math.sin(t*2+p.phase))*0.7;
+      ctx.save();
+      ctx.shadowColor = `rgba(${col.particle},0.9)`;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${col.particle},${flick})`;
+      ctx.arc(x,y,p.size,0,Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ---- geodesic hex/pentagon sphere: continuous one-direction spin (real circulation) ----
+    spin += 0.016 * (state==='active' ? 0.62 : 0.30);   // clearly visible, never reverses
+    const tiltFixed = 0.28;
+    const persp = 3.2;
+
+    for(let i=0;i<geo.centroids.length;i++){
+      const p = geo.centroids[i];
+      let r1 = rotateY(p, spin);
+      let r2 = rotateX(r1, tiltFixed);
+      const scale = persp / (persp - r2.z);
+      projCentroids[i] = {
+        x: cx + r2.x * sphereR * scale,
+        y: cy + r2.y * sphereR * scale,
+        z: r2.z
+      };
+    }
+
+    // draw each hex/pentagon cell: faint glass fill + glowing edge, brighter as it faces camera
+    for(const cell of geo.cells){
+      let zAvg = 0;
+      for(const fi of cell) zAvg += projCentroids[fi].z;
+      zAvg /= cell.length;
+      if(zAvg < -0.45) continue; // back of sphere, skip
+
+      const facing = Math.max(0, zAvg);
+      const rim = 1 - Math.min(1,Math.abs(zAvg));
+      const fillA = 0.015 + facing*0.05;
+      const edgeA = Math.min(0.85, 0.05 + facing*0.34 + Math.pow(rim,5)*0.4);
+
+      ctx.beginPath();
+      cell.forEach((fi,idx)=>{
+        const p = projCentroids[fi];
+        if(idx===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = `rgba(${col.ring},${fillA})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(${col.ring},${edgeA})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // sparkle nodes at cell centers facing camera — matching reference's bright scattered dots
+    for(let i=0;i<sparklePts.length;i++){
+      const p = projCentroids[i];
+      if(!p || p.z < 0.15) continue;
+      const depth = (p.z-0.15)/0.85;
+      const s = sparklePts[i];
+      const tw = 0.5 + Math.sin(t*s.tws + s.tw)*0.5;
+      const baseSize = s.isBig ? 2.2 : 0.9;
+      const sz = baseSize * (0.5 + depth*0.9);
+      const alpha = (0.25 + depth*0.65) * tw;
+      ctx.save();
+      ctx.shadowColor = `rgba(${col.particle},0.9)`;
+      ctx.shadowBlur = 3 + sz*2;
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${col.particle},${Math.min(alpha,1)})`;
+      ctx.arc(p.x,p.y,sz,0,Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ---- inner core glow (bright, realistic light source) ----
+    const coreR = sphereR * 0.34;
+    const core = ctx.createRadialGradient(
+      cx - coreR*0.25, cy - coreR*0.3, coreR*0.05,
+      cx, cy, coreR*2.5
+    );
+    core.addColorStop(0, col.coreHi);
+    core.addColorStop(0.26, col.coreMid);
+    core.addColorStop(0.58, `rgba(${col.ring},0.6)`);
+    core.addColorStop(1, `rgba(${col.ring},0)`);
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(cx,cy,coreR*2.5,0,Math.PI*2); ctx.fill();
+
+    const hot = ctx.createRadialGradient(cx,cy,0,cx,cy,coreR*0.85);
+    hot.addColorStop(0, col.coreHi);
+    hot.addColorStop(0.5, col.coreMid);
+    hot.addColorStop(1, `rgba(${col.ring},0)`);
+    ctx.fillStyle = hot;
+    ctx.beginPath(); ctx.arc(cx,cy,coreR*0.85,0,Math.PI*2); ctx.fill();
+
+    t += 0.016;
+    requestAnimationFrame(draw);
+  }
+  draw();
+
+  // ---- state control ----
+  const captions = {
+    idle: '',
+    active: 'Listening…'
+  };
+
+  function setJarvisState(newState, label, reply){
+    state = (newState === 'active') ? 'active' : 'idle';
+    statusEl.textContent = label || (state==='active' ? 'Listening' : 'Idle');
+    statusEl.classList.toggle('active', state==='active');
+    orbWrap.classList.toggle('active', state==='active');
+    const text = reply !== undefined ? reply : captions[state];
+    caption.textContent = text;
+    caption.classList.toggle('show', !!text);
+  }
+  window.setJarvisState = setJarvisState;
+
+  function toggle(){
+    setJarvisState(state==='idle' ? 'active' : 'idle',
+                    state==='idle' ? 'Listening' : 'Idle');
+  }
+  stage.addEventListener('click', toggle);
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Space'){ e.preventDefault(); toggle(); }
+  });
+
+  // clock
+  function tickClock(){
+    const now = new Date();
+    const h = now.getHours()%12 || 12;
+    const m = String(now.getMinutes()).padStart(2,'0');
+    const s = String(now.getSeconds()).padStart(2,'0');
+    const ap = now.getHours()>=12?'PM':'AM';
+    clockEl.textContent = `${h}:${m}:${s} ${ap}`;
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  setJarvisState('idle','Idle');
+})();
+</script>
+</body>
+</html>
