@@ -7,8 +7,8 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, QUrl, QPoint, QRect, QScreen, QSize
-from PySide6.QtGui import QAction, QIcon, QPainter, QPixmap, QColor, QCursor
+from PySide6.QtCore import QTimer, Qt, QUrl, QPoint, QRect, QSize
+from PySide6.QtGui import QAction, QIcon, QPainter, QPixmap, QColor, QCursor, QScreen
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -365,6 +365,12 @@ class OrbWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         self._position_controls()
         super().resizeEvent(event)
+
+    def moveEvent(self, event) -> None:
+        # Save position when window moves (user drag or programmatic)
+        if not self._is_dragging:  # Don't save during drag to reduce I/O
+            self._save_config()
+        super().moveEvent(event)
 
     # ========== Config Persistence ==========
 

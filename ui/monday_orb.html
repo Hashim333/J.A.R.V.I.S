@@ -60,6 +60,30 @@
     display:none;
   }
   .clock.show{display:block;}
+
+  /* Window mode styles */
+  body.mode-popup #stage {
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  body.mode-popup .orb-wrap {
+    width: min(42vh, 280px);
+    height: min(42vh, 280px);
+  }
+  body.mode-popup .status { font-size: 13px; letter-spacing: 4px; margin-bottom: 12px; }
+  body.mode-popup .caption { font-size: 15px; margin-top: 14px; }
+
+  body.rounded #stage { border-radius: 16px; }
+  body.mode-mini #stage { border-radius: 50%; }
+  body.mode-mini .status,
+  body.mode-mini .caption,
+  body.mode-mini .clock,
+  body.mode-mini .orb-wrap::before { display: none !important; }
+  body.mode-mini .orb-wrap {
+    width: 100%; height: 100%;
+  }
+  body.mode-mini canvas { border-radius: 50%; }
+  body.mode-expanded #stage { border-radius: 0; }
 </style>
 </head>
 <body>
@@ -74,6 +98,7 @@
 </div>
 
 <script>
+console.log('HTML script started');
 (function(){
   const canvas = document.getElementById('fx');
   const ctx = canvas.getContext('2d');
@@ -461,6 +486,17 @@
     radiusFactor = Math.max(0.1, Math.min(3.0, factor));
   }
   window.setRadiusFactor = setRadiusFactor;
+
+  function setWindowMode(mode) {
+    document.body.classList.remove('mode-popup', 'mode-expanded', 'mode-mini');
+    document.body.classList.add('mode-' + mode);
+  }
+  window.setWindowMode = setWindowMode;
+
+  function setRoundedCorners(rounded) {
+    document.body.classList.toggle('rounded', rounded);
+  }
+  window.setRoundedCorners = setRoundedCorners;
 
   // Clock (hidden by default)
   function tickClock(){
