@@ -5,7 +5,7 @@ BUG 1 + BUG 2 ("conversation failure must never shut JARVIS down"):
 A conversation-level failure (STT timeout, empty/low-confidence transcript,
 TTS failure, runtime exception, watch-dog recovery) must NEVER terminate the
 application.  The only legitimate ways out are the user closing the window
-(``Bridge.quit_app`` -> QML X button) or an explicit EXIT text command /
+(``Bridge.quit_app``) or an explicit EXIT text command /
 Ctrl+C.  These tests:
 
   * statically prove that ``services/conversation_owner.py`` contains NO call

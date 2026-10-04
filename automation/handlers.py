@@ -73,8 +73,9 @@ class AppsHandler:
         "close_all_apps", "is_running",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, engine: object | None = None) -> None:
         self._app_registry = get_application_registry()
+        self._engine = engine
 
     def run(self, step: Step, voice_input: Callable[[], str | None] | None = None) -> Any:
         target = _require_target(step) if step.action != "close_all_apps" else ""
@@ -138,7 +139,7 @@ class AppsHandler:
             names = [m[0].canonical_name for m in matches[:3]]
             logger.info("Multiple matches for %r: %s", target, names)
             if voice_input is not None:
-                manager = VoiceSelectionManager(voice_input=voice_input)
+                manager = VoiceSelectionManager(voice_input=voice_input, engine=self._engine)
                 header = f"I found multiple applications matching '{target}'."
                 selected = manager.select(names, header=header)
                 if selected is not None:
@@ -399,14 +400,14 @@ class AppsHandler:
             logger.warning("Intent=CLOSE_APPLICATION App=%s Action=close_active_window Error=%s", canonical, exc)
             return {"success": False, "message": f"Failed to close active window for {canonical}: {exc}"}
 
-    @staticmethod
     def _prompt_multiple_instances(
+        self,
         app_name: str,
         count: int,
         voice_input: Callable[[], str | None] | None,
     ) -> str:
         """Ask the user whether to close all instances or only the active one."""
-        manager = VoiceSelectionManager(voice_input=voice_input)
+        manager = VoiceSelectionManager(voice_input=voice_input, engine=self._engine)
         options = ["all", "active"]
         header = f"I found {count} {app_name} windows. Close all or only the active one?"
         selected = manager.select(
@@ -1201,8 +1202,9 @@ class FileManagerHandler:
         "delete_file",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, engine: object | None = None) -> None:
         self._file_memory = FileMemory()
+        self._engine = engine
 
     def run(self, step: Step, voice_input: Callable[[], str | None] | None = None) -> Any:
         if step.action == "open_file":
@@ -1273,7 +1275,7 @@ class FileManagerHandler:
             }
 
         names = [m["name"] for m in matches[:5]]
-        manager = VoiceSelectionManager(voice_input=voice_input)
+        manager = VoiceSelectionManager(voice_input=voice_input, engine=self._engine)
         header = f"I found {len(matches)} files matching '{file_query}'."
         selected = manager.select(names, header=header)
         if selected is None:
@@ -1494,6 +1496,203 @@ class VisionHandler:
 
         raise UnsupportedActionError(
             handler_name="VisionHandler",
+            action=step.action,
+            supported=self._SUPPORTED_ACTIONS,
+        )
+
+
+class ScreenHandler:
+    """Adapter for screen interaction actions.
+
+    Supports: read_screen, describe_screen, click_element,
+              double_click_element, right_click_element,
+              drag_element, scroll_screen, type_into,
+              find_element, hover_element.
+    """
+
+    _SUPPORTED_ACTIONS = {
+        "read_screen",
+        "describe_screen",
+        "click_element",
+        "double_click_element",
+        "right_click_element",
+        "drag_element",
+        "scroll_screen",
+        "type_into",
+        "find_element",
+        "hover_element",
+    }
+
+    def __init__(self, engine: object | None = None) -> None:
+        self._engine = engine
+        self._finder = None
+        self._input = None
+        self._verifier = None
+
+    def _get_finder(self):
+        if self._finder is None:
+            from screen.target_finder import TargetFinder
+            self._finder = TargetFinder()
+        return self._finder
+
+    def _get_input(self):
+        if self._input is None:
+            from screen.input import InputController
+            self._input = InputController()
+        return self._input
+
+    def _get_verifier(self):
+        if self._verifier is None:
+            from screen.verifier import Verifier
+            self._verifier = Verifier()
+        return self._verifier
+
+    def run(self, step: Step, **kwargs: Any) -> Any:
+        import screen.reader as reader
+        import screen.capture as capture
+        import screen.vision as vision
+
+        if step.action == "read_screen":
+            result = reader.read_screen_fast()
+            if result["success"]:
+                from memory.vision_memory import save_screen_text
+                save_screen_text(result.get("text", ""), result.get("resolution", ""))
+            return result
+
+        if step.action == "describe_screen":
+            result = reader.read_screen_fast()  # Use fast path first
+            if not result["success"] or not result.get("text"):
+                # Fallback to vision
+                cap = capture.capture_for_vision()
+                return vision.describe_screen_with_ai() if hasattr(vision, 'describe_screen_with_ai') else result
+            return result
+
+        if step.action == "click_element":
+            target = step.parameters.get("target", "")
+            if not target:
+                return {"success": False, "message": "No target specified."}
+            finder = self._get_finder()
+            targets = finder.find(target)
+            if not targets:
+                return {"success": False, "message": f"Could not find {target!r} on screen."}
+            best = targets[0]
+            if best.center:
+                input_ctl = self._get_input()
+                return input_ctl.click_at(best.center[0], best.center[1]).__dict__
+            return {"success": False, "message": f"Found {target} but no clickable coordinates."}
+
+        if step.action == "double_click_element":
+            target = step.parameters.get("target", "")
+            if not target:
+                return {"success": False, "message": "No target specified."}
+            finder = self._get_finder()
+            targets = finder.find(target)
+            if not targets:
+                return {"success": False, "message": f"Could not find {target!r} on screen."}
+            best = targets[0]
+            if best.center:
+                input_ctl = self._get_input()
+                return input_ctl.double_click_at(best.center[0], best.center[1]).__dict__
+            return {"success": False, "message": f"Found {target} but no clickable coordinates."}
+
+        if step.action == "right_click_element":
+            target = step.parameters.get("target", "")
+            if not target:
+                return {"success": False, "message": "No target specified."}
+            finder = self._get_finder()
+            targets = finder.find(target)
+            if not targets:
+                return {"success": False, "message": f"Could not find {target!r} on screen."}
+            best = targets[0]
+            if best.center:
+                input_ctl = self._get_input()
+                return input_ctl.right_click_at(best.center[0], best.center[1]).__dict__
+            return {"success": False, "message": f"Found {target} but no clickable coordinates."}
+
+        if step.action == "drag_element":
+            source = step.parameters.get("source", "")
+            target = step.parameters.get("target", "")
+            if not (source or target):
+                return {"success": False, "message": "No source or target specified."}
+            finder = self._get_finder()
+            if source and target:
+                src_targets = finder.find(source)
+                dst_targets = finder.find(target)
+                if not src_targets or not dst_targets:
+                    return {"success": False, "message": "Could not find source or target."}
+                src_center = src_targets[0].center
+                dst_center = dst_targets[0].center
+                if src_center and dst_center:
+                    input_ctl = self._get_input()
+                    return input_ctl.drag_from_to(src_center[0], src_center[1], dst_center[0], dst_center[1]).__dict__
+            elif target:
+                tgt_targets = finder.find(target)
+                if tgt_targets and tgt_targets[0].center:
+                    # Drag from current mouse position
+                    input_ctl = self._get_input()
+                    cur_x, cur_y = input_ctl.get_position()
+                    dst_center = tgt_targets[0].center
+                    return input_ctl.drag_from_to(cur_x, cur_y, dst_center[0], dst_center[1]).__dict__
+            return {"success": False, "message": "Could not perform drag operation."}
+
+        if step.action == "scroll_screen":
+            direction = step.parameters.get("direction", "down")
+            amount = -500 if direction == "down" else 500
+            input_ctl = self._get_input()
+            cur_x, cur_y = input_ctl.get_position()
+            return input_ctl.scroll_at(cur_x, cur_y, amount).__dict__
+
+        if step.action == "type_into":
+            field = step.parameters.get("field", "")
+            value = step.parameters.get("value", "")
+            if not field:
+                return {"success": False, "message": "No field specified."}
+            finder = self._get_finder()
+            targets = finder.find(field)
+            if targets and targets[0].center:
+                input_ctl = self._get_input()
+                # Click the field first
+                input_ctl.click_at(targets[0].center[0], targets[0].center[1])
+                time.sleep(0.1)
+                # Type the value
+                if value:
+                    return input_ctl.type_text(value).__dict__
+            return {"success": False, "message": f"Could not find field {field!r}."}
+
+        if step.action == "find_element":
+            target = step.parameters.get("target", "")
+            if not target:
+                return {"success": False, "message": "No target specified."}
+            finder = self._get_finder()
+            targets = finder.find(target)
+            if targets:
+                best = targets[0]
+                return {
+                    "success": True,
+                    "found": True,
+                    "name": best.name,
+                    "role": best.role,
+                    "bounds": best.bounds,
+                    "center": best.center,
+                    "confidence": best.confidence,
+                    "method": best.method,
+                }
+            return {"success": False, "message": f"Could not find {target!r} on screen."}
+
+        if step.action == "hover_element":
+            target = step.parameters.get("target", "")
+            if not target:
+                return {"success": False, "message": "No target specified."}
+            finder = self._get_finder()
+            targets = finder.find(target)
+            if targets and targets[0].center:
+                input_ctl = self._get_input()
+                best = targets[0]
+                return input_ctl.click_at(best.center[0], best.center[1]).__dict__  # moveTo would be better
+            return {"success": False, "message": f"Could not find {target!r} on screen."}
+
+        raise UnsupportedActionError(
+            handler_name="ScreenHandler",
             action=step.action,
             supported=self._SUPPORTED_ACTIONS,
         )

@@ -543,18 +543,14 @@ class VoiceSelectionManager:
         return None
 
     # ------------------------------------------------------------------
-    # Default TTS (lazy-shared VoiceManager)
+    # Default TTS (lazy-shared VoiceManager) - DISABLED
     # ------------------------------------------------------------------
+    # In production, engine is always passed explicitly to avoid
+    # duplicate VoiceManager creation. This fallback is only for tests.
 
     @classmethod
     def _default_speak(cls) -> Callable[[str], None] | None:
-        if cls._shared_voice_manager is None:
-            try:
-                from voice.manager import VoiceManager
-                cls._shared_voice_manager = VoiceManager()
-            except Exception:
-                return None
-        return cls._shared_voice_manager.speak
+        return None
 
 
 def _parse_index(text: str) -> int | None:

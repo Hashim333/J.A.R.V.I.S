@@ -323,6 +323,19 @@ class TestLegacyBargeInConsumerSafety(unittest.TestCase):
         engine.stop_barge_in()
         self.assertIs(stream._consumer, foreign)
 
+    def test_start_arms_when_speech_is_busy_before_playback_starts(self) -> None:
+        engine, stream = self._engine()
+        engine._voice_manager.is_playing = False
+        engine._voice_manager.is_busy = True
+        engine._voice_manager.queue_size = 1
+
+        engine.start_barge_in()
+
+        self.assertTrue(engine._barge_in_active)
+        self.assertIsNotNone(engine._barge_in_vad)
+        stream.set_consumer.assert_called_once_with(engine._barge_in_vad.process_audio)
+        stream.set_on_audio_level.assert_called_once_with(engine._on_audio_level)
+
 
 if __name__ == "__main__":
     unittest.main()

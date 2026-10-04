@@ -24,6 +24,15 @@ class _PlaceholderResult:
 
 def _make_owner(brain_process=None):
     bridge = MagicMock()
+    bridge.emit_passive = MagicMock(side_effect=lambda caption="Ready when you are.": bridge.set_core_state("idle"))
+    bridge.emit_wake = MagicMock(side_effect=lambda caption="Wake word detected": bridge.set_core_state("waiting"))
+    bridge.emit_listening = MagicMock(side_effect=lambda caption="Listening...", audio_level=None: bridge.set_core_state("listening"))
+    bridge.emit_understanding = MagicMock(side_effect=lambda caption="Understanding...": bridge.set_core_state("understanding"))
+    bridge.emit_thinking = MagicMock(side_effect=lambda caption="Thinking...": bridge.set_core_state("thinking"))
+    bridge.emit_working = MagicMock(side_effect=lambda caption="Working...": bridge.set_core_state("working"))
+    bridge.emit_speaking = MagicMock(side_effect=lambda caption="Speaking...": bridge.set_core_state("speaking"))
+    bridge.emit_done = MagicMock(side_effect=lambda caption="Done": bridge.set_core_state("done"))
+    bridge.emit_error = MagicMock(side_effect=lambda caption, label="Error": bridge.set_core_state("error"))
     brain = MagicMock()
     if brain_process is not None:
         brain.process = brain_process

@@ -222,8 +222,8 @@ class VoiceEngine:
             return
         if self._microphone_stream is None:
             return
-        if not self.is_speaking:
-            logger.debug("VoiceEngine: not speaking — skipping barge-in arm")
+        if not self.is_busy:
+            logger.debug("VoiceEngine: speech not busy — skipping barge-in arm")
             return
         self._barge_in_active = True
 

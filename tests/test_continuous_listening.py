@@ -241,6 +241,16 @@ class TestOwnerMultiTurnLoop(unittest.TestCase):
             return _capture(reason="no_speech")
 
         bridge = MagicMock()
+        # Add new state emission methods that delegate to set_core_state for backward compat
+        bridge.emit_passive = MagicMock(side_effect=lambda caption="Ready when you are.": bridge.set_core_state("idle"))
+        bridge.emit_wake = MagicMock(side_effect=lambda caption="Wake word detected": bridge.set_core_state("waiting"))
+        bridge.emit_listening = MagicMock(side_effect=lambda caption="Listening...", audio_level=None: bridge.set_core_state("listening"))
+        bridge.emit_understanding = MagicMock(side_effect=lambda caption="Understanding...": bridge.set_core_state("understanding"))
+        bridge.emit_thinking = MagicMock(side_effect=lambda caption="Thinking...": bridge.set_core_state("thinking"))
+        bridge.emit_working = MagicMock(side_effect=lambda caption="Working...": bridge.set_core_state("working"))
+        bridge.emit_speaking = MagicMock(side_effect=lambda caption="Speaking...": bridge.set_core_state("speaking"))
+        bridge.emit_done = MagicMock(side_effect=lambda caption="Done": bridge.set_core_state("done"))
+        bridge.emit_error = MagicMock(side_effect=lambda caption, label="Error": bridge.set_core_state("error"))
         brain = MagicMock()
         brain.process = MagicMock(side_effect=lambda *a, **k: Response(
             success=True, message="Done.", task_result=TaskResult.SUCCESS,
@@ -291,7 +301,7 @@ class TestOwnerMultiTurnLoop(unittest.TestCase):
 
     def test_ten_consecutive_turns_then_keeps_listening(self) -> None:
         commands = [
-            "hello jarvis",
+            "hello monday",
             "what is python",
             "tell me a short joke",
             "what did i just ask you",
@@ -316,8 +326,8 @@ class TestOwnerMultiTurnLoop(unittest.TestCase):
             )
             heard = [c.args[0] for c in brain.process.call_args_list[:10]]
             # The owner strips a leading/trailing wake word before dispatch
-            # ("hello jarvis" -> "hello") — that is intended, not a drop.
-            expected = [commands[0].replace(" jarvis", "")] + commands[1:]
+            # ("hello monday" -> "hello") — that is intended, not a drop.
+            expected = [commands[0].replace(" monday", "")] + commands[1:]
             self.assertEqual(heard, expected)
             # After the 10th turn the loop must keep listening (re-arm),
             # never die or wedge in a terminal state.
@@ -442,13 +452,26 @@ class TestListeningReadiness(unittest.TestCase):
 
 class TestMicDeadRecovery(unittest.TestCase):
     def _make_owner(self):
+        bridge = MagicMock()
+        bridge.emit_passive = MagicMock(side_effect=lambda caption="Ready when you are.": bridge.set_core_state("idle"))
+        bridge.emit_wake = MagicMock(side_effect=lambda caption="Wake word detected": bridge.set_core_state("waiting"))
+        bridge.emit_listening = MagicMock(side_effect=lambda caption="Listening...", audio_level=None: bridge.set_core_state("listening"))
+        bridge.emit_understanding = MagicMock(side_effect=lambda caption="Understanding...": bridge.set_core_state("understanding"))
+        bridge.emit_thinking = MagicMock(side_effect=lambda caption="Thinking...": bridge.set_core_state("thinking"))
+        bridge.emit_working = MagicMock(side_effect=lambda caption="Working...": bridge.set_core_state("working"))
+        bridge.emit_speaking = MagicMock(side_effect=lambda caption="Speaking...": bridge.set_core_state("speaking"))
+        bridge.emit_done = MagicMock(side_effect=lambda caption="Done": bridge.set_core_state("done"))
+        bridge.emit_error = MagicMock(side_effect=lambda caption, label="Error": (
+            bridge.set_core_state("error"),
+            bridge.show_subtitle(caption)
+        ))
         service_manager = MagicMock()
         service_manager.initialize_all.return_value = {}
         service_manager.start_all.return_value = {}
         service_manager.shutdown_all.return_value = {}
         owner = ConversationOwner(
             conversation_manager=ConversationManager(),
-            bridge=MagicMock(),
+            bridge=bridge,
             brain=MagicMock(),
             task_manager=TaskManager(),
             response_manager=MagicMock(),
@@ -568,11 +591,14 @@ class TestUtteranceHooks(unittest.TestCase):
         manager._stop_worker = _threading.Event()
         manager._current_text = None
         manager._interrupted = False
+        manager._generation = 0
+        manager._generation_lock = _threading.Lock()
         manager._activity_lock = _threading.Lock()
         manager._pending_utterances = 0
         manager._speech_finished_event = _threading.Event()
         manager._speech_finished_event.set()
         manager.on_speech_finished = None
+        manager._bridge = None  # No bridge in this test
         calls: list[str] = []
         manager.on_utterance_started = lambda: calls.append("started")
         manager.on_utterance_finished = lambda: calls.append("finished")

@@ -81,6 +81,7 @@ class ElevenLabsProvider(VoiceProvider):
         timeout: int = _REQUEST_TIMEOUT,
         output_format: str = _DEFAULT_OUTPUT_FORMAT,
         player: VoicePlayer | None = None,
+        speed: float | None = None,
     ) -> None:
         self._api_key = (
             api_key if api_key is not None else settings.elevenlabs_api_key
@@ -114,6 +115,10 @@ class ElevenLabsProvider(VoiceProvider):
         # Active streaming download (response, stop-event), if any.  Owned
         # by the pump thread; cancelled from stop() on barge-in (FIX 1).
         self._active_stream: tuple[Any, threading.Event] | None = None
+
+        # Speech speed multiplier (1.0 = normal, 1.2 = 20% faster, max supported by ElevenLabs).
+        # ElevenLabs supports 0.7 to 1.2.
+        self._speed = speed if speed is not None else 1.2
 
         # FIX-QUOTA-NO-RETRY: once a 401/429 (quota/auth) is observed, treat
         # the provider as unavailable for the rest of the process — no retries,
@@ -479,6 +484,8 @@ class ElevenLabsProvider(VoiceProvider):
             voice_settings["style"] = self._style
         if self._speaker_boost is not None:
             voice_settings["use_speaker_boost"] = self._speaker_boost
+        # Speech speed multiplier (ElevenLabs supports 0.7 to 1.2)
+        voice_settings["speed"] = max(0.7, min(1.2, self._speed))
         if voice_settings:
             body_fields["voice_settings"] = voice_settings
 

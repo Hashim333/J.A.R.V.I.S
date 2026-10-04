@@ -38,7 +38,7 @@
 
 ### 4. Window disappears / taskbar icon
 - **Problem:** Not reproduced. Potential contributors identified (frameless QWindow + `showMaximized` + mode transitions).
-- **Cause:** `WindowManager._poll_foreground` (ui/window_manager.py:120) calls Win32 `GetForegroundWindow`/`GetWindowTextW` on the **UI thread** every 3s and can call `set_mode` (fullscreen↔orb) under debounced heuristics; `ui/app.py` uses `setQuitOnLastWindowClosed(False)` with a QML `QWindow` (no `QWidget.setWindowIcon` path — falls to `_apply_windows_taskbar_identity`).
+- **Historical cause:** the previous window shell polled foreground windows and used a native window path. That implementation has been removed; the current `WindowManager` only shows and hides the placeholder window.
 - **Evidence:** no log lines this run; static review only.
 - **Fix direction:** Guard mode transitions to occur after a fullscreen app truly exits; verify `_ensure_taskbar_icon` re-applies after mode switches.
 
@@ -76,7 +76,7 @@
 - **File/Line:** run.py:539 (dead hook); services/shutdown_manager.py:12–21 (phase list), :27 (`on()` drops unknown phases silently).
 
 ### 11. Repeated signals / timers
-- **Problem:** High QML signal churn not directly measured; static risk.
+- **Historical problem:** UI signal churn was not directly measured; static risk.
 - **Cause:** `Bridge` clock timer 1s (ui/bridge.py:105), `WindowManager` poll 3s (ui/window_manager.py:81), `SystemMonitor` 2s (ui/system_monitor.py), `UIMonitor` 200ms. All are bounded, but `subtitleChanged`/`conversationHistoryChanged` emit per subtitle line.
 - **Evidence:** No explosion observed. UI tick steady.
 
@@ -86,11 +86,11 @@
 - **File/Line:** ui/window_manager.py:120–163.
 - **Fix:** Move polling to a background thread (use `Signal` to update mode).
 
-### 13. QML binding / canvas loops
+### 13. UI rendering loops
 - **Problem:** Not reproduced / not instrumented.
-- **Cause:** `ParticleBackground.qml` (particles) is a perpetual canvas animation — inherently continuous CPU/GPU; potential binding-loop sites not verified this run.
-- **Evidence:** none from this run (would require QML profiler).
-- **Fix:** verify with `qmlprofiler` if particle cost is suspect.
+- **Cause:** The previous animated visual shell is no longer part of the active application.
+- **Evidence:** none from this run.
+- **Fix:** measure rendering after the replacement interface is introduced.
 
 ### 14. Memory leaks
 - **Problem:** No leak in 4-minute window (RSS flat after spike).

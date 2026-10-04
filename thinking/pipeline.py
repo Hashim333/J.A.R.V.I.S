@@ -665,6 +665,12 @@ class PipelineEngine:
 
         logger.info("  plan steps=%d intent=%s", len(plan.steps), plan.intent)
 
+        # DIAGNOSTIC: Log plan result
+        logger.info(
+            "PIPELINE_BOUNDARY: PLAN_RESULT intent=%s steps=%d step_details=%s",
+            plan.intent, len(plan.steps), [f"{s.action}:{s.target}:{s.parameters}" for s in plan.steps],
+        )
+
         # -- 7. Confirmation gate --
         if not confirmed and decision.metadata.get("requires_confirmation"):
             reason = decision.metadata.get("confirmation_reason", "This action may be destructive.")
@@ -686,10 +692,20 @@ class PipelineEngine:
             )
 
         # -- 8. Execute --
+        # DIAGNOSTIC: Log executor start
+        logger.info(
+            "PIPELINE_BOUNDARY: EXECUTOR_START intent=%s steps=%d",
+            plan.intent, len(plan.steps),
+        )
         exec_start = stage_entry("pipeline.execute", input_=plan.intent)
         response, diag = self._try_execute(plan, recognized, cancel_event=cancel_event)
         stage_exit("pipeline.execute", exec_start, status=response.task_result.value, output=response.message)
         self._task_supervisor.end_supervision()
+        # DIAGNOSTIC: Log executor result
+        logger.info(
+            "PIPELINE_BOUNDARY: EXECUTOR_RESULT intent=%s success=%s task_result=%s message=%r",
+            plan.intent, response.success, response.task_result.value, response.message,
+        )
         logger.info("IntelligentPlanner ACTION: success=%s status=%s message=%r",
                      response.success, response.task_result.value, response.message)
 

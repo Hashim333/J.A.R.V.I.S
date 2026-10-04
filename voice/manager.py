@@ -50,7 +50,7 @@ class VoiceManager:
         manager.speak("Urgent", priority=True)  # bumps ahead of queue
     """
 
-    def __init__(self, config: Any = settings) -> None:
+    def __init__(self, config: Any = settings, bridge=None) -> None:
         self._settings = config
         self._diagnostics: list[str] = []
         self._queue: queue.Queue[tuple[str, bool]] = queue.Queue()
@@ -63,6 +63,12 @@ class VoiceManager:
         # An interrupted utterance still counts as delivered (the user cut
         # real audio short) — it must never trigger fallback/retry loops.
         self._interrupted = False
+
+        # Generation counter for generation-safe cancellation.
+        # Each speak() increments this. cancel_all() captures the generation
+        # at the time of call and only acts if no new speak() has occurred.
+        self._generation = 0
+        self._generation_lock = threading.Lock()
 
         # Speech-activity lifecycle: every enqueued utterance is counted as
         # "pending" from enqueue until its playback (or failure) fully
@@ -84,6 +90,8 @@ class VoiceManager:
         # swap can never leave the microphone muted — or unguarded.
         self.on_utterance_started: Callable[[], None] | None = None
         self.on_utterance_finished: Callable[[], None] | None = None
+
+        self._bridge = bridge
 
         # Load the configured provider
         try:
@@ -132,6 +140,9 @@ class VoiceManager:
             self._queue.put((text.strip(), False))
             logger.info("VoiceManager: enqueued: '%s'", text[:60])
 
+        with self._generation_lock:
+            self._generation += 1
+            current_gen = self._generation
         with self._activity_lock:
             self._pending_utterances += 1
             self._speech_finished_event.clear()
@@ -148,9 +159,30 @@ class VoiceManager:
         except Exception as exc:
             logger.debug("VoiceManager: provider.stop() failed: %s", exc)
         logger.info("VoiceManager: stopped current speech reason=%s caller=%s", reason, caller)
+        # Emit INTERRUPTED state if bridge available
+        if self._bridge is not None:
+            try:
+                self._bridge.emit_error("Speech interrupted", "Interrupted")
+            except Exception as exc:
+                logger.debug("Bridge state emit failed: %s", exc)
 
     def cancel_all(self) -> None:
-        """Stop current speech and clear the entire queue."""
+        """Stop current speech and clear the entire queue.
+
+        Generation-safe: captures the current generation and only clears
+        the queue if no new speak() has been called since (i.e., the
+        generation hasn't changed). This prevents a race where an old
+        task's cleanup cancels a newer task's speech.
+        """
+        with self._generation_lock:
+            target_generation = self._generation
+        # Check if generation changed before proceeding
+        with self._generation_lock:
+            if self._generation != target_generation:
+                logger.debug("VoiceManager: cancel_all skipped — newer speech enqueued (gen=%d vs target=%d)",
+                             self._generation, target_generation)
+                return
+
         self.stop(reason="voice_manager.cancel_all", caller="voice_manager.cancel_all")
         drained = 0
         with self._queue_lock:
@@ -303,6 +335,7 @@ class VoiceManager:
                     similarity_boost=self._voice_similarity(),
                     style=self._voice_style(),
                     speaker_boost=self._voice_speaker_boost(),
+                    speed=self._voice_speed(),
                 )
                 logger.info(
                     "VoiceManager: ElevenLabs provider created "
@@ -329,7 +362,23 @@ class VoiceManager:
             msg += f": {reason}"
         self._diagnostics.append(msg)
         logger.warning("VoiceManager: %s", msg)
-        self._provider = self._system_provider()
+        try:
+            self._provider = self._system_provider()
+            logger.info("VoiceManager: System provider initialized successfully")
+        except Exception as exc:
+            logger.error("VoiceManager: Failed to initialize system provider: %s", exc)
+            # As a last resort, create a minimal no-op provider
+            from voice.provider import VoiceProvider
+            class SilentProvider(VoiceProvider):
+                def speak(self, text: str) -> bool:
+                    logger.warning("VoiceManager: SilentProvider - no audio output available: %s", text[:40])
+                    return True
+                def stop(self) -> None:
+                    pass
+                @property
+                def is_playing(self) -> bool:
+                    return False
+            self._provider = SilentProvider()
 
     def _fallback_to_piper(self, reason: str = "") -> None:
         """Switch to the local Piper provider (optimal offline fallback).
@@ -342,7 +391,7 @@ class VoiceManager:
             return  # already using piper
         piper = self._piper_provider()
         if not piper.model_available:
-            msg = f"Switching to Piper (local) voice provider"
+            msg = f"Piper voice model missing ({piper.model_path}) — skipping to system voice"
             if reason:
                 msg += f": {reason}"
             self._diagnostics.append(msg)
@@ -387,6 +436,12 @@ class VoiceManager:
             self._current_text = text
             self._interrupted = False
             start = time.monotonic()
+            # Emit SPEAKING state
+            if self._bridge is not None:
+                try:
+                    self._bridge.emit_speaking("Speaking...")
+                except Exception as exc:
+                    logger.debug("Bridge state emit failed: %s", exc)
             started_hook = self.on_utterance_started
             if started_hook is not None:
                 try:
@@ -396,6 +451,12 @@ class VoiceManager:
             try:
                 success = self._speak_with_fallback(text)
             finally:
+                # Emit DONE state after speaking
+                if self._bridge is not None:
+                    try:
+                        self._bridge.emit_done("Done speaking")
+                    except Exception as exc:
+                        logger.debug("Bridge state emit failed: %s", exc)
                 finished_hook = self.on_utterance_finished
                 if finished_hook is not None:
                     try:
@@ -529,7 +590,7 @@ class VoiceManager:
         ).strip().casefold()
 
     def _system_provider(self) -> SystemProvider:
-        return SystemProvider(voice_id=self._voice_id())
+        return SystemProvider(voice_id="Microsoft Zira Desktop")
 
     def _piper_provider(self) -> PiperProvider:
         return PiperProvider(
@@ -597,3 +658,12 @@ class VoiceManager:
             if isinstance(val, str):
                 return val.casefold() in ("true", "1", "yes")
         return None
+
+    def _voice_speed(self) -> float:
+        val = getattr(self._settings, "voice_speed", None)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+        return 1.25

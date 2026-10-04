@@ -223,10 +223,16 @@ class Parser:
 
     # Vision / screen understanding commands
     _READ_SCREEN = ("what's on my screen", "what is on my screen", "what do you see",
-                    "read screen", "read the screen", "whats on my screen")
+                    "read screen", "read the screen", "whats on my screen",
+                    "what's on screen", "what is on screen", "show me the screen")
     _DESCRIBE_SCREEN = ("describe screen", "describe the screen", "describe what you see",
-                        "describe my screen")
+                        "describe my screen", "tell me what's on screen")
     _CLICK_ELEMENT = ("click", "tap", "press", "click on")
+    _DOUBLE_CLICK_ELEMENT = ("double click", "double tap", "double-click")
+    _RIGHT_CLICK_ELEMENT = ("right click", "right-click", "context click")
+    _DRAG_ELEMENT = ("drag", "drag to", "move")
+    _SCROLL_SCREEN = ("scroll down", "scroll up", "scroll", "page down", "page up")
+    _TYPE_INTO = ("type into", "type in", "enter", "input")
     _FIND_ELEMENT = ("find", "locate", "where is")
     _READ_PDF = ("read pdf", "read this pdf", "ocr pdf", "extract text from pdf",
                  "read pdf file")
@@ -236,6 +242,7 @@ class Parser:
                    "read error dialog", "read the error")
     _FILL_FORM = ("fill form", "fill field", "type into", "fill in",
                   "enter text in")
+    _HOVER_ELEMENT = ("hover", "hover over", "move to")
 
     # Security / pentest commands
     _PENTEST_REPORT = ("create pentest report", "create penetration test report", "generate pentest report", "create report")
@@ -1363,6 +1370,66 @@ class Parser:
                 return ParsedCommand(raw_text=raw_text, intent="click_element",
                                      entities={"target": self._extract_rest_raw(raw_text, verb)})
 
+        # "double click <text>" / "double tap <text>"
+        for verb in ("double click", "double tap", "double-click"):
+            if normalized.startswith(verb):
+                target = normalized[len(verb):].strip()
+                if not target:
+                    continue
+                return ParsedCommand(raw_text=raw_text, intent="double_click_element",
+                                     entities={"target": self._extract_rest_raw(raw_text, verb)})
+
+        # "right click <text>"
+        for verb in ("right click", "right-click", "context click"):
+            if normalized.startswith(verb):
+                target = normalized[len(verb):].strip()
+                if not target:
+                    continue
+                return ParsedCommand(raw_text=raw_text, intent="right_click_element",
+                                     entities={"target": self._extract_rest_raw(raw_text, verb)})
+
+        # "drag <source> to <target>" / "drag <text>"
+        for verb in ("drag to", "drag"):
+            if normalized.startswith(verb):
+                target = normalized[len(verb):].strip()
+                if not target:
+                    continue
+                # Check for "drag X to Y" pattern
+                if " to " in target:
+                    parts = target.split(" to ", 1)
+                    return ParsedCommand(raw_text=raw_text, intent="drag_element",
+                                         entities={"source": parts[0].strip(), "target": parts[1].strip()})
+                return ParsedCommand(raw_text=raw_text, intent="drag_element",
+                                     entities={"target": self._extract_rest_raw(raw_text, verb)})
+
+        # "scroll down/up" / "scroll"
+        for verb in ("scroll down", "scroll up", "scroll", "page down", "page up"):
+            if normalized.startswith(verb):
+                if "down" in verb or verb == "page down":
+                    direction = "down"
+                elif "up" in verb or verb == "page up":
+                    direction = "up"
+                else:
+                    direction = "down"
+                return ParsedCommand(raw_text=raw_text, intent="scroll_screen",
+                                     entities={"direction": direction})
+
+        # "type into <field> <text>" / "type in <field> <text>"
+        for verb in ("type into", "type in", "enter", "input"):
+            if normalized.startswith(verb):
+                target = normalized[len(verb):].strip()
+                if not target:
+                    continue
+                # Expect "field value" or just "text"
+                rest_raw = self._extract_rest_raw(raw_text, verb)
+                entities = {}
+                if rest_raw:
+                    parts = rest_raw.split(None, 1)
+                    entities["field"] = parts[0]
+                    if len(parts) > 1:
+                        entities["value"] = parts[1]
+                return ParsedCommand(raw_text=raw_text, intent="type_into", entities=entities)
+
         # "find <text>" / "locate <text>" — only match for UI elements
         # (containing a keyword like "button", "field", "icon", etc.)
         # or if "find" / "locate" / "where is" is followed by a
@@ -1382,6 +1449,15 @@ class Parser:
                 if self._looks_like_ui_element(target):
                     return ParsedCommand(raw_text=raw_text, intent="find_element",
                                          entities={"target": self._extract_rest_raw(raw_text, "find")})
+
+        # "hover <text>" / "hover over <text>"
+        for verb in ("hover over", "hover", "move to"):
+            if normalized.startswith(verb):
+                target = normalized[len(verb):].strip()
+                if not target:
+                    continue
+                return ParsedCommand(raw_text=raw_text, intent="hover_element",
+                                     entities={"target": self._extract_rest_raw(raw_text, verb)})
 
         # "read pdf <path>" / "ocr pdf <path>"
         for phrase in self._READ_PDF:

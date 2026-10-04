@@ -58,27 +58,20 @@ from voice.transcript_quality import is_pathological as _is_pathological, known_
 logger = logging.getLogger(__name__)
 
 # Default minimum final confidence for acceptance (matches the Vosk gate).
-# FIX-VOICE-003: lowered from 0.35 to 0.30 to accept more valid commands.
-# The Speech Intelligence Layer will still reject garbage via corroborated_low().
-DEFAULT_CONFIDENCE_THRESHOLD = 0.30
+# Lowered from 0.45 to 0.35 to work better with Whisper base model.
+DEFAULT_CONFIDENCE_THRESHOLD = 0.35
 
 # PART 2: evidence-based rescue for short / known commands.  When a clean
 # transcript of a *known* command falls below the numeric threshold it is
 # accepted on evidence (clean text + known app/command + acceptable per-word
 # confidence + voiced duration), NOT by lowering the threshold globally.
-# FIX-VOICE-003: lowered thresholds to accept more valid commands.
-CORROBORATED_MIN_CONFIDENCE = 0.15
+CORROBORATED_MIN_CONFIDENCE = 0.25
 CORROBORATED_MIN_WORD_CONFIDENCE = 0.10
-CORROBORATED_MIN_VOICED_SECONDS = 0.20
+CORROBORATED_MIN_VOICED_SECONDS = 0.25
 # FIX 4: never spend a second full decode on a blip.  Below this much
 # measured speech a retry decodes the same near-empty audio and can only
 # hallucinate differently at full CPU cost.
-MIN_RETRY_VOICED_SECONDS = 0.15
-
-# FIX-VOICE-003: Ollama connection timeout in seconds.  Short timeout so
-# unreachable Ollama doesn't freeze simple commands.  The reasoner already
-# has its own timeout, but this is the initial connection attempt.
-OLLAMA_CONNECTION_TIMEOUT = 3.0
+MIN_RETRY_VOICED_SECONDS = 0.20
 
 # NOTE: no initial prompt is used (see _decode_kwargs): a prompt is echoed
 # back as a fake transcript when the audio signal is weak — confirmed in
@@ -90,9 +83,8 @@ _MAX_PARTIAL_SECONDS = 20.0
 
 # VOICE-FIX: buffers below this RMS are near-silence (gate-zeroed / empty
 # mic) and must fail fast instead of burning a full Whisper decode that
-# returns hallucinations.  0.005 ≈ -46 dBFS — well below soft speech after
-# the speech-normalization stage (~0.02+), well above digital silence.
-_SILENCE_RMS_THRESHOLD = 0.005
+# returns hallucinations.  Raised from 0.005 to 0.01 for stricter gate.
+_SILENCE_RMS_THRESHOLD = 0.01
 
 
 def _looks_like_speech(text: str) -> bool:
@@ -118,7 +110,7 @@ def _buffer_rms(buffer: bytes) -> float:
 
 
 def _model_size() -> str:
-    return os.getenv("JARVIS_WHISPER_MODEL", "base")
+    return os.getenv("JARVIS_WHISPER_MODEL", "small")
 
 
 def _model_language() -> str | None:
@@ -140,7 +132,7 @@ _model_lock = threading.Lock()
 def _get_shared_model():
     """Load the shared Faster-Whisper model once (thread-safe).
 
-    Configurable via ``JARVIS_WHISPER_MODEL`` (default ``base``),
+    Configurable via ``JARVIS_WHISPER_MODEL`` (default ``small``),
     ``JARVIS_WHISPER_LANG`` (default ``en``) and ``JARVIS_WHISPER_THREADS``.
     """
     global _shared_model
@@ -233,11 +225,11 @@ class WhisperRecognizer:
         confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
         min_text_chars: int = 2,
         min_text_words: int = 1,
-        single_word_min_confidence: float = 0.6,
+        single_word_min_confidence: float = 0.5,
         enable_partials: bool = True,
         partial_interval_ms: float = 1200.0,
         vad_filter: bool = True,
-        beam_size: int = 2,
+        beam_size: int = 3,
         temperature: float = 0.0,
         retry_on_low_confidence: bool = True,
         retry_temperature: float = 0.2,
@@ -258,7 +250,7 @@ class WhisperRecognizer:
         self._enable_partials = bool(enable_partials)
         self._partial_interval_ms = float(partial_interval_ms)
         self._vad_filter = bool(vad_filter)
-        self._beam_size = max(1, int(beam_size))
+        self._beam_size = max(1, min(int(beam_size), 3))
         self._temperature = float(temperature)
         self._retry_on_low_confidence = bool(retry_on_low_confidence)
         self._retry_temperature = float(retry_temperature)
@@ -396,14 +388,14 @@ class WhisperRecognizer:
             logger.error("Whisper PCM conversion failed: %s", exc, exc_info=True)
             return None
 
-    def _decode_kwargs(self, retry: bool = False) -> dict:
+    def _decode_kwargs(self, retry: bool = False, action_retry: bool = False) -> dict:
         """Decode settings for the authoritative pass.
 
         The primary pass uses a small beam (fast on CPU) + timestamps for
-        per-word probabilities, language pinned to English, no initial
-        prompt (a prompt is echoed back as a fake transcript when the audio
-        signal is weak — confirmed in production logs).  Indian-English
-        support comes from the language pin, not the prompt.
+        per-word probabilities, language pinned to English. An initial prompt
+        with common command phrases improves proper noun recognition
+        (e.g., "YouTube", "Chrome", "Python") without causing hallucinations
+        on weak audio because the capture VAD already owns endpointing.
         The primary pass sets ``vad_filter=False``: the external capture
         VAD already owns endpointing, and Whisper's internal Silero (fixed
         threshold 0.5 / 2 s min-silence defaults) has been observed deleting
@@ -412,12 +404,36 @@ class WhisperRecognizer:
         The retry pass deliberately changes the settings (sampling
         temperature, still no VAD filter) so a command the strict pass
         rejected has a real chance of being rescued.
+        The action_retry pass uses even more permissive settings for
+        semantically valid action commands.
 
-        Latency note: beam/best_of are clamped to <= 2 — beam 5 on CPU
+        Latency note: beam/best_of are clamped to <= 3 — beam 5 on CPU
         int8 costs seconds per utterance with negligible accuracy gain on
         short commands.  The configured values are honoured up to the cap.
         """
-        beam = max(1, min(int(self._beam_size), 2))
+        beam = max(1, min(int(self._beam_size), 3))
+        
+        # Initial prompt with common commands to improve proper noun recognition
+        initial_prompt = (
+            "Open YouTube, open Chrome, open browser, play music, "
+            "search Python, what is Python, tell me a joke, "
+            "volume up, volume down, scroll down, click, type."
+        )
+        
+        if action_retry:
+            # Most permissive: higher temperature, no prompt bias, greedy-ish
+            return {
+                "beam_size": 1,
+                "best_of": 1,
+                "temperature": 0.4,
+                "without_timestamps": False,
+                "word_timestamps": self._word_timestamps,
+                "vad_filter": False,
+                "initial_prompt": None,
+                "condition_on_previous_text": False,
+                "repetition_penalty": 1.2,
+                "no_repeat_ngram_size": 3,
+            }
         if retry:
             return {
                 "beam_size": beam,
@@ -428,7 +444,7 @@ class WhisperRecognizer:
                 "vad_filter": False,
                 "initial_prompt": None,
                 "condition_on_previous_text": False,
-                "repetition_penalty": 1.3,
+                "repetition_penalty": 1.5,
                 "no_repeat_ngram_size": 3,
             }
         return {
@@ -442,9 +458,9 @@ class WhisperRecognizer:
             # partial preview below; the authoritative final always decodes
             # the whole capture buffer.
             "vad_filter": False,
-            "initial_prompt": None,
+            "initial_prompt": initial_prompt,
             "condition_on_previous_text": False,
-            "repetition_penalty": 1.3,
+            "repetition_penalty": 1.5,
             "no_repeat_ngram_size": 3,
         }
 
@@ -564,7 +580,7 @@ class WhisperRecognizer:
         )
 
     def _transcribe_detailed(
-        self, buffer: bytes, retry: bool = False,
+        self, buffer: bytes, retry: bool = False, action_retry: bool = False,
     ) -> tuple[str, float, tuple[tuple[str, float], ...], tuple[tuple[str, float], ...], float | None]:
         """Full authoritative decode returning text, overall confidence, and
         the per-word / per-sentence confidence metrics.  Never raises."""
@@ -577,7 +593,7 @@ class WhisperRecognizer:
             model = self._ensure_model()
             with self._decode_lock:
                 segments, _info = model.transcribe(
-                    audio, language=self._language, **self._decode_kwargs(retry=retry)
+                    audio, language=self._language, **self._decode_kwargs(retry=retry, action_retry=action_retry)
                 )
                 segs = list(segments)
         except Exception as exc:
@@ -680,7 +696,85 @@ class WhisperRecognizer:
                     final.text, final.confidence,
                     retry_final.text, retry_final.confidence,
                 )
+
+        # VOICE-FIX: Second retry pass for action commands that are
+        # semantically valid but still below confidence threshold. This uses
+        # even more permissive settings (higher temperature, no initial prompt)
+        # to rescue commands like "open YouTube" that may have been misrecognized.
+        if (
+            self._retry_on_low_confidence
+            and not final.accepted
+            and final.rejected_reason == "low confidence"
+            and bool(final.text and final.text.strip())
+            and not _is_pathological(final.text)
+            and self._looks_like_action_command(final.text)
+            and (
+                voiced_seconds is None
+                or voiced_seconds >= MIN_RETRY_VOICED_SECONDS
+            )
+        ):
+            r2_text, r2_conf, r2_words, r2_sent, r2_min = self._transcribe_detailed(
+                buffer, retry=True, action_retry=True
+            )
+            retry2_final = self._gate(
+                r2_text, r2_conf, duration_ms,
+                word_confidences=r2_words,
+                sentence_confidences=r2_sent,
+                min_word_confidence=r2_min,
+                pass_used="whisper-retry2-action",
+                voiced_seconds=voiced_seconds,
+            )
+            if self._retry_corrupted(final, retry2_final):
+                logger.warning(
+                    "RETRY2 PASS (action) rejected as corrupt/divergent: %r (%.3f) -> "
+                    "%r (%.3f) — discarding retry",
+                    final.text, final.confidence,
+                    retry2_final.text, retry2_final.confidence,
+                )
+            elif retry2_final.accepted or retry2_final.confidence > final.confidence:
+                logger.info(
+                    "RETRY2 PASS (action) rescued low-confidence action command: %r (%.3f) -> "
+                    "%r (%.3f, accepted=%s)",
+                    final.text, final.confidence,
+                    retry2_final.text, retry2_final.confidence, retry2_final.accepted,
+                )
+                final = retry2_final
+            elif retry2_final.text != final.text:
+                logger.info(
+                    "RETRY2 PASS (action) did not improve: %r (%.3f) vs %r (%.3f)",
+                    final.text, final.confidence,
+                    retry2_final.text, retry2_final.confidence,
+                )
         return final
+
+    def _looks_like_action_command(self, text: str) -> bool:
+        """Check if text looks like a computer-control action command.
+        This is used to trigger a second retry pass for action commands."""
+        text_lower = text.lower().strip()
+        if not text_lower:
+            return False
+
+        # Action verb patterns that indicate a computer-control command
+        action_patterns = [
+            r'^(open|launch|start|run|go to)\s+\w+',
+            r'^(search|find|look up|google)\s+(for\s+)?\w+',
+            r'^(search|find|look up)\s+\w+\s+(for|on|in)\s+\w+',
+            r'^(play|pause|resume|stop)\s+\w+',
+            r'^(play|pause|resume|stop)\s+(the\s+)?(first|second|third|next|previous|video|song|music)\b',
+            r'^(click|tap|press)\s+(the\s+)?(first|second|third|link|button|video|result)\b',
+            r'^(scroll|page)\s+(up|down|top|bottom)\b',
+            r'^(go|navigate)\s+(back|forward|home)\b',
+            r'^(type|enter|input)\s+',
+            r'^(volume|mute|unmute)\s+(up|down|on|off)?\b',
+            r'^(close|quit|exit|stop|kill)\s+\w+',
+            r'^(focus|switch to|bring to)\s+\w+',
+        ]
+
+        import re
+        for pattern in action_patterns:
+            if re.search(pattern, text_lower):
+                return True
+        return False
 
     def _retry_corrupted(self, original: FinalTranscript, retry: FinalTranscript) -> bool:
         """PART 6: True when the retry result is a decoder hallucination and

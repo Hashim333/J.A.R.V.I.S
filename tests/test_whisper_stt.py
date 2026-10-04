@@ -181,7 +181,7 @@ class TestWhisperDecodeSettings(unittest.TestCase):
         _feed(stt)
         stt.finalize()
 
-        # VOICE-FIX: CPU-efficient final decode — small beam (<= 2;
+        # VOICE-FIX: CPU-efficient final decode — small beam (<= 3;
         # beam 5 on CPU int8 costs seconds per utterance) + timestamps +
         # per-word probabilities, language pinned, no initial prompt
         # (avoids the prompt being echoed back as a fake transcript when
@@ -191,14 +191,15 @@ class TestWhisperDecodeSettings(unittest.TestCase):
         # ("VAD filter removed 00:01.424" -> empty transcript).
         kwargs = factory.model.calls[0]
         self.assertEqual(kwargs["language"], "en")
-        self.assertLessEqual(kwargs["beam_size"], 2)
+        self.assertLessEqual(kwargs["beam_size"], 3)
         self.assertGreaterEqual(kwargs["beam_size"], 1)
         self.assertEqual(kwargs["temperature"], 0.0)
         self.assertEqual(kwargs["without_timestamps"], False)
         self.assertEqual(kwargs["word_timestamps"], True)
         self.assertIs(kwargs["vad_filter"], False)
         self.assertEqual(kwargs["condition_on_previous_text"], False)
-        self.assertIsNone(kwargs["initial_prompt"])
+        # Updated: initial_prompt now set with common commands for better recognition
+        self.assertIn("Open YouTube", kwargs["initial_prompt"])
 
     def test_partial_decode_stays_fast_greedy(self) -> None:
         factory = _Factory([_Seg("hello world", avg_logprob=-0.1)])

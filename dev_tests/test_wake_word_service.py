@@ -1,11 +1,10 @@
 """
 dev_tests/test_wake_word_service.py
 
-Unit tests for the WakeWordService adapter under VOICE-PIPELINE-004.
+Unit tests for the passive MONDAY wake-word adapter.
 
-JARVIS now operates WITHOUT a wake word (direct listening while IDLE), so the
-wake detector stays disabled: ``start`` / ``reset_for_wake`` are no-ops and
-Vosk never loads.  ``stop`` / ``shutdown`` remain defensive pause calls.
+The adapter arms the existing DuplexVoiceSession only. It must never create a
+second microphone consumer; ``stop`` / ``shutdown`` remain pause calls.
 """
 
 import unittest
@@ -37,28 +36,29 @@ class TestWakeWordServiceLifecycle(unittest.TestCase):
         """Verify the service starts in the STOPPED state."""
         self.assertEqual(self.service.status, ServiceStatus.STOPPED)
 
-    def test_initialize_is_noop_and_does_not_arm_detection(self) -> None:
-        """initialize() succeeds and never arms the wake detector."""
+    def test_lifecycle_arms_shared_wake_detection(self) -> None:
+        """Service startup arms the already-owned DuplexVoiceSession."""
         self.manager.initialize_all()
         self.manager.start_all()
         self.assertEqual(self.service.status, ServiceStatus.RUNNING)
-        self.mock_session.start_wake_detection.assert_not_called()
+        self.mock_session.start_wake_detection.assert_called_once()
+        self.mock_session.reset_wake.assert_called_once()
         self.mock_mic_stream.set_consumer.assert_not_called()
         self.manager.stop_all()
 
-    def test_start_is_noop_under_direct_listening(self) -> None:
-        """VOICE-PIPELINE-004: start() must NOT arm wake detection."""
+    def test_start_arms_wake_detection(self) -> None:
+        """start() re-arms passive wake detection on the shared session."""
         self.service.start()
-        self.mock_session.start_wake_detection.assert_not_called()
-        self.mock_session.reset_wake.assert_not_called()
+        self.mock_session.start_wake_detection.assert_called_once()
+        self.mock_session.reset_wake.assert_called_once()
         self.mock_mic_stream.set_consumer.assert_not_called()
 
-    def test_reset_for_wake_is_inert(self) -> None:
-        """VOICE-PIPELINE-004: reset_for_wake() must not re-arm detection."""
+    def test_reset_for_wake_rearms_detection(self) -> None:
+        """Returning to idle clears stale audio and re-arms wake detection."""
         self.service._command_audio = object()
         self.service.reset_for_wake()
-        self.mock_session.start_wake_detection.assert_not_called()
-        self.mock_session.reset_wake.assert_not_called()
+        self.mock_session.start_wake_detection.assert_called_once()
+        self.mock_session.reset_wake.assert_called_once()
         self.assertIsNone(self.service._command_audio)
 
     def test_stop_pauses_detection_defensively(self) -> None:

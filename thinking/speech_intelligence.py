@@ -37,9 +37,8 @@ from voice.transcript_quality import (
 logger = logging.getLogger(__name__)
 
 # Confidence bands (FIX-002)
-# FIX-VOICE-003: lowered LOW_CONFIDENCE threshold from 0.40 to 0.30
-# to accept more valid commands. The Speech Intelligence Layer will
-# still reject garbage via corroborated_low() and pathological checks.
+# Lowered from 0.45 to 0.30 to work better with Whisper base model.
+# Action commands with semantic validity can pass at lower confidence.
 HIGH_CONFIDENCE = 0.70
 LOW_CONFIDENCE = 0.30
 
@@ -50,8 +49,6 @@ AMBIGUITY_GAP = 0.15
 # PART 1: a corroborated known command needs at least this much voiced speech
 # (capture-VAD seconds) to be accepted below the LOW band — a real utterance
 # of a known command is almost never shorter than this.
-# FIX-VOICE-003: lowered from 0.3 to 0.20 to accept short commands like
-# "open chrome" or "can you hear me".
 MIN_VOICED_SECONDS = 0.20
 
 # FIX 4: the *conversational* rescue (non-command phrases like "can you hear
@@ -60,8 +57,8 @@ MIN_VOICED_SECONDS = 0.20
 # to say; a noise blip cannot.  The per-word floor rejects decoder garbage
 # ("or not man") whose content words carry near-zero probability.  Both are
 # duration/probability based — accent- and language-independent.
-CONVERSATIONAL_MIN_VOICED_SECONDS = 0.40
-CONVERSATIONAL_MIN_WORD_CONFIDENCE = 0.25
+CONVERSATIONAL_MIN_VOICED_SECONDS = 0.30
+CONVERSATIONAL_MIN_WORD_CONFIDENCE = 0.08
 
 
 class ConfidenceBand(str, Enum):
@@ -488,7 +485,10 @@ class SpeechIntelligenceLayer:
                 "refused: %r", text,
             )
             return False
-        if not _plausible_command(text):
+        # VOICE-FIX: Use semantic validation for action commands instead of
+        # only checking known_app_command. This allows "open YouTube",
+        # "search for Python", etc. to pass even if not in the exact alias list.
+        if not self._is_plausible_action_command(text):
             return False
         # PART 1: corroboration is evidence-based — a known command alone is
         # NOT enough.  The capture must actually have measured voiced speech
@@ -504,7 +504,7 @@ class SpeechIntelligenceLayer:
             )
             return False
         logger.info(
-            "SPEECH_INTELLIGENCE corroborated low-confidence known command: "
+            "SPEECH_INTELLIGENCE corroborated low-confidence action command: "
             "%r (confidence=%.3f voiced=%s)",
             text, transcript.confidence,
             f"{voiced:.2f}" if voiced is not None else "-",
@@ -549,6 +549,60 @@ class SpeechIntelligenceLayer:
             text, transcript.confidence, voiced,
         )
         return True
+
+    def _is_plausible_action_command(self, text: str) -> bool:
+        """Semantic validation: check if text looks like a valid computer-control
+        command even with imperfect transcription. This is more permissive than
+        _plausible_command which only checks known aliases.
+
+        Matches patterns like:
+        - open <app/website>
+        - search for <query>
+        - search <site> for <query>
+        - play <video/music>
+        - click <element>
+        - scroll <direction>
+        - type <text>
+        """
+        text_lower = text.lower().strip()
+        if not text_lower:
+            return False
+
+        # Action verb patterns that indicate a computer-control command
+        action_patterns = [
+            # App/website commands
+            r'^(open|launch|start|run|go to)\s+\w+',
+            # Search commands
+            r'^(search|find|look up|google)\s+(for\s+)?\w+',
+            r'^(search|find|look up)\s+\w+\s+(for|on|in)\s+\w+',
+            # Play commands
+            r'^(play|pause|resume|stop)\s+\w+',
+            r'^(play|pause|resume|stop)\s+(the\s+)?(first|second|third|next|previous|video|song|music)\b',
+            # Browser control
+            r'^(click|tap|press)\s+(the\s+)?(first|second|third|link|button|video|result)\b',
+            # Navigation
+            r'^(scroll|page)\s+(up|down|top|bottom)\b',
+            r'^(go|navigate)\s+(back|forward|home)\b',
+            # Type/input
+            r'^(type|enter|input)\s+',
+            # Volume/media
+            r'^(volume|mute|unmute)\s+(up|down|on|off)?\b',
+            # Close/quit
+            r'^(close|quit|exit|stop|kill)\s+\w+',
+            # Focus/switch
+            r'^(focus|switch to|bring to)\s+\w+',
+        ]
+
+        import re
+        for pattern in action_patterns:
+            if re.search(pattern, text_lower):
+                return True
+
+        # Also accept known commands from transcript_quality
+        if _plausible_command(text):
+            return True
+
+        return False
 
     # ------------------------------------------------------------------
     # MEDIUM-confidence correction

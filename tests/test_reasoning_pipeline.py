@@ -41,11 +41,11 @@ class FakeReasoner:
         self.reason_calls = 0
         self.continue_calls = 0
 
-    def reason(self, text, memory=None, world_state=None, awareness=None):  # noqa: ARG002
+    def reason(self, text, memory=None, world_state=None, awareness=None, budget=None):  # noqa: ARG002
         self.reason_calls += 1
         return self._plans.pop(0) if self._plans else None
 
-    def continue_(self, original_text, question, answer, memory=None, world_state=None, awareness=None):  # noqa: ARG002
+    def continue_(self, original_text, question, answer, memory=None, world_state=None, awareness=None, budget=None):  # noqa: ARG002
         self.continue_calls += 1
         return self._continue_plans.pop(0) if self._continue_plans else None
 
@@ -68,7 +68,8 @@ class TestReasonerActPath(unittest.TestCase):
                 confidence=0.92, reasoning="wants chrome focused",
             ),
         ])
-        response = _pipeline(reasoner=reasoner, executor=executor).process("focus chrome")
+        # Use a command the deterministic parser won't handle
+        response = _pipeline(reasoner=reasoner, executor=executor).process("please focus my chrome window")
 
         self.assertTrue(response.success)
         self.assertEqual(len(executor.plans), 1)
@@ -106,7 +107,8 @@ class TestReasonerActPath(unittest.TestCase):
             ),
         ])
         pipeline = _pipeline(reasoner=reasoner)
-        response = pipeline.process("open an app")
+        # Use a command the deterministic parser won't handle
+        response = pipeline.process("I want to open an application")
 
         self.assertTrue(response.needs_clarification)
         self.assertEqual(response.clarification_question, "Which app should I open?")
@@ -125,7 +127,8 @@ class TestReasonerAskContinuation(unittest.TestCase):
             )],
         )
         pipeline = _pipeline(reasoner=reasoner, executor=executor)
-        first = pipeline.process("open the browser")
+        # Use a command the deterministic parser won't handle
+        first = pipeline.process("I'd like to open the browser please")
         self.assertTrue(first.needs_clarification)
 
         response = pipeline.resolve_context("chrome")
@@ -133,6 +136,7 @@ class TestReasonerAskContinuation(unittest.TestCase):
         self.assertEqual(len(executor.plans), 1)
         self.assertEqual(executor.plans[0].intent, "focus_app")
         self.assertAlmostEqual(response.confidence, 0.9)
+        self.assertEqual(response.reasoning, "user chose chrome")
         self.assertEqual(reasoner.continue_calls, 1)
 
 
@@ -157,41 +161,41 @@ class TestReasonerRetry(unittest.TestCase):
 
     def test_auto_retries_once_with_alternative(self) -> None:
         executor = FakeExecutor([
-            Response(success=False, message="Spotify is not installed.", data={}),
-            Response(success=True, message="Opened spotify.com.", data={}),
+            Response(success=False, message="App not installed.", data={}),
+            Response(success=True, message="Opened in browser.", data={}),
         ])
         reasoner = FakeReasoner([
             ReasonedPlan(
-                mode="ACT", intent="open_app", entities={"app_name": "spotify"},
+                mode="ACT", intent="open_app", entities={"app_name": "myapp"},
                 confidence=0.9,
                 alternatives=[Alternative(
-                    intent="open_website", entities={"website": "spotify.com"},
-                    description="open Spotify in the browser",
+                    intent="open_website", entities={"website": "myapp.com"},
+                    description="open in browser",
                 )],
             ),
         ])
-        response = self._retry_pipeline(executor, reasoner).process("open spotify")
+        response = self._retry_pipeline(executor, reasoner).process("launch myapp")
 
         self.assertTrue(response.success)
         self.assertEqual([p.intent for p in executor.plans], ["open_app", "open_website"])
-        self.assertEqual(response.message, "Opened spotify.com.")
+        self.assertEqual(response.message, "Opened in browser.")
 
     def test_retry_fails_explains_and_asks(self) -> None:
         executor = FakeExecutor([
-            Response(success=False, message="Spotify is not installed.", data={}),
+            Response(success=False, message="App not installed.", data={}),
             Response(success=False, message="The website didn't load.", data={}),
         ])
         reasoner = FakeReasoner([
             ReasonedPlan(
-                mode="ACT", intent="open_app", entities={"app_name": "spotify"},
+                mode="ACT", intent="open_app", entities={"app_name": "myapp"},
                 confidence=0.9,
                 alternatives=[Alternative(
-                    intent="open_website", entities={"website": "spotify.com"},
-                    description="open Spotify in the browser",
+                    intent="open_website", entities={"website": "myapp.com"},
+                    description="open in browser",
                 )],
             ),
         ])
-        response = self._retry_pipeline(executor, reasoner).process("open spotify")
+        response = self._retry_pipeline(executor, reasoner).process("launch myapp")
 
         self.assertFalse(response.success)
         self.assertTrue(response.data.get("retry_attempted"))
@@ -212,7 +216,8 @@ class TestReasonerFallback(unittest.TestCase):
     def test_reasoner_returns_none_falls_back(self) -> None:
         executor = FakeExecutor([Response(success=True, message="done.", data={})])
         reasoner = FakeReasoner([])  # reason() returns None
-        response = _pipeline(reasoner=reasoner, executor=executor).process("focus chrome")
+        # Use a command the deterministic parser won't handle
+        response = _pipeline(reasoner=reasoner, executor=executor).process("please focus my chrome window")
 
         self.assertTrue(response.success)
         self.assertEqual(len(executor.plans), 1)

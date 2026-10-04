@@ -27,7 +27,7 @@ class LocalWakeWordDetector:
     The Vosk model is loaded once and shared across all detection calls.
     """
 
-    _WAKE_PHRASE = "jarvis"
+    _WAKE_PHRASE = "monday"
     _VOSK_SAMPLE_RATE = 16000
     _SAMPLE_WIDTH = 2
     _CHANNELS = 1
@@ -77,7 +77,7 @@ class LocalWakeWordDetector:
             last_500_preserved = duration_ms >= 500.0
             pcm_bytes = self._ensure_16khz(audio_bytes, sample_rate)
 
-            recognizer = vosk.KaldiRecognizer(self._model, self._VOSK_SAMPLE_RATE, '["jarvis"]')
+            recognizer = vosk.KaldiRecognizer(self._model, self._VOSK_SAMPLE_RATE, '["monday", "hey"]')
             start_ns = time.perf_counter_ns()
             recognizer.AcceptWaveform(pcm_bytes)
             result = json.loads(recognizer.FinalResult())
@@ -98,7 +98,7 @@ class LocalWakeWordDetector:
                     tokens,
                 )
                 return False
-            matched = "jarvis" in tokens[:2]
+            matched = self._WAKE_PHRASE in tokens[:2]
             logger.debug(
                 "contains_wake_word DECISION: matched=%s tokens=%r",
                 matched, tokens,

@@ -332,6 +332,32 @@ class Planner:
                 f"'{parsed.entities.get('field', '')}' "
                 f"with '{parsed.entities.get('value', '')}'."
             ),
+            "double_click_element": lambda: (
+                f"User said {raw!r}. Intent is to double-click on "
+                f"'{parsed.entities.get('target', '')}'."
+            ),
+            "right_click_element": lambda: (
+                f"User said {raw!r}. Intent is to right-click on "
+                f"'{parsed.entities.get('target', '')}'."
+            ),
+            "drag_element": lambda: (
+                f"User said {raw!r}. Intent is to drag "
+                f"'{parsed.entities.get('source', parsed.entities.get('target', ''))}' "
+                f"{'to ' + parsed.entities.get('target', '') if parsed.entities.get('source') else ''}."
+            ),
+            "scroll_screen": lambda: (
+                f"User said {raw!r}. Intent is to scroll "
+                f"{parsed.entities.get('direction', 'down')} on screen."
+            ),
+            "type_into": lambda: (
+                f"User said {raw!r}. Intent is to type "
+                f"'{parsed.entities.get('value', '')}' into "
+                f"'{parsed.entities.get('field', '')}'."
+            ),
+            "hover_element": lambda: (
+                f"User said {raw!r}. Intent is to hover over "
+                f"'{parsed.entities.get('target', '')}'."
+            ),
             "format_drive": lambda: (
                 f"User said {raw!r}. Intent is to format a drive. "
                 f"Drive: {parsed.entities.get('drive', '')}. "
@@ -796,6 +822,69 @@ class Planner:
             f"Fill form field {parsed.entities.get('field', '')} with {parsed.entities.get('value', '')}.",
         )]
 
+    # ------------------------------------------------------------------
+    # Extended screen interaction builders
+    # ------------------------------------------------------------------
+
+    def _build_double_click_element(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step(
+            "double_click_element", None,
+            dict(parsed.entities),
+            f"Double-click on {parsed.entities.get('target', 'element')}.",
+        )]
+
+    def _build_right_click_element(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step(
+            "right_click_element", None,
+            dict(parsed.entities),
+            f"Right-click on {parsed.entities.get('target', 'element')}.",
+        )]
+
+    def _build_drag_element(self, parsed: ParsedCommand) -> list[Step]:
+        source = parsed.entities.get('source', '')
+        target = parsed.entities.get('target', '')
+        if source and target:
+            desc = f"Drag {source} to {target}."
+        elif target:
+            desc = f"Drag {target}."
+        else:
+            desc = "Drag element."
+        return [self._step(
+            "drag_element", None,
+            dict(parsed.entities),
+            desc,
+        )]
+
+    def _build_scroll_screen(self, parsed: ParsedCommand) -> list[Step]:
+        direction = parsed.entities.get('direction', 'down')
+        return [self._step(
+            "scroll_screen", None,
+            dict(parsed.entities),
+            f"Scroll {direction} on screen.",
+        )]
+
+    def _build_type_into(self, parsed: ParsedCommand) -> list[Step]:
+        field = parsed.entities.get('field', '')
+        value = parsed.entities.get('value', '')
+        if field and value:
+            desc = f"Type '{value}' into {field}."
+        elif field:
+            desc = f"Type into {field}."
+        else:
+            desc = "Type text."
+        return [self._step(
+            "type_into", None,
+            dict(parsed.entities),
+            desc,
+        )]
+
+    def _build_hover_element(self, parsed: ParsedCommand) -> list[Step]:
+        return [self._step(
+            "hover_element", None,
+            dict(parsed.entities),
+            f"Hover over {parsed.entities.get('target', 'element')}.",
+        )]
+
     @staticmethod
     def _step(
         action: str,
@@ -883,6 +972,12 @@ class Planner:
         "read_screen": _build_read_screen,
         "describe_screen": _build_describe_screen,
         "click_element": _build_click_element,
+        "double_click_element": _build_double_click_element,
+        "right_click_element": _build_right_click_element,
+        "drag_element": _build_drag_element,
+        "scroll_screen": _build_scroll_screen,
+        "type_into": _build_type_into,
+        "hover_element": _build_hover_element,
         "find_element": _build_find_element,
         "read_pdf": _build_read_pdf,
         "ocr_image": _build_ocr_image,

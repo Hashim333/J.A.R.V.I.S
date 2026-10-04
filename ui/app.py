@@ -1,313 +1,234 @@
-"""
-ui/app.py
-
-JARVIS Desktop Shell — entry point and shutdown coordinator.
-
-Thread model
-------------
-- **Qt MainThread** runs the Qt event loop, Bridge signal handlers, and
-  QML property updates.
-- **system-monitor** daemon thread polls CPU/RAM/GPU/Disk/Battery via
-  psutil/WMI and sends results to Bridge via auto-queued Qt signals.
-- **world-model** daemon thread drives domain-specific collectors.
-- **working-memory** daemon thread evicts expired entries every 60s.
-- All background threads receive a ``threading.Event`` stop signal and
-  are joined with a timeout during shutdown.
-
-Shutdown sequence
------------------
-1. SystemMonitor.stop()     → signal, join (5s timeout)
-2. WorldModel.stop()        → signal, join (5s timeout)
-3. WorkingMemory.stop()     → signal, join (5s timeout)
-4. app.quit()               → QCoreApplication::quit()
-
-Each step is timed and failures are logged.
-"""
-
+"""Qt Widgets shell, tray, and application shutdown."""
 from __future__ import annotations
 
 import logging
 import sys
-import time
 from pathlib import Path
 
-from PySide6.QtCore import QUrl, Qt, QObject, QSize
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QSurfaceFormat, QAction
-from PySide6.QtWidgets import QApplication, QWidget, QSystemTrayIcon, QMenu
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtGui import QAction, QIcon, QPainter, QPixmap
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMenu, QSystemTrayIcon
 
 from ui.bridge import Bridge
-from ui.system_monitor import SystemMonitor
 from ui.window_manager import WindowManager
 
 logger = logging.getLogger(__name__)
+ACTIVATION_SERVER_NAME = "monday-ui-rebuild"
+
+
+class OrbWindow(QMainWindow):
+    """Frameless transparent window hosting the Monday orb WebGL visualization."""
+
+    def __init__(self, bridge: Bridge, request_quit) -> None:
+        super().__init__()
+        self._request_quit = request_quit
+        self.setWindowTitle("MONDAY")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.resize(400, 400)
+
+        self.view = QWebEngineView(self)
+        self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.view.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.view.page().setBackgroundColor(Qt.GlobalColor.transparent)
+        self.setCentralWidget(self.view)
+
+        # Allow local file access and JavaScript for file:// URLs
+        settings = self.view.page().settings()
+        settings.setAttribute(settings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(settings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(settings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(settings.WebAttribute.WebGLEnabled, True)
+        settings.setAttribute(settings.WebAttribute.Accelerated2dCanvasEnabled, True)
+
+        self.channel = QWebChannel(self)
+        self.channel.registerObject("bridge", bridge)
+        self.view.page().setWebChannel(self.channel)
+
+        orb_path = Path(__file__).with_name("monday_orb.html").resolve()
+        self.view.setUrl(QUrl.fromLocalFile(str(orb_path)))
+
+    def closeEvent(self, event) -> None:
+        event.accept()
+        self._request_quit()
 
 
 class JarvisApp:
-    """Top-level application controller for the JARVIS desktop shell.
+    """Own the Qt application, placeholder window, tray, and quit path."""
 
-    Owns the shutdown sequence for all background services.
-    """
-
-    def __init__(self) -> None:
-        existing = QApplication.instance()
-        if existing is not None:
-            self.app = existing
-        else:
-            self.app = QApplication(sys.argv)
+    def __init__(self, start_minimized: bool = False) -> None:
+        self.app = QApplication.instance() or QApplication(sys.argv)
         self.app.setApplicationName("JARVIS")
         self.app.setOrganizationName("JARVIS")
         self.app.setQuitOnLastWindowClosed(False)
 
-        # Application icon (taskbar / alt-tab / window title bar).
-        # Drawn programmatically — the orange orb is the JARVIS brand mark.
         self._app_icon = QIcon(self._make_tray_pixmap(256))
         self.app.setWindowIcon(self._app_icon)
-
-        fmt = QSurfaceFormat()
-        fmt.setSamples(4)
-        fmt.setSwapInterval(1)
-        QSurfaceFormat.setDefaultFormat(fmt)
-
         self.bridge = Bridge()
         self.wm = WindowManager(self.bridge)
         self.tray: QSystemTrayIcon | None = None
         self._tray_icon: QPixmap | None = None
-
-        self._setup_tray()
-        self._wire_bridge()
-        self._create_window()
-        self.wm.start()
-
-        self._monitor = SystemMonitor(self.bridge)
-        self._monitor.start()
-
-        self._world_model = None
-        self._working_memory = None
-
-    # ── Tray ──────────────────────────────────────────────────────────
-
-    def _setup_tray(self) -> None:
+        self.window = OrbWindow(self.bridge, self.bridge.quit_app)
+        self.window.setWindowIcon(self._app_icon)
+        self.wm.set_window(self.window)
+        self.bridge.quitRequested.connect(
+            self._quit, Qt.ConnectionType.QueuedConnection,
+        )
+        self._start_activation_server()
+        tray_ready = self._setup_tray()
+        if start_minimized and tray_ready:
+            self.wm.hide_window()
+        else:
+            self.wm.show_window()
+        self._idle_resource_timer = QTimer(self.app)
+        self._idle_resource_timer.setInterval(5 * 60 * 1000)
+        self._idle_resource_timer.timeout.connect(self._sample_idle_resources)
+        self._idle_resource_timer.start()
+    def _setup_tray(self) -> bool:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             logger.info("System tray not available")
-            return
+            return False
 
         self._tray_icon = self._make_tray_pixmap(22)
-
-        self.tray = QSystemTrayIcon()
-        self.tray.setIcon(QIcon(self._tray_icon))
-        self.tray.setToolTip("JARVIS")
-
+        self.tray = QSystemTrayIcon(QIcon(self._tray_icon), self.app)
+        self.tray.setToolTip("MONDAY")
         menu = QMenu()
 
-        show_action = QAction("Show JARVIS")
-        show_action.triggered.connect(self._tray_show)
+        show_action = QAction("Show MONDAY", menu)
+        show_action.triggered.connect(self.wm.show_window)
         menu.addAction(show_action)
 
-        orb_action = QAction("Floating Orb")
-        orb_action.triggered.connect(self._tray_orb)
-        menu.addAction(orb_action)
+        hide_action = QAction("Hide MONDAY", menu)
+        hide_action.triggered.connect(self.wm.hide_window)
+        menu.addAction(hide_action)
 
+        autostart_action = QAction("Launch at login", menu)
+        autostart_action.setCheckable(True)
+        autostart_action.setChecked(self._autostart_enabled())
+        autostart_action.toggled.connect(self._set_autostart)
+        menu.addAction(autostart_action)
         menu.addSeparator()
 
-        quit_action = QAction("Quit")
-        quit_action.triggered.connect(self._quit)
+        quit_action = QAction("Quit", menu)
+        quit_action.triggered.connect(self.bridge.quit_app)
         menu.addAction(quit_action)
 
         self.tray.setContextMenu(menu)
-
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
+        return True
 
-    def _make_tray_pixmap(self, size: int) -> QPixmap:
-        pix = QPixmap(size, size)
-        pix.fill(Qt.transparent)
-        from PySide6.QtGui import QBrush, QColor
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QBrush(QColor("#ff7b00")))
-        p.setPen(Qt.NoPen)
-        p.drawEllipse(1, 1, size - 2, size - 2)
-        p.end()
-        return pix
+    def _autostart_enabled(self) -> bool:
+        if sys.platform != "win32":
+            return False
+        import winreg
 
-    def _tray_activated(self, reason: int) -> None:
-        if reason == QSystemTrayIcon.DoubleClick:
-            self.wm.set_mode("fullscreen")
-        elif reason == QSystemTrayIcon.Trigger:
-            self.wm.set_mode("floating_orb")
-
-    def _tray_show(self) -> None:
-        self.wm.set_mode("fullscreen")
-
-    def _tray_orb(self) -> None:
-        self.wm.set_mode("floating_orb")
-
-    # ── Bridge wiring ─────────────────────────────────────────────────
-
-    def _wire_bridge(self) -> None:
-        self.wm.modeChanged.connect(self.bridge.set_window_mode)
-        self.bridge.windowModeChanged.connect(self.wm.set_mode)
-        self.bridge.minimizeRequested.connect(self._minimize_window)
-
-    # ── Window / QML UI ──────────────────────────────────────────────
-
-    def _create_window(self) -> None:
-        self._engine = QQmlApplicationEngine()
-        self._engine.rootContext().setContextProperty("bridge", self.bridge)
-
-        # Lightweight presentation shell (replaces the heavy v4 dashboard;
-        # v4_deprecated/ is retained off-path for reference).  Backend and
-        # bridge contract are unchanged — the shell only renders
-        # bridge.coreState / subtitle signals.
-        qml_path = Path(__file__).parent / "qml" / "light" / "Shell.qml"
-        self._engine.load(QUrl.fromLocalFile(str(qml_path)))
-
-        root_objects = self._engine.rootObjects()
-        if not root_objects:
-            logger.critical("No QML root objects loaded — UI will not be visible")
-            return
-
-        self.window = root_objects[0]
-        self.window.setMinimumSize(QSize(480, 320))
-
-        # The QML top-level window is a QWindow (on Windows). QWindow has no
-        # setWindowIcon() — that is a QWidget-only API. The icon is provided
-        # process-wide via QApplication.setWindowIcon() plus (on Windows) the
-        # native AppUserModelID association in _apply_windows_taskbar_identity().
-        if isinstance(self.window, QWidget):
-            self.window.setWindowIcon(self._app_icon)
-        else:
-            self._apply_windows_taskbar_identity()
-
-        # Force WS_EX_APPWINDOW so the frameless window has a taskbar button
-        self._ensure_taskbar_icon()
-        self.window.showNormal()
-
-        self.wm.set_fullscreen_window(self.window)
-
-    def _ensure_taskbar_icon(self) -> None:
-        """Apply WS_EX_APPWINDOW extended style for proper taskbar integration."""
         try:
-            import ctypes
-            from ctypes import wintypes
-            hwnd = int(self.window.winId())
-            GWL_EXSTYLE = -20
-            WS_EX_APPWINDOW = 0x00040000
-            user32 = ctypes.windll.user32
-            current = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            if current & WS_EX_APPWINDOW:
-                return
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, current | WS_EX_APPWINDOW)
-            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0004 | 0x0001)
-            logger.info("Applied WS_EX_APPWINDOW for taskbar integration")
-        except Exception as exc:
-            logger.warning("Failed to set WS_EX_APPWINDOW: %s", exc)
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+            ) as key:
+                winreg.QueryValueEx(key, "MONDAY")
+            return True
+        except FileNotFoundError:
+            return False
 
-    def _apply_windows_taskbar_identity(self) -> None:
-        """Associate the process with a Windows AppUserModelID.
-
-        On Windows, the taskbar groups and icons windows by AppUserModelID.
-        Without an explicit ID, a QML top-level window (QWindow) shows the
-        default Python/blank taskbar icon regardless of
-        QApplication.setWindowIcon(). Setting an explicit process-level ID
-        makes the taskbar use the QApplication icon.
-
-        Uses the native Win32 API — QWindow does not expose setWindowIcon()
-        (that is a QWidget-only API), so this is the correct mechanism for a
-        QML-based window.
-        """
+    def _set_autostart(self, enabled: bool) -> None:
         if sys.platform != "win32":
             return
-        try:
-            import ctypes
-            shell32 = ctypes.windll.shell32
-            proc = getattr(
-                shell32, "SetCurrentProcessExplicitAppUserModelID", None
-            )
-            if proc is None:
-                logger.debug("AppUserModelID API not available")
-                return
-            proc.argtypes = [ctypes.c_wchar_p]
-            proc.restype = ctypes.c_long
-            hr = proc("JARVIS.Desktop")
-            logger.info("Set Windows AppUserModelID (hr=0x%08x)", hr)
-        except Exception as exc:
-            logger.warning("Failed to set AppUserModelID: %s", exc)
+        import winreg
 
-    # ── Window minimize ───────────────────────────────────────────────
+        registry_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, registry_path, 0, winreg.KEY_SET_VALUE,
+        ) as key:
+            if enabled:
+                pythonw = Path(sys.executable).with_name("pythonw.exe")
+                if not pythonw.exists():
+                    pythonw = Path(sys.executable)
+                run_script = Path(__file__).resolve().parents[1] / "run.py"
+                command = f'"{pythonw}" "{run_script}" --autostart'
+                winreg.SetValueEx(key, "MONDAY", 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, "MONDAY")
+                except FileNotFoundError:
+                    pass
 
-    def _minimize_window(self) -> None:
-        if not hasattr(self, 'window') or self.window is None:
+    def _start_activation_server(self) -> None:
+        self._activation_server = QLocalServer(self.app)
+        QLocalServer.removeServer(ACTIVATION_SERVER_NAME)
+        if not self._activation_server.listen(ACTIVATION_SERVER_NAME):
+            logger.error("Cannot listen for second-instance activation: %s", self._activation_server.errorString())
+            return
+        self._activation_server.newConnection.connect(self._accept_activation)
+
+    def _accept_activation(self) -> None:
+        while self._activation_server.hasPendingConnections():
+            client = self._activation_server.nextPendingConnection()
+            if client.bytesAvailable():
+                self._handle_activation(client)
+            else:
+                client.readyRead.connect(
+                    lambda client=client: self._handle_activation(client),
+                )
+            client.disconnected.connect(client.deleteLater)
+
+    def _handle_activation(self, client: QLocalSocket) -> None:
+        if bytes(client.readAll()).strip().upper() == b"SHOW":
+            self.bridge.show_window()
+            client.write(b"OK")
+            client.flush()
+
+    def _sample_idle_resources(self) -> None:
+        if self.bridge.coreState != "idle":
             return
         try:
-            import ctypes
-            hwnd = int(self.window.winId())
-            SW_MINIMIZE = 6
-            ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)
-            self.window.setWindowState(self.window.windowState() | Qt.WindowMinimized)
-        except Exception as exc:
-            logger.warning("WinAPI minimize failed, falling back to Qt: %s", exc)
-            self.window.showMinimized()
+            import psutil
 
-    # ── Run ───────────────────────────────────────────────────────────
+            cpu = psutil.cpu_percent(interval=None)
+            ram = psutil.virtual_memory().percent
+        except Exception as exc:
+            logger.debug("Idle resource sample unavailable: %s", exc)
+            return
+        logger.info("Idle resource sample (5m): CPU %.1f%% RAM %.1f%%", cpu, ram)
+        if self.tray is not None:
+            self.tray.setToolTip(f"MONDAY | idle CPU {cpu:.0f}% | RAM {ram:.0f}%")
+
+    def _make_tray_pixmap(self, size: int) -> QPixmap:
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        from PySide6.QtGui import QBrush, QColor
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QBrush(QColor("#ff7b00")))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(1, 1, size - 2, size - 2)
+        painter.end()
+        return pixmap
+
+    def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+            QSystemTrayIcon.ActivationReason.Trigger,
+        ):
+            self.wm.show_window()
 
     def run(self) -> int:
         logger.info("JARVIS UI: Qt event loop starting")
         return self.app.exec()
 
     def _quit(self) -> None:
-        logger.info("JARVIS UI: shutdown started")
-        shutdown_start = time.monotonic()
-
-        # Stop timers first to prevent re-entrant calls during shutdown
-        self.bridge.stop_timers()
-        self.wm.stop_timers()
-
-        self._stop_service(
-            "SystemMonitor", self._monitor.stop,
-            lambda: self._monitor is not None,
-        )
-
-        if self._world_model is not None:
-            self._stop_service("WorldModel", self._world_model.stop)
-
-        if self._working_memory is not None:
-            self._stop_service("WorkingMemory", self._working_memory.stop)
-
-        total_ms = (time.monotonic() - shutdown_start) * 1000
-        logger.info("JARVIS UI: shutdown complete in %.0fms", total_ms)
-
-        from PySide6.QtCore import QCoreApplication
-        QCoreApplication.quit()
-
-    @staticmethod
-    def _stop_service(
-        name: str, stop_fn, guard=None, timeout: float = 5.0,
-    ) -> None:
-        """Signal a background service to stop and wait for its thread.
-
-        Logs start, duration, and any failure to stop within *timeout*.
-        """
-        if guard is not None and not guard():
-            logger.debug("JARVIS: %s not running — skipped", name)
-            return
-        start = time.monotonic()
-        try:
-            stop_fn()
-        except Exception as exc:
-            logger.error(
-                "JARVIS: %s.stop() raised %s: %s",
-                name, type(exc).__name__, exc,
-            )
-            return
-        elapsed = (time.monotonic() - start) * 1000
-        if elapsed >= timeout * 1000:
-            logger.warning(
-                "JARVIS: %s stop took %.0fms (may have timed out)",
-                name, elapsed,
-            )
-        else:
-            logger.info(
-                "JARVIS: %s stopped in %.0fms", name, elapsed,
-            )
+        logger.info("JARVIS UI: shutdown requested")
+        self._activation_server.close()
+        QLocalServer.removeServer(ACTIVATION_SERVER_NAME)
+        self.app.quit()

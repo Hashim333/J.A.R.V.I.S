@@ -5,3 +5,10 @@ __pycache__/
 logs/
 *.log
 .env
+.env
+check_canvas*.py
+test_*.txt
+orb_*.png
+test_view*.png
+orb_screenshots/
+screenshots/

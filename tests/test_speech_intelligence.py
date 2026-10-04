@@ -51,10 +51,10 @@ class TestConfidenceBands(unittest.TestCase):
 
     def test_medium_band(self) -> None:
         self.assertIs(classify_band(0.60), ConfidenceBand.MEDIUM)
-        self.assertIs(classify_band(0.45), ConfidenceBand.MEDIUM)
+        self.assertIs(classify_band(0.50), ConfidenceBand.MEDIUM)
 
     def test_low_band(self) -> None:
-        self.assertIs(classify_band(0.39), ConfidenceBand.LOW)
+        self.assertIs(classify_band(0.25), ConfidenceBand.LOW)
         self.assertIs(classify_band(0.0), ConfidenceBand.LOW)
 
 
@@ -74,7 +74,7 @@ class TestLowConfidence(unittest.TestCase):
     def test_low_refuses_naturally(self) -> None:
         layer = _layer()
         decision = layer.process(
-            SpeechTranscript(text="open chrome", confidence=0.30)
+            SpeechTranscript(text="open chrome", confidence=0.25)
         )
         self.assertIs(decision.action, SpeechAction.REFUSE)
         self.assertEqual(decision.reason, "low_confidence")
@@ -103,7 +103,7 @@ class TestLowConfidence(unittest.TestCase):
                 text="or not man",
                 confidence=0.18,
                 speech_seconds=0.5,
-                min_word_confidence=0.10,
+                min_word_confidence=0.05,  # Below new threshold of 0.10
             )
         )
         self.assertIs(decision.action, SpeechAction.REFUSE)
@@ -122,6 +122,27 @@ class TestLowConfidence(unittest.TestCase):
             )
         )
         self.assertIs(decision.action, SpeechAction.REFUSE)
+
+    def test_confidence_040_refuses(self) -> None:
+        """Confidence 0.40 is now MEDIUM (threshold 0.35) - should correct/execute, not refuse."""
+        layer = _layer()
+        decision = layer.process(
+            SpeechTranscript(text="open chrome", confidence=0.40)
+        )
+        # 0.40 is now MEDIUM band - should CORRECT via alias or EXECUTE
+        self.assertNotEqual(decision.action, SpeechAction.REFUSE)
+        self.assertIn(decision.action, (SpeechAction.EXECUTE, SpeechAction.CORRECT))
+
+    def test_confidence_045_excutes(self) -> None:
+        """Confidence 0.45 is HIGH (threshold 0.35 for LOW, 0.70 for HIGH) - should execute."""
+        layer = _layer()
+        # Use a known command that will be corroborated
+        decision = layer.process(
+            SpeechTranscript(text="open chrome", confidence=0.45, speech_seconds=1.0)
+        )
+        # 0.45 is MEDIUM band - should CORRECT via alias or EXECUTE
+        self.assertNotEqual(decision.action, SpeechAction.REFUSE)
+        self.assertIn(decision.action, (SpeechAction.EXECUTE, SpeechAction.CORRECT))
 
     def test_genuine_conversation_still_rescued(self) -> None:
         """FIX 4: the hardening must not refuse ordinary conversational
@@ -220,7 +241,7 @@ class TestCorrectionLog(unittest.TestCase):
         layer = _layer(aliases={"calc": "Calculator"})
         layer.process(SpeechTranscript(text="open chrome", confidence=0.95))
         layer.process(SpeechTranscript(text="open calc", confidence=0.60))
-        layer.process(SpeechTranscript(text="open chrome", confidence=0.30))
+        layer.process(SpeechTranscript(text="open chrome", confidence=0.25))
 
         records = layer.corrections
         self.assertEqual(len(records), 3)

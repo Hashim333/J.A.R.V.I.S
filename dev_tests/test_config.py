@@ -60,8 +60,6 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(s.voice_similarity, 0.75)
         self.assertEqual(s.voice_style, 0.0)
         self.assertTrue(s.voice_speaker_boost)
-        self.assertFalse(s.push_to_talk_enabled)
-        self.assertEqual(s.push_to_talk_key, "F9")
         self.assertEqual(s.ollama_base_url, "http://localhost:11434")
         self.assertEqual(s.model, "qwen2.5:3b")
         self.assertEqual(s.timeout, 30)
@@ -81,8 +79,6 @@ class TestConfigLoading(unittest.TestCase):
                     "VOICE_SIMILARITY": "0.9",
                     "VOICE_STYLE": "0.2",
                     "VOICE_SPEAKER_BOOST": "false",
-                    "PUSH_TO_TALK_ENABLED": "true",
-                    "PUSH_TO_TALK_KEY": "Ctrl+Space",
                 },
             ):
                 import config.settings as settings_module
@@ -98,8 +94,6 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(s.voice_similarity, 0.9)
         self.assertEqual(s.voice_style, 0.2)
         self.assertFalse(s.voice_speaker_boost)
-        self.assertTrue(s.push_to_talk_enabled)
-        self.assertEqual(s.push_to_talk_key, "Ctrl+Space")
 
     def test_ollama_config_loading(self) -> None:
         """Ollama-specific env vars load correctly."""
@@ -175,8 +169,6 @@ class TestConfigValidation(unittest.TestCase):
             voice_similarity=0.75,
             voice_style=0.0,
             voice_speaker_boost=True,
-            push_to_talk_enabled=False,
-            push_to_talk_key="F9",
             mic_sensitivity=1.0,
             mic_agc_enabled=True,
             mic_agc_target_level=0.15,
@@ -375,8 +367,6 @@ class TestConfigSummary(unittest.TestCase):
             voice_similarity=0.75,
             voice_style=0.0,
             voice_speaker_boost=True,
-            push_to_talk_enabled=False,
-            push_to_talk_key="F9",
             mic_sensitivity=1.0,
             mic_agc_enabled=True,
             mic_agc_target_level=0.15,
@@ -409,8 +399,6 @@ class TestConfigSummary(unittest.TestCase):
             voice_similarity=0.75,
             voice_style=0.0,
             voice_speaker_boost=True,
-            push_to_talk_enabled=False,
-            push_to_talk_key="F9",
             mic_sensitivity=1.0,
             mic_agc_enabled=True,
             mic_agc_target_level=0.15,
@@ -443,8 +431,6 @@ class TestFlatAliases(unittest.TestCase):
         self.assertEqual(m.VOICE_SIMILARITY, m.settings.voice_similarity)
         self.assertEqual(m.VOICE_STYLE, m.settings.voice_style)
         self.assertEqual(m.VOICE_SPEAKER_BOOST, m.settings.voice_speaker_boost)
-        self.assertEqual(m.PUSH_TO_TALK_ENABLED, m.settings.push_to_talk_enabled)
-        self.assertEqual(m.PUSH_TO_TALK_KEY, m.settings.push_to_talk_key)
 
 
 class TestGetDiagnostics(unittest.TestCase):

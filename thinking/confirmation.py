@@ -136,6 +136,13 @@ class ConfirmationEngine:
         return "Are you sure you want me to close all open applications?"
 
     @staticmethod
+    def _build_click_element(entities: dict[str, Any]) -> str:
+        target = entities.get("target", "")
+        if target:
+            return f"Click '{target}'? Are you sure?"
+        return "Click this element? Are you sure?"
+
+    @staticmethod
     def _generic(intent: str, entities: dict[str, Any]) -> str:
         return "Are you sure you want me to do that?"
 
@@ -151,4 +158,5 @@ class ConfirmationEngine:
         "format_drive": _build_format_drive,
         "kill_process": _build_kill_process,
         "close_all_apps": _build_close_all_apps,
+        "click_element": _build_click_element,
     }

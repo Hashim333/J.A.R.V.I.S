@@ -65,9 +65,8 @@ _PREROLL_BYTES = 1200 * 16000 * 2 // 1000
 _CAPTURE_PREROLL_BYTES = 200 * 16000 * 2 // 1000
 
 # Cap how long a single capture can run regardless of caller timeout.
-# FIX-VOICE-003: reduced from 30s to 10s - any command longer than 10s is
-# pathological and should be rejected.
-_MAX_CAPTURE_SECONDS = 10.0
+# Increased from 10s to 15s to allow for longer natural speech.
+_MAX_CAPTURE_SECONDS = 15.0
 
 # PART 14: a capture callback (the inline ``on_partial`` on the microphone
 # thread) must never stall mic capture.  If one invocation exceeds this
@@ -85,14 +84,15 @@ _MAX_FINALIZE_SECONDS = 12.0
 
 # Pause-tolerant end-of-speech hangover. Brief mid-sentence pauses should not
 # split one spoken command before Whisper receives the full utterance.
-# VOICE-FIX: 900 ms — long enough to survive natural word gaps, short enough
-# that a finished command finalizes promptly instead of idling.
-_DEFAULT_SILENCE_HANGOVER_MS = 900.0
+# VOICE-FIX: 1500 ms — long enough to survive natural word gaps in longer
+# speech, short enough that a finished command finalizes promptly.
+_DEFAULT_SILENCE_HANGOVER_MS = 1500.0
 
 # FIX-VOICE-005: the shortest "utterance" we treat as speech.  A VAD onset
 # shorter than this (e.g. a 0.03s click / rumble / pre-roll blip) is never
 # sent to the recognizer — the capture is discarded and we keep listening.
-_MIN_UTTERANCE_SECONDS = 0.25
+# VOICE-FIX: reduced from 0.35 to 0.3 to accept shorter but valid commands
+_MIN_UTTERANCE_SECONDS = 0.30
 
 # FIX 4: onset energy gate.  VAD frame-voting alone fires on loud clicks,
 # clacks, and TTS-edge transients (observed: onsets at 93/312 ms idle_wait
@@ -102,9 +102,10 @@ _MIN_UTTERANCE_SECONDS = 0.25
 # are energy-only and accent/language-independent — soft speech in a quiet
 # room passes on the ratio clause, loud-room speech on the absolute clause;
 # only flat low-level noise is rejected.
-_ONSET_ENERGY_WINDOW = 12
+# VOICE-FIX: Relaxed thresholds to accept softer speech onsets
+_ONSET_ENERGY_WINDOW = 16
 _ONSET_MIN_RMS = 0.02
-_ONSET_MIN_SNR = 4.0
+_ONSET_MIN_SNR = 3.0
 _ONSET_MIN_CHUNKS = 4
 
 
@@ -217,6 +218,7 @@ class DuplexVoiceSession:
         max_capture_timeout: float = _MAX_CAPTURE_SECONDS,
         capture_vad: object | None = None,
         barge_in_vad: object | None = None,
+        bridge=None,
     ) -> None:
         self._sample_rate = sample_rate
         self._echo_canceller = echo_canceller or EchoCanceller(sample_rate=sample_rate)
@@ -242,6 +244,7 @@ class DuplexVoiceSession:
         self.on_wake_word = on_wake_word
         self.on_barge_in = on_barge_in
         self._max_capture_timeout = float(max_capture_timeout)
+        self._bridge = bridge
 
         # PART 14: clamp the inline capture callback on the mic thread.  One
         # overrun disables inline invocation (queue delivery continues); the
@@ -252,12 +255,13 @@ class DuplexVoiceSession:
         # FIX-VOICE-003: reduced default silence hangover to 600ms for fast
         # command completion. Natural pauses between words are handled by
         # the VAD's onset buffer, not the hangover.
+        # FASTER: reduced onset_frames from 5 to 3 for ~90ms onset instead of 150ms
         self._capture_vad = capture_vad or SileroVAD(
             on_speech_started=self._on_capture_speech_started,
             on_speech_ended=self._on_capture_speech_ended,
             sample_rate=sample_rate,
             silence_hangover_ms=silence_hangover_ms,
-            onset_frames=5,
+            onset_frames=3,
         )
         # Barge-in VAD (echo-cancelled signal, so JARVIS cannot trigger it).
         # VOICE-FIX: 200 ms minimum + 5-frame onset so residual TTS echo /
@@ -729,6 +733,9 @@ class DuplexVoiceSession:
             timeout, self._max_capture_timeout,
         )
 
+        # Emit LISTENING state (idle wait phase)
+        self._emit_state("LISTENING", "Waiting for speech...", 0.0)
+
         capture_started_at = time.monotonic()
         with self._lock:
             # VOICE-FIX: reset the VAD BEFORE arming the capture.  The mic
@@ -768,7 +775,7 @@ class DuplexVoiceSession:
                 if remaining <= 0:
                     break
                 try:
-                    event = self._events.get(timeout=min(remaining, 0.2))
+                    event = self._events.get(timeout=min(remaining, 0.1))
                 except queue.Empty:
                     partial = self._safe_partial()
                     if partial and on_partial:
@@ -799,6 +806,8 @@ class DuplexVoiceSession:
                         "LATENCY stage=capture_start->speech_start %.0f ms",
                         idle_wait_ms,
                     )
+                    # Emit LISTENING with active audio level
+                    self._emit_state("LISTENING", "Recording...", audio_level=0.8)
                 elif kind == "cancelled":
                     if not self._event_is_current(event, gen):
                         continue
@@ -825,7 +834,7 @@ class DuplexVoiceSession:
                     )
                     break
                 try:
-                    event = self._events.get(timeout=min(remaining, 0.2))
+                    event = self._events.get(timeout=min(remaining, 0.1))
                 except queue.Empty:
                     partial = self._safe_partial()
                     if partial and on_partial:
@@ -846,6 +855,8 @@ class DuplexVoiceSession:
                     if not self._event_is_current(event, gen):
                         continue
                     logger.info("SPEECH ENDED at t=%.3fs — finalizing", event[1])
+                    # Emit UNDERSTANDING state (STT processing)
+                    self._emit_state("UNDERSTANDING", "Processing speech...")
                     speech_ended_at = event[1]
                     voiced = max(
                         0.0, speech_ended_at - speech_started_at
@@ -1097,6 +1108,25 @@ class DuplexVoiceSession:
                 logger.warning("Transcriber discard failed: %s", exc)
             self._drain_events()
         logger.info("Capture state reset (gen=%d) — ready to re-arm", self._current_gen())
+
+    def get_audio_level(self) -> float:
+        """Get current audio level for UI visualization (0.0-1.0)."""
+        try:
+            if self._onset_rms:
+                return min(1.0, max(self._onset_rms) * 10.0)  # Scale for visibility
+        except Exception:
+            pass
+        return 0.0
+
+    def _emit_state(self, state: str, caption: str = "", audio_level: float | None = None) -> None:
+        """Emit UI state via bridge if available."""
+        if self._bridge is not None:
+            try:
+                if audio_level is None:
+                    audio_level = self.get_audio_level()
+                self._bridge.emit_state(state, caption=caption, audio_level=audio_level)
+            except Exception as exc:
+                logger.debug("Bridge state emit failed: %s", exc)
 
     # ------------------------------------------------------------------
     # State access

@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_BRAIN_TIMEOUT = 20.0
-_TIMEOUT_RESULT_GRACE = 1.5
+_BRAIN_TIMEOUT = 60.0
+_TIMEOUT_RESULT_GRACE = 3.0
 
 
 def _task_result(value: str) -> Any:
@@ -47,6 +47,7 @@ class Brain:
         working_memory: Any = None,
         system_awareness: Any = None,
         skill_manager: Any = None,
+        bridge=None,
     ) -> None:
         self._parser = parser
         self._planner = planner
@@ -62,8 +63,10 @@ class Brain:
         self._skill_manager = skill_manager
         self._pipeline: PipelineEngine | None = None
         self._current_future: Future | None = None
+        self._current_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._cancel_requested = False
         self._op_lock = threading.Lock()
+        self._bridge = bridge
 
     def _ensure_pipeline(self) -> None:
         if self._pipeline is not None:
@@ -100,9 +103,15 @@ class Brain:
         with self._op_lock:
             self._cancel_requested = True
             future = self._current_future
+            pool = self._current_pool
         if future is not None and not future.done():
             future.cancel()
             logger.info("Brain: current operation cancelled")
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            with self._op_lock:
+                self._current_pool = None
+                self._current_future = None
 
     @log_duration()
     def _run_with_timeout(self, fn, timeout=_BRAIN_TIMEOUT, cancel_event=None):
@@ -161,6 +170,17 @@ class Brain:
             future.cancel()
             if cancel_event is not None:
                 cancel_event.set()
+            # If cancellation was requested, don't wait for grace window.
+            with self._op_lock:
+                cancelled = self._cancel_requested
+            if cancelled:
+                logger.info("Brain: operation cancelled — skipping grace window")
+                return Response(
+                    success=False,
+                    message="Operation cancelled.",
+                    task_result=_task_result("CANCELLED"),
+                    error="cancelled",
+                )
             # Fast path: the operation may have completed exactly at the
             # deadline — a finished operation must report its real result,
             # never a timeout.
@@ -223,6 +243,12 @@ class Brain:
         speech_confidence: float | None = None,
     ) -> Response:
         self._ensure_pipeline()
+        # Emit THINKING state
+        if self._bridge is not None:
+            try:
+                self._bridge.emit_thinking(f"Processing: {text[:40]}")
+            except Exception as exc:
+                logger.debug("Bridge state emit failed: %s", exc)
         start = stage_entry("brain.process", input_=text)
         try:
             budget = TimeBudget(_BRAIN_TIMEOUT)
@@ -239,6 +265,12 @@ class Brain:
             # reply here so the reasoner's next prompt sees both turns and
             # can resolve references like "it" / "that".
             self._remember_reply(response)
+            # Emit WORKING state for execution
+            if self._bridge is not None and response.success:
+                try:
+                    self._bridge.emit_working("Executing...")
+                except Exception as exc:
+                    logger.debug("Bridge state emit failed: %s", exc)
             return response
         finally:
             stage_exit("brain.process", start)
@@ -247,6 +279,12 @@ class Brain:
     @log_duration()
     def resolve_context(self, answer: str, cancel_event: Any = None) -> Response:
         self._ensure_pipeline()
+        # Emit THINKING state
+        if self._bridge is not None:
+            try:
+                self._bridge.emit_thinking(f"Resolving: {answer[:40]}")
+            except Exception as exc:
+                logger.debug("Bridge state emit failed: %s", exc)
         start = stage_entry("brain.resolve_context", input_=answer)
         try:
             budget = TimeBudget(_BRAIN_TIMEOUT)
@@ -257,6 +295,12 @@ class Brain:
                 cancel_event=cancel_event,
             )
             self._remember_reply(response)
+            # Emit WORKING state for execution
+            if self._bridge is not None and response.success:
+                try:
+                    self._bridge.emit_working("Executing...")
+                except Exception as exc:
+                    logger.debug("Bridge state emit failed: %s", exc)
             return response
         finally:
             stage_exit("brain.resolve_context", start)

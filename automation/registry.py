@@ -51,6 +51,7 @@ class Registry(_BaseRegistry):
             FileManagerHandler,
             KeyboardHandler,
             MouseHandler,
+            ScreenHandler,
             SecurityToolsHandler,
             VisionHandler,
             WindowHandler,
@@ -74,6 +75,7 @@ class Registry(_BaseRegistry):
         file_manager_handler = FileManagerHandler()
         security_handler = SecurityToolsHandler()
         vision_handler = VisionHandler()
+        screen_handler = ScreenHandler()
 
         # Apps: open, close, focus, restart, minimize, maximize, restore, close_all, is_running
         for action in ("open_app", "close_app", "focus_app", "restart_app",
@@ -208,18 +210,29 @@ class Registry(_BaseRegistry):
         ):
             self.register(action, security_handler)
 
-        # Vision / screen understanding
+        # Vision / screen understanding (vision-based)
         for action in (
-            "read_screen",
-            "describe_screen",
-            "click_element",
-            "find_element",
             "read_pdf",
             "ocr_image",
             "read_error",
             "fill_form",
         ):
             self.register(action, vision_handler)
+
+        # Screen interaction (UIA + vision fallback)
+        for action in (
+            "read_screen",
+            "describe_screen",
+            "click_element",
+            "double_click_element",
+            "right_click_element",
+            "drag_element",
+            "scroll_screen",
+            "type_into",
+            "find_element",
+            "hover_element",
+        ):
+            self.register(action, screen_handler)
 
         # System commands
         for action in (

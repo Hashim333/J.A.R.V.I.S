@@ -90,15 +90,20 @@ class BrowserService:
         return self._client
 
     def stop(self) -> bool:
-        """Terminate the managed Chrome instance (does not touch other browsers)."""
+        """Terminate the managed Chrome instance (does not touch other browsers).
+        
+        Note: By default, we do NOT kill the Chrome process on stop,
+        allowing it to persist after JARVIS exits. Call stop(force=True)
+        to actually terminate the browser process.
+        """
         if self._attached_to_existing or self._client is None:
             self._client = None
             self._launch_pid = None
             return True
-        if self._launch_pid is not None:
-            self._terminate_process_tree(self._launch_pid)
-            self._launch_pid = None
+        # By default, do NOT kill the Chrome process - let it persist
+        # The user can call stop(force=True) if they really want to kill it
         self._client = None
+        self._launch_pid = None
         return True
 
     # ------------------------------------------------------------------
@@ -116,14 +121,24 @@ class BrowserService:
             "--disable-sync",
             "--noerrdialogs",
             "--disable-extensions",
+            # Don't close when JARVIS exits - use a separate process group
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--noerrdialogs",
+            "--disable-extensions",
             "about:blank",
         ]
         try:
             self._profile_dir.mkdir(parents=True, exist_ok=True)
+            # Use DETACHED_PROCESS so Chrome survives JARVIS exit
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            DETACHED_PROCESS = 0x00000008
             proc = subprocess.Popen(
                 [executable, *args],
                 shell=False,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
             )
         except OSError as exc:
             raise BrowserServiceError(f"Could not launch managed Chrome: {exc}") from exc
@@ -204,16 +219,20 @@ def get_browser_service() -> BrowserService:
     return _service
 
 
-def stop_browser_service() -> bool:
-    """Stop the process-wide managed browser (safe to call repeatedly)."""
+def stop_browser_service(force: bool = False) -> bool:
+    """Stop the process-wide managed browser (safe to call repeatedly).
+    
+    By default, does NOT kill the Chrome process - it just disconnects.
+    Pass force=True to actually terminate the browser process.
+    """
     global _service
     with _lock:
         if _service is None:
             return True
         try:
-            _service.stop()
+            _service.stop(force=force)
         except Exception as exc:
             logger.warning("BrowserService.stop failed: %s", exc)
         finally:
             _service = None
-    return True
+        return True

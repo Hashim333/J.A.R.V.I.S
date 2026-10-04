@@ -267,16 +267,21 @@ class MicrophoneProcessor:
 
         # 5. AGC — normalize level BEFORE the noise gate so quiet speech
         #    is boosted above the gate threshold instead of being zeroed.
+        # VOICE-FIX: Less aggressive AGC to preserve natural dynamics and
+        # avoid over-amplifying noise which confuses Whisper.
         if self._agc_enabled and rms > 0:
             target_gain = self._agc_target_level / max(rms, 1e-10)
             target_gain = max(0.1, min(target_gain, self._agc_max_gain))
+            # Slower attack/release for more natural speech preservation
+            attack = min(self._agc_attack, 0.15)
+            release = max(self._agc_release, 0.05)
             if target_gain > self._current_gain:
                 self._current_gain += (
-                    (target_gain - self._current_gain) * self._agc_attack
+                    (target_gain - self._current_gain) * attack
                 )
             else:
                 self._current_gain += (
-                    (target_gain - self._current_gain) * self._agc_release
+                    (target_gain - self._current_gain) * release
                 )
             chunk = self._apply_gain(chunk, self._current_gain)
             rms = self._calc_rms(chunk)
@@ -285,13 +290,14 @@ class MicrophoneProcessor:
         # 6. Speech normalization — lift quiet-but-valid speech (above the
         #    gate floor, below the boost ceiling) toward the target RMS so
         #    soft commands clear the noise gate without the AGC maxing out.
+        # VOICE-FIX: Higher boost ceiling and lower target to avoid over-processing
         gate = self._effective_gate_threshold()
         if (
             self._speech_normalization_enabled
             and gate < rms < self._speech_boost_ceiling
         ):
             target_gain = self._speech_target_rms / max(rms, 1e-10)
-            target_gain = max(1.0, min(target_gain, self._agc_max_gain))
+            target_gain = max(1.0, min(target_gain, 3.0))  # Cap boost to 3x
             if target_gain > 1.0:
                 chunk = self._apply_gain(chunk, target_gain)
                 rms = self._calc_rms(chunk)
@@ -302,9 +308,11 @@ class MicrophoneProcessor:
         # quiet consonants, rms > gate*0.5) are attenuated, not destroyed.
         # Hard-zeroing onsets starves Whisper of the first phoneme and
         # collapses confidence / causes hallucinations.
+        # VOICE-FIX: Reduced attenuation for soft speech preservation; increased
+        # floor to gate*0.3 so more quiet consonants survive.
         if self._noise_gate_enabled and rms <= gate:
-            if rms > gate * 0.5:
-                chunk = self._apply_gain(chunk, 0.25)
+            if rms > gate * 0.3:
+                chunk = self._apply_gain(chunk, 0.4)
                 rms = self._calc_rms(chunk)
                 self._running_rms = rms
                 self._audio_level = min(1.0, rms * 5.0)

@@ -45,12 +45,14 @@ class WakeWordService(BaseService):
         wake_word_detected_event: threading.Event,
         microphone_stream: MicrophoneStream | None = None,
         session: Any | None = None,
+        bridge=None,
     ) -> None:
         super().__init__(name="wake_word")
         self._wake_word_detected_event = wake_word_detected_event
         self._microphone_stream = microphone_stream
         self._session = session
         self._command_audio: Any = None
+        self._bridge = bridge
 
     # ------------------------------------------------------------------
     # Configuration
@@ -76,6 +78,9 @@ class WakeWordService(BaseService):
         calls this on every return to idle; the call is intentionally inert.
         """
         self._command_audio = None
+        if self._session is not None:
+            self._session.reset_wake()
+            self._session.start_wake_detection()
 
     def start(self) -> None:
         """No-op under VOICE-PIPELINE-004 (direct listening, no wake word).
@@ -83,7 +88,7 @@ class WakeWordService(BaseService):
         The wake detector must not be armed, so ``start`` never arms it and
         Vosk remains inactive.
         """
-        pass
+        self.reset_for_wake()
 
     def stop(self) -> None:
         """Pause wake-word detection."""
@@ -112,6 +117,12 @@ class WakeWordService(BaseService):
         try:
             self._command_audio = audio_data
             self._wake_word_detected_event.set()
+            # Emit WAKE state
+            if self._bridge is not None:
+                try:
+                    self._bridge.emit_wake("Wake word detected")
+                except Exception as exc:
+                    logger.debug("Bridge state emit failed: %s", exc)
             try:
                 audio_bytes = len(audio_data.frame_data)
             except Exception:

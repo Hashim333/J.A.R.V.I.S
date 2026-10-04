@@ -115,7 +115,7 @@ def test_normal_sentence_accepted():
     assert f.accepted, (f.text, f.confidence, f.rejected_reason)
 
 
-# 6. Indian-English phrasing: language pinned, no prompt echo, accepted
+# 6. Indian-English phrasing: language pinned, prompt with common commands for better recognition
 def test_indian_english_phrasing():
     seen = {}
 
@@ -131,15 +131,17 @@ def test_indian_english_phrasing():
     r.push(_pcm(0.8))
     f = r.finalize(voiced_seconds=0.8)
     assert seen.get("language") == "en"
-    assert seen.get("initial_prompt") is None  # prompt echo hallucination
-    assert seen.get("beam_size", 99) <= 2  # CPU-efficient decode
+    # Updated: initial_prompt now set with common commands for better proper noun recognition
+    assert "Open YouTube" in seen.get("initial_prompt", "")
+    assert seen.get("beam_size", 99) <= 3  # CPU-efficient decode
     assert f.accepted
 
 
 # 7. speech after TTS: echo-cancelled path still captures (preroll kept)
 def test_post_tts_capture_path():
     s = DuplexVoiceSession(sample_rate=16000)
-    assert s._capture_vad.onset_frames >= 5
+    # Updated: onset_frames reduced from 5 to 3 for faster onset
+    assert s._capture_vad.onset_frames >= 3
 
 
 # 8. user interruption during TTS triggers barge-in, TTS residue does not
@@ -359,4 +361,4 @@ def test_decode_beam_capped():
     r.begin()
     r.push(_pcm(0.5))
     r.finalize(voiced_seconds=0.5)
-    assert seen["beam_size"] <= 2
+    assert seen["beam_size"] <= 3

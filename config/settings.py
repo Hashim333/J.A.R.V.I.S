@@ -58,8 +58,7 @@ class Settings:
     voice_similarity: float
     voice_style: float
     voice_speaker_boost: bool
-    push_to_talk_enabled: bool
-    push_to_talk_key: str
+    voice_speed: float
 
     # --- Piper (local, offline TTS fallback) ---
     piper_voice_model_path: str
@@ -181,6 +180,11 @@ def validate_config(s: Settings) -> list[str]:
                 f"{key}={val} is out of range. Must be between 0.0 and 1.0."
             )
 
+    if not 0.7 <= s.voice_speed <= 1.2:
+        msgs.append(
+            f"VOICE_SPEED={s.voice_speed} is out of range. Must be between 0.7 and 1.2."
+        )
+
     if s.mic_sensitivity < 0.0:
         msgs.append(
             f"MIC_SENSITIVITY={s.mic_sensitivity} must be >= 0.0."
@@ -202,7 +206,7 @@ def validate_config(s: Settings) -> list[str]:
         )
 
     if not s.whisper_model:
-        msgs.append("JARVIS_WHISPER_MODEL must not be empty (e.g. 'base').")
+        msgs.append("JARVIS_WHISPER_MODEL must not be empty (e.g. 'small').")
 
     if s.picovoice_access_key and not s.porcupine_keyword and not s.porcupine_keyword_path:
         msgs.append(
@@ -243,6 +247,7 @@ def print_config_summary(s: Settings) -> None:
         f"  Voice Enabled:    {'Yes' if s.voice_enabled else 'No'}",
         f"  Voice ID:         {s.voice_id or '(not set)'}",
         f"  Model:            {s.voice_model}",
+        f"  Speed:            {s.voice_speed:.2f}x",
         f"  API Key:          {masked}",
         f"  Ollama URL:       {s.ollama_base_url}",
         f"  Ollama Model:     {s.model}",
@@ -297,8 +302,7 @@ def _load() -> Settings:
         voice_similarity=_float_env("VOICE_SIMILARITY", 0.75),
         voice_style=_float_env("VOICE_STYLE", 0.0),
         voice_speaker_boost=_bool_env("VOICE_SPEAKER_BOOST", default=True),
-        push_to_talk_enabled=_bool_env("PUSH_TO_TALK_ENABLED", default=False),
-        push_to_talk_key=_str_env("PUSH_TO_TALK_KEY", "F9"),
+        voice_speed=_float_env("VOICE_SPEED", 1.2),
         piper_voice_model_path=_str_env(
             "PIPER_VOICE_MODEL_PATH",
             str(ROOT_DIR / "models" / "piper" / "en_US-lessac-medium.onnx"),
@@ -313,12 +317,12 @@ def _load() -> Settings:
         mic_high_pass_enabled=_bool_env("MIC_HIGH_PASS_ENABLED", default=True),
         mic_high_pass_cutoff_hz=_float_env("MIC_HIGH_PASS_CUTOFF_HZ", 80.0),
         mic_speech_normalization_enabled=_bool_env("MIC_SPEECH_NORMALIZATION", default=True),
-        whisper_model=_str_env("JARVIS_WHISPER_MODEL", "base"),
+        whisper_model=_str_env("JARVIS_WHISPER_MODEL", "small"),
         whisper_language=_str_env("JARVIS_WHISPER_LANG", "en"),
         whisper_threads=int(os.getenv("JARVIS_WHISPER_THREADS", "0") or "0"),
         wake_word_enabled=_bool_env("WAKE_WORD_ENABLED", default=False),
         picovoice_access_key=_str_env("JARVIS_PICOVOICE_ACCESS_KEY", ""),
-        porcupine_keyword=_str_env("JARVIS_PORCUPINE_KEYWORD", "jarvis"),
+        porcupine_keyword=_str_env("JARVIS_PORCUPINE_KEYWORD", "monday"),
         porcupine_keyword_path=_str_env("JARVIS_PORCUPINE_KEYWORD_PATH", ""),
     )
 
@@ -358,8 +362,7 @@ VOICE_STABILITY: float = settings.voice_stability
 VOICE_SIMILARITY: float = settings.voice_similarity
 VOICE_STYLE: float = settings.voice_style
 VOICE_SPEAKER_BOOST: bool = settings.voice_speaker_boost
-PUSH_TO_TALK_ENABLED: bool = settings.push_to_talk_enabled
-PUSH_TO_TALK_KEY: str = settings.push_to_talk_key
+VOICE_SPEED: float = settings.voice_speed
 PIPER_VOICE_MODEL_PATH: str = settings.piper_voice_model_path
 PIPER_VOICE_NAME: str = settings.piper_voice_name
 MIC_SENSITIVITY: float = settings.mic_sensitivity

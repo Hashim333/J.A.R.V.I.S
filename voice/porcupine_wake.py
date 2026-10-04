@@ -9,7 +9,7 @@ a path to a ``.ppn`` model file.  The key and keyword are read from the
 environment / settings:
 
   * ``JARVIS_PICOVOICE_ACCESS_KEY``  — Picovoice access key (required)
-  * ``JARVIS_PORCUPINE_KEYWORD``     — builtin keyword (default ``jarvis``)
+    * ``JARVIS_PORCUPINE_KEYWORD``     — builtin keyword (default ``monday``)
   * ``JARVIS_PORCUPINE_KEYWORD_PATH``— ``.ppn`` model path (overrides keyword)
 
 When no key is configured (or the module/model cannot be loaded) the
@@ -43,7 +43,7 @@ class PorcupineWakeWord:
         self,
         access_key: str | None = None,
         keyword_path: str | None = None,
-        keyword: str = "jarvis",
+        keyword: str = "monday",
         sensitivities: list[float] | None = None,
     ) -> None:
         self._available = False
@@ -54,7 +54,7 @@ class PorcupineWakeWord:
 
         key = (access_key or _access_key()).strip()
         keyword_path = (keyword_path or os.getenv("JARVIS_PORCUPINE_KEYWORD_PATH", "")).strip()
-        keyword = (keyword or os.getenv("JARVIS_PORCUPINE_KEYWORD", "jarvis")).strip()
+        keyword = (keyword or os.getenv("JARVIS_PORCUPINE_KEYWORD", "monday")).strip()
 
         if not key:
             logger.info(
@@ -69,7 +69,7 @@ class PorcupineWakeWord:
             if keyword_path:
                 kwargs["keyword_paths"] = [keyword_path]
             else:
-                kwargs["keywords"] = [keyword or "jarvis"]
+                kwargs["keywords"] = [keyword or "monday"]
             if self._sensitivities:
                 kwargs["sensitivities"] = self._sensitivities
             self._porcupine = pvporcupine.create(**kwargs)
