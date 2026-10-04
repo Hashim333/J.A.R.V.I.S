@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -20,7 +21,7 @@ ACTIVATION_SERVER_NAME = "monday-ui-rebuild"
 
 
 class OrbWindow(QMainWindow):
-    """Frameless transparent window hosting the Monday orb WebGL visualization."""
+    """Frameless transparent window hosting the Monday orb Canvas 2D visualization."""
 
     def __init__(self, bridge: Bridge, request_quit) -> None:
         super().__init__()
@@ -33,7 +34,7 @@ class OrbWindow(QMainWindow):
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.Tool
         )
-        self.resize(400, 400)
+        self.resize(480, 480)
 
         self.view = QWebEngineView(self)
         self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -46,15 +47,56 @@ class OrbWindow(QMainWindow):
         settings.setAttribute(settings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         settings.setAttribute(settings.WebAttribute.LocalContentCanAccessFileUrls, True)
         settings.setAttribute(settings.WebAttribute.JavascriptEnabled, True)
-        settings.setAttribute(settings.WebAttribute.WebGLEnabled, True)
         settings.setAttribute(settings.WebAttribute.Accelerated2dCanvasEnabled, True)
+        # WebGL not needed for Canvas 2D orb
+        settings.setAttribute(settings.WebAttribute.WebGLEnabled, False)
 
-        self.channel = QWebChannel(self)
-        self.channel.registerObject("bridge", bridge)
-        self.view.page().setWebChannel(self.channel)
+        # Connect bridge state changes to orb JS
+        bridge.stateChanged.connect(self._on_state_changed)
 
         orb_path = Path(__file__).with_name("monday_orb.html").resolve()
+        logger.info("Loading orb from: %s", orb_path)
         self.view.setUrl(QUrl.fromLocalFile(str(orb_path)))
+
+        # Debug: log load status and console messages
+        self.view.loadFinished.connect(self._on_load_finished)
+        self.view.page().javaScriptConsoleMessage = self._js_console_message
+
+    def _on_state_changed(self, payload: dict) -> None:
+        """Forward bridge state changes to orb JS."""
+        state = payload.get("state", "")
+        label = payload.get("label", "")
+        caption = payload.get("caption", "")
+        audio_level = payload.get("audio_level", 0.0)
+        js = f'window.setMondayState("{state}", "{label}", "{caption}", {audio_level})'
+        self.view.page().runJavaScript(js)
+
+    def _on_load_finished(self, ok: bool) -> None:
+        logger.info("Orb loadFinished: ok=%s", ok)
+        if not ok:
+            logger.error("Failed to load orb HTML")
+        # Grab screenshot for debugging
+        self._grab_debug_screenshot()
+
+    def _js_console_message(self, level, message, line, source_id):
+        level_name = {0: "Info", 1: "Warning", 2: "Error"}.get(level, "Debug")
+        logger.info("JS Console [%s] %s:%d - %s", level_name, source_id, line, message)
+
+    def _grab_debug_screenshot(self) -> None:
+        # Grab after a short delay to allow rendering
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(500, self._do_grab)
+
+    def _do_grab(self) -> None:
+        pixmap = self.view.grab()
+        if not pixmap.isNull():
+            debug_dir = Path(__file__).parent / "dev_tests" / "screenshots"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            path = debug_dir / "orb_load_debug.png"
+            pixmap.save(str(path))
+            logger.info("Saved debug screenshot to %s (size: %dx%d)", path, pixmap.width(), pixmap.height())
+        else:
+            logger.warning("Grab returned null pixmap")
 
     def closeEvent(self, event) -> None:
         event.accept()

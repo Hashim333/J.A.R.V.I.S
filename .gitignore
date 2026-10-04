@@ -12,3 +12,7 @@ orb_*.png
 test_view*.png
 orb_screenshots/
 screenshots/
+
+.jarvis_backend.pid
+
+.jarvis_backend.pid

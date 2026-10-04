@@ -2,712 +2,480 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Monday Orb</title>
+<title>JARVIS</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-canvas { display: block; }
-#ui-layer {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #fff;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding-bottom: 60px;
-  opacity: 1;
-  transition: opacity 0.3s ease;
-}
-#ui-layer.hidden { opacity: 0; pointer-events: none; }
-#state-label {
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.3s ease, transform 0.3s ease;
-}
-#state-label.visible { opacity: 1; transform: translateY(0); }
-#caption {
-  font-size: 16px;
-  font-weight: 300;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.3s ease, transform 0.3s ease;
-  max-width: 80%;
-  text-align: center;
-  line-height: 1.4;
-}
-#caption.visible { opacity: 1; transform: translateY(0); }
-#clock {
-  font-size: 48px;
-  font-weight: 200;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.05em;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.3s ease, transform 0.3s ease;
-}
-#clock.visible { opacity: 1; transform: translateY(0); }
-#clock.hidden-by-config { display: none; }
+  :root{
+    --idle: #ff8000;
+    --idle-core: #fcf5cd;
+    --active: #14a4ed;
+    --active-core: #d8f3ff;
+    --bg: #05070a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{
+    width:100%;height:100%;background:var(--bg);
+    overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;
+  }
+  #stage{
+    position:relative;width:100vw;height:100vh;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    cursor:default;user-select:none;
+  }
+  canvas{position:absolute;top:0;left:0;}
+
+  .status{
+    position:relative;z-index:5;
+    font-size:15px;letter-spacing:6px;font-weight:600;
+    text-transform:uppercase;
+    color:var(--idle);
+    margin-bottom:18px;
+    transition:color .6s ease;
+    opacity:.9;
+  }
+  .status.active{color:var(--active);}
+
+  .orb-wrap{
+    position:relative;
+    width:min(48vh,420px);height:min(48vh,420px);
+    display:flex;align-items:center;justify-content:center;
+    z-index:4;
+    pointer-events:none;
+  }
+
+  .caption{
+    position:relative;z-index:5;
+    margin-top:22px;
+    min-height:24px;
+    font-size:18px;font-weight:300;color:#d9dde3;
+    letter-spacing:.3px;
+    opacity:0;transition:opacity .4s ease;
+    text-align:center;max-width:70vw;
+  }
+  .caption.show{opacity:1;}
+
+  .clock{
+    position:absolute;top:26px;left:50%;transform:translateX(-50%);
+    font-size:13px;letter-spacing:2px;color:#5b6470;
+    z-index:5;font-variant-numeric:tabular-nums;
+    display:none;
+  }
+  .clock.show{display:block;}
 </style>
 </head>
 <body>
-<canvas id="canvas"></canvas>
-<div id="ui-layer">
-  <div id="state-label"></div>
-  <div id="caption"></div>
-  <div id="clock"></div>
+
+<div id="stage">
+  <canvas id="fx"></canvas>
+  <div class="clock" id="clock"></div>
+
+  <div class="status" id="status">Idle</div>
+  <div class="orb-wrap" id="orbWrap"></div>
+  <div class="caption" id="caption"></div>
 </div>
+
 <script>
-(() => {
-const canvas = document.getElementById('canvas');
-const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: false });
-if (!gl) { throw new Error('WebGL2 not supported'); }
+(function(){
+  const canvas = document.getElementById('fx');
+  const ctx = canvas.getContext('2d');
+  const stage = document.getElementById('stage');
+  const orbWrap = document.getElementById('orbWrap');
+  const statusEl = document.getElementById('status');
+  const caption = document.getElementById('caption');
+  const clockEl = document.getElementById('clock');
 
-const uiLayer = document.getElementById('ui-layer');
-const stateLabelEl = document.getElementById('state-label');
-const captionEl = document.getElementById('caption');
-const clockEl = document.getElementById('clock');
-
-let dpr = Math.min(window.devicePixelRatio || 1, 2);
-function resize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
-  canvas.style.width = w + 'px';
-  canvas.style.height = h + 'px';
-  gl.viewport(0, 0, canvas.width, canvas.height);
-}
-window.addEventListener('resize', resize);
-resize();
-
-const vsSource = `#version 300 es
-precision highp float;
-layout(location=0) in vec3 aPos;
-layout(location=1) in vec3 aNormal;
-layout(location=2) in vec2 aUv;
-uniform mat4 uModel;
-uniform mat4 uView;
-uniform mat4 uProj;
-uniform float uTime;
-uniform float uRadius;
-uniform vec3 uCenter;
-uniform float uPulse;
-uniform float uRotationSpeed;
-out vec3 vNormal;
-out vec3 vWorldPos;
-out vec2 vUv;
-out float vPulse;
-out float vDistFromCenter;
-void main() {
-  vec3 pos = aPos * uRadius;
-  float pulse = sin(uTime * 0.5 + length(pos) * 0.1) * 0.02 * uPulse;
-  pos += aNormal * pulse;
-  vec4 worldPos = uModel * vec4(pos, 1.0);
-  vWorldPos = worldPos.xyz;
-  vNormal = mat3(uModel) * aNormal;
-  vUv = aUv;
-  vPulse = pulse;
-  vDistFromCenter = length(pos);
-  gl_Position = uProj * uView * worldPos;
-}
-`;
-
-const fsSource = `#version 300 es
-precision highp float;
-in vec3 vNormal;
-in vec3 vWorldPos;
-in vec2 vUv;
-in float vPulse;
-in float vDistFromCenter;
-uniform vec3 uViewPos;
-uniform float uTime;
-uniform float uIntensity;
-uniform vec3 uCoreColor1;
-uniform vec3 uCoreColor2;
-uniform vec3 uRingColor;
-uniform float uRingPhase;
-uniform float uStateType;
-out vec4 fragColor;
-vec3 hsv2rgb(vec3 c) {
-  vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
-  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-float sdSphere(vec3 p, float r) { return length(p) - r; }
-float sdRing(vec3 p, float r, float th) { return length(vec2(length(p.xz)-r, p.y)) - th; }
-void main() {
-  vec3 N = normalize(vNormal);
-  vec3 V = normalize(uViewPos - vWorldPos);
-  float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-  float facing = max(dot(N, V), 0.0);
-  float dist = length(vWorldPos);
-  float coreGlow = smoothstep(1.0, 0.0, dist / (1.2 * uIntensity));
-  vec3 coreCol = mix(uCoreColor1, uCoreColor2, vUv.y + sin(uTime * 0.3 + vWorldPos.x * 0.5) * 0.1);
-  float ring = 1.0 - smoothstep(0.0, 0.02, abs(vDistFromCenter - 1.15 * uIntensity - sin(uTime + uRingPhase) * 0.02));
-  vec3 ringCol = uRingColor * ring * (0.5 + 0.5 * facing);
-  float particle = 0.0;
-  for (int i = 0; i < 3; i++) {
-    float f = float(i) * 2.39996;
-    vec3 p = vWorldPos * 0.5 + vec3(sin(uTime * 0.3 + f + vWorldPos.x * 0.7), cos(uTime * 0.2 + f + vWorldPos.y * 0.7), sin(uTime * 0.4 + f + vWorldPos.z * 0.7));
-    particle += 1.0 / (1.0 + 50.0 * length(p));
+  let W, H, cx, cy, DPR;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 3);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W+'px';
+    canvas.style.height = H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    cx = W/2; cy = H/2;
   }
-  particle *= 0.15 * uIntensity;
-  float bloom = pow(fresnel, 2.0) * 0.8 * uIntensity;
-  vec3 col = coreCol * coreGlow * (0.6 + 0.4 * facing) + ringCol + vec3(particle) + vec3(bloom);
-  float vignette = 1.0 - 0.3 * pow(length(vUv - 0.5) * 2.0, 2.0);
-  col *= vignette;
-  float alpha = max(coreGlow * 0.8, ring * 0.6) + bloom * 0.5 + particle;
-  alpha = clamp(alpha, 0.0, 1.0);
-  fragColor = vec4(col, alpha);
-}
-`;
+  window.addEventListener('resize', resize);
+  resize();
 
-const particleVS = `#version 300 es
-precision highp float;
-layout(location=0) in vec3 aPos;
-layout(location=1) in float aSize;
-layout(location=2) in vec3 aVel;
-layout(location=3) in float aLife;
-layout(location=4) in float aDelay;
-uniform mat4 uView;
-uniform mat4 uProj;
-uniform float uTime;
-uniform float uRadius;
-out float vLife;
-out float vSize;
-out vec3 vPos;
-void main() {
-  float t = uTime - aDelay;
-  if (t < 0.0) { gl_Position = vec4(0.0, 0.0, -100.0, 1.0); gl_PointSize = 0.0; return; }
-  vec3 pos = aPos + aVel * t * 0.5;
-  float life = 1.0 - t / aLife;
-  if (life <= 0.0) { gl_Position = vec4(0.0, 0.0, -100.0, 1.0); gl_PointSize = 0.0; return; }
-  vLife = life;
-  vSize = aSize * life * (1.0 + sin(uTime * 5.0 + aPos.x * 10.0) * 0.2);
-  vPos = pos;
-  vec4 worldPos = vec4(pos, 1.0);
-  gl_Position = uProj * uView * worldPos;
-  gl_PointSize = vSize * (600.0 / length((uView * worldPos).xyz)) * (1.0 / dpr);
-}
-`;
+  // ---- state ----
+  let state = 'idle';
+  let t = 0;
+  let radiusFactor = 1.0;
 
-const particleFS = `#version 300 es
-precision highp float;
-in float vLife;
-in float vSize;
-in vec3 vPos;
-uniform vec3 uColor1;
-uniform vec3 uColor2;
-uniform float uTime;
-out vec4 fragColor;
-void main() {
-  vec2 uv = gl_PointCoord - 0.5;
-  float d = length(uv) * 2.0;
-  float alpha = (1.0 - d) * vLife;
-  if (alpha <= 0.0) discard;
-  vec3 col = mix(uColor1, uCoreColor2, vLife);
-  float glow = pow(1.0 - d, 3.0) * vLife;
-  fragColor = vec4(col + vec3(glow), alpha);
-}
-`;
-
-function compileShader(src, type) {
-  const sh = gl.createShader(type);
-  gl.shaderSource(sh, src);
-  gl.compileShader(sh);
-  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-    console.error(gl.getShaderInfoLog(sh));
-    gl.deleteShader(sh);
-    return null;
-  }
-  return sh;
-}
-function createProgram(vs, fs) {
-  const vsh = compileShader(vs, gl.VERTEX_SHADER);
-  const fsh = compileShader(fs, gl.FRAGMENT_SHADER);
-  if (!vsh || !fsh) return null;
-  const prog = gl.createProgram();
-  gl.attachShader(prog, vsh);
-  gl.attachShader(prog, fsh);
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-    console.error(gl.getProgramInfoLog(prog));
-    return null;
-  }
-  return prog;
-}
-
-const sphereProg = createProgram(vsSource, fsSource);
-const particleProg = createProgram(particleVS, particleFS);
-
-function createGeodesicSphere(subdivisions) {
-  const t = (1.0 + Math.sqrt(5.0)) / 2.0;
-  const positions = [
-    -1,  t,  0,   1,  t,  0,  -1, -t,  0,   1, -t,  0,
-     0, -1,  t,   0,  1,  t,   0, -1, -t,   0,  1, -t,
-     t,  0, -1,   t,  0,  1,  -t,  0, -1,  -t,  0,  1
-  ];
-  const indices = [
-    0, 11, 5,   0, 5, 1,   0, 1, 7,   0, 7, 10,   0, 10, 11,
-    1, 5, 9,   5, 11, 4,   11, 10, 2,   10, 7, 6,   7, 1, 8,
-    3, 9, 4,   3, 4, 2,   3, 2, 6,   3, 6, 8,   3, 8, 9,
-    4, 9, 5,   2, 4, 11,   6, 2, 10,   8, 6, 7,   9, 8, 1
-  ];
-  let verts = new Float32Array(positions);
-  let idx = new Uint16Array(indices);
-  for (let s = 0; s < subdivisions; s++) {
-    const newVerts = [];
-    const newIdx = [];
-    const midCache = {};
-    function getMid(i, j) {
-      const key = i < j ? i + '_' + j : j + '_' + i;
-      if (midCache[key] !== undefined) return midCache[key];
-      const vi = i * 3, vj = j * 3;
-      const mx = (verts[vi] + verts[vj]) * 0.5;
-      const my = (verts[vi+1] + verts[vj+1]) * 0.5;
-      const mz = (verts[vi+2] + verts[vj+2]) * 0.5;
-      const len = Math.sqrt(mx*mx + my*my + mz*mz);
-      const ni = newVerts.length / 3;
-      newVerts.push(mx/len, my/len, mz/len);
-      midCache[key] = ni;
-      return ni;
-    }
-    for (let i = 0; i < idx.length; i += 3) {
-      const a = idx[i], b = idx[i+1], c = idx[i+2];
-      const ab = getMid(a, b);
-      const bc = getMid(b, c);
-      const ca = getMid(c, a);
-      newIdx.push(a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca);
-    }
-    verts = new Float32Array(newVerts);
-    idx = new Uint16Array(newIdx);
-  }
-  const normals = new Float32Array(verts.length);
-  for (let i = 0; i < verts.length; i += 3) {
-    const len = Math.sqrt(verts[i]*verts[i] + verts[i+1]*verts[i+1] + verts[i+2]*verts[i+2]);
-    normals[i] = verts[i]/len; normals[i+1] = verts[i+1]/len; normals[i+2] = verts[i+2]/len;
-  }
-  const uvs = new Float32Array(verts.length / 3 * 2);
-  for (let i = 0; i < verts.length; i += 3) {
-    const x = verts[i], y = verts[i+1], z = verts[i+2];
-    uvs[i/3*2] = 0.5 + Math.atan2(z, x) / (2*Math.PI);
-    uvs[i/3*2+1] = 0.5 - Math.asin(y) / Math.PI;
-  }
-  return { positions: verts, normals, uvs, indices: idx };
-}
-
-const sphere = createGeodesicSphere(3);
-
-const sphereVAO = gl.createVertexArray();
-gl.bindVertexArray(sphereVAO);
-const posBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-gl.bufferData(gl.ARRAY_BUFFER, sphere.positions, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(0);
-gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-const normBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, normBuf);
-gl.bufferData(gl.ARRAY_BUFFER, sphere.normals, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(1);
-gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
-const uvBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
-gl.bufferData(gl.ARRAY_BUFFER, sphere.uvs, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(2);
-gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, 0);
-const idxBuf = gl.createBuffer();
-gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
-gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, sphere.indices, gl.STATIC_DRAW);
-gl.bindVertexArray(null);
-
-const PARTICLE_COUNT = 800;
-const particlePositions = new Float32Array(PARTICLE_COUNT * 3);
-const particleSizes = new Float32Array(PARTICLE_COUNT);
-const particleVelocities = new Float32Array(PARTICLE_COUNT * 3);
-const particleLives = new Float32Array(PARTICLE_COUNT);
-const particleDelays = new Float32Array(PARTICLE_COUNT);
-for (let i = 0; i < PARTICLE_COUNT; i++) {
-  const theta = Math.random() * Math.PI * 2;
-  const phi = Math.acos(2 * Math.random() - 1);
-  const r = 0.95 + Math.random() * 0.15;
-  particlePositions[i*3] = r * Math.sin(phi) * Math.cos(theta);
-  particlePositions[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
-  particlePositions[i*3+2] = r * Math.cos(phi);
-  particleSizes[i] = 1.5 + Math.random() * 2.5;
-  const vel = 0.1 + Math.random() * 0.3;
-  const vtheta = Math.random() * Math.PI * 2;
-  const vphi = Math.acos(2 * Math.random() - 1);
-  particleVelocities[i*3] = vel * Math.sin(vphi) * Math.cos(vtheta);
-  particleVelocities[i*3+1] = vel * Math.sin(vphi) * Math.sin(vtheta);
-  particleVelocities[i*3+2] = vel * Math.cos(vphi);
-  particleLives[i] = 3.0 + Math.random() * 5.0;
-  particleDelays[i] = Math.random() * 8.0;
-}
-
-const particleVAO = gl.createVertexArray();
-gl.bindVertexArray(particleVAO);
-const pPosBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, pPosBuf);
-gl.bufferData(gl.ARRAY_BUFFER, particlePositions, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(0);
-gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-const pSizeBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, pSizeBuf);
-gl.bufferData(gl.ARRAY_BUFFER, particleSizes, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(1);
-gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 0, 0);
-const pVelBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, pVelBuf);
-gl.bufferData(gl.ARRAY_BUFFER, particleVelocities, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(2);
-gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
-const pLifeBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, pLifeBuf);
-gl.bufferData(gl.ARRAY_BUFFER, particleLives, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(3);
-gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 0, 0);
-const pDelayBuf = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, pDelayBuf);
-gl.bufferData(gl.ARRAY_BUFFER, particleDelays, gl.STATIC_DRAW);
-gl.enableVertexAttribArray(4);
-gl.vertexAttribPointer(4, 1, gl.FLOAT, false, 0, 0);
-gl.bindVertexArray(null);
-
-const proj = mat4.create();
-const view = mat4.create();
-const model = mat4.create();
-const eye = [0, 0, 3.5];
-const center = [0, 0, 0];
-const up = [0, 1, 0];
-
-let startTime = performance.now() / 1000;
-let currentState = 'PASSIVE';
-let targetState = 'PASSIVE';
-let stateLabel = 'PASSIVE';
-let caption = '';
-let audioLevel = 0;
-let radiusFactor = 1.0;
-let clockEnabled = false;
-let rotation = 0;
-let targetRotationSpeed = 0.05;
-let currentRotationSpeed = 0.05;
-let pulseIntensity = 1.0;
-let targetPulseIntensity = 1.0;
-
-const stateConfig = {
-  PASSIVE: { color1: [1.0, 0.5, 0.0], color2: [1.0, 0.3, 0.0], ringColor: [1.0, 0.5, 0.0], rotSpeed: 0.02, pulse: 0.5, radius: 1.0 },
-  WAKE: { color1: [0.08, 0.64, 0.93], color2: [0.0, 0.4, 0.8], ringColor: [0.1, 0.7, 1.0], rotSpeed: 0.08, pulse: 1.2, radius: 1.05 },
-  LISTENING: { color1: [0.08, 0.64, 0.93], color2: [0.0, 0.4, 0.8], ringColor: [0.1, 0.7, 1.0], rotSpeed: 0.06, pulse: 1.5, radius: 1.05 },
-  UNDERSTANDING: { color1: [0.08, 0.64, 0.93], color2: [0.0, 0.4, 0.8], ringColor: [0.1, 0.7, 1.0], rotSpeed: 0.08, pulse: 1.3, radius: 1.08 },
-  THINKING: { color1: [0.08, 0.64, 0.93], color2: [0.0, 0.4, 0.8], ringColor: [0.1, 0.7, 1.0], rotSpeed: 0.12, pulse: 1.8, radius: 1.1 },
-  WORKING: { color1: [0.08, 0.64, 0.93], color2: [0.0, 0.4, 0.8], ringColor: [0.1, 0.7, 1.0], rotSpeed: 0.18, pulse: 2.0, radius: 1.12 },
-  SPEAKING: { color1: [0.08, 0.64, 0.93], color2: [0.0, 0.4, 0.8], ringColor: [0.1, 0.7, 1.0], rotSpeed: 0.1, pulse: 1.0, radius: 1.08 },
-  DONE: { color1: [1.0, 0.5, 0.0], color2: [0.08, 0.64, 0.93], ringColor: [0.5, 0.6, 0.5], rotSpeed: 0.04, pulse: 1.0, radius: 1.0 },
-  ERROR: { color1: [1.0, 0.5, 0.0], color2: [1.0, 0.2, 0.0], ringColor: [1.0, 0.5, 0.0], rotSpeed: 0.1, pulse: 1.5, radius: 1.0 }
-};
-
-function lerp(a, b, t) { return a + (b - a) * t; }
-function lerpVec3(a, b, t, out) { out[0] = lerp(a[0], b[0], t); out[1] = lerp(a[1], b[1], t); out[2] = lerp(a[2], b[2], t); }
-
-function applyState(state, immediate) {
-  const cfg = stateConfig[state] || stateConfig.PASSIVE;
-  targetState = state;
-  targetRotationSpeed = cfg.rotSpeed;
-  targetPulseIntensity = cfg.pulse;
-  radiusFactor = cfg.radius;
-  window.currentConfig = JSON.stringify(cfg);
-  window.currentStateName = state;
-  window.currentConfigTest = "test_value";
-  console.log("applyState called:", state, cfg);
-  if (immediate) {
-    currentRotationSpeed = targetRotationSpeed;
-    pulseIntensity = targetPulseIntensity;
-    currentState = state;
-  }
-}
-
-function updateClock() {
-  if (!clockEnabled) return;
-  const now = new Date();
-  const h = String(now.getHours()).padStart(2, '0');
-  const m = String(now.getMinutes()).padStart(2, '0');
-  const s = String(now.getSeconds()).padStart(2, '0');
-  clockEl.textContent = `${h}:${m}:${s}`;
-}
-
-function renderLoop(now) {
-  const t = now / 1000;
-  const dt = t - (renderLoop.lastTime || t);
-  renderLoop.lastTime = t;
-
-  currentRotationSpeed = lerp(currentRotationSpeed, targetRotationSpeed, 1 - Math.exp(-dt * 5));
-  pulseIntensity = lerp(pulseIntensity, targetPulseIntensity, 1 - Math.exp(-dt * 4));
-
-  rotation += currentRotationSpeed * dt;
-
-  if (currentState !== targetState) {
-    const cfg = stateConfig[targetState];
-    const currCfg = stateConfig[currentState];
-    const progress = Math.min(1, (t - (renderLoop.transitionStart || t)) / 0.6);
-    renderLoop.transitionStart = renderLoop.transitionStart || t;
-    if (progress >= 1) {
-      currentState = targetState;
-      renderLoop.transitionStart = null;
-    }
-    const c1 = [], c2 = [], rc = [];
-    lerpVec3(currCfg.color1, cfg.color1, progress, c1);
-    lerpVec3(currCfg.color2, cfg.color2, progress, c2);
-    lerpVec3(currCfg.ringColor, cfg.ringColor, progress, rc);
-    sphereProg.uCoreColor1 = c1;
-    sphereProg.uCoreColor2 = c2;
-    sphereProg.uRingColor = rc;
-  } else {
-    const cfg = stateConfig[currentState];
-    sphereProg.uCoreColor1 = cfg.color1;
-    sphereProg.uCoreColor2 = cfg.color2;
-    sphereProg.uRingColor = cfg.ringColor;
-  }
-
-  mat4.perspective(proj, Math.PI / 3, canvas.width / canvas.height, 0.1, 100);
-  mat4.lookAt(view, eye, center, up);
-  mat4.identity(model);
-  mat4.rotateY(model, model, rotation);
-
-  gl.clearColor(0, 0, 0, 0);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-  gl.useProgram(sphereProg);
-  gl.uniformMatrix4fv(sphereProg.uModel, false, model);
-  gl.uniformMatrix4fv(sphereProg.uView, false, view);
-  gl.uniformMatrix4fv(sphereProg.uProj, false, proj);
-  gl.uniform1f(sphereProg.uTime, t - startTime);
-  gl.uniform1f(sphereProg.uRadius, radiusFactor);
-  gl.uniform3fv(sphereProg.uCenter, [0, 0, 0]);
-  gl.uniform1f(sphereProg.uPulse, pulseIntensity);
-  gl.uniform1f(sphereProg.uRotationSpeed, currentRotationSpeed);
-  gl.uniform3fv(sphereProg.uViewPos, eye);
-  gl.uniform1f(sphereProg.uIntensity, 1.0);
-  gl.uniform1f(sphereProg.uRingPhase, t * 0.5);
-  gl.uniform1f(sphereProg.uStateType, 0);
-  gl.bindVertexArray(sphereVAO);
-  gl.drawElements(gl.TRIANGLES, sphere.indices.length, gl.UNSIGNED_SHORT, 0);
-
-  gl.useProgram(particleProg);
-  gl.uniformMatrix4fv(particleProg.uView, false, view);
-  gl.uniformMatrix4fv(particleProg.uProj, false, proj);
-  gl.uniform1f(particleProg.uTime, t - startTime);
-  gl.uniform1f(particleProg.uRadius, radiusFactor);
-  const cfg = stateConfig[currentState];
-  gl.uniform3fv(particleProg.uColor1, cfg.color1);
-  gl.uniform3fv(particleProg.uColor2, cfg.color2);
-  gl.bindVertexArray(particleVAO);
-  gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
-
-  gl.bindVertexArray(null);
-  requestAnimationFrame(renderLoop);
-}
-
-function setupUniforms(prog, names) {
-  const uniforms = {};
-  names.forEach(name => { uniforms[name] = gl.getUniformLocation(prog, name); });
-  return new Proxy(prog, {
-    get(target, prop) {
-      if (prop in uniforms) return uniforms[prop];
-      return target[prop];
+  const COLORS = {
+    idle:   {
+      ring:'255,128,0', particle:'255,170,60',
+      coreHi:'#fff6df', coreMid:'#ffb347'
     },
-    set(target, prop, value) {
-      if (prop in uniforms) {
-        const loc = uniforms[prop];
-        if (Array.isArray(value)) {
-          if (value.length === 3) gl.uniform3fv(loc, value);
-          else if (value.length === 16) gl.uniformMatrix4fv(loc, false, value);
-          else if (value.length === 1) gl.uniform1f(loc, value[0]);
-        } else if (typeof value === 'number') {
-          gl.uniform1f(loc, value);
-        }
-        return true;
+    active: {
+      ring:'20,164,237', particle:'120,215,255',
+      coreHi:'#eaf9ff', coreMid:'#5fc4ff'
+    }
+  };
+
+  // orbiting particles (outer dust)
+  const particles = [];
+  const N = 130;
+  for(let i=0;i<N;i++){
+    particles.push({
+      a: Math.random()*Math.PI*2,
+      r: 150 + Math.random()*230,
+      speed: (Math.random()*0.35+0.1) * (Math.random()<0.5?1:-1),
+      tilt: Math.random()*Math.PI,
+      size: Math.random()*1.7+0.5,
+      phase: Math.random()*Math.PI*2,
+      z: Math.random()
+    });
+  }
+
+  // ---- TRUE geodesic hex/pentagon sphere ----
+  function buildGeodesicSphere(subdiv){
+    const phi = (1+Math.sqrt(5))/2;
+    let verts = [
+      [-1,phi,0],[1,phi,0],[-1,-phi,0],[1,-phi,0],
+      [0,-1,phi],[0,1,phi],[0,-1,-phi],[0,1,-phi],
+      [phi,0,-1],[phi,0,1],[-phi,0,-1],[-phi,0,1]
+    ].map(v=>{
+      const len = Math.hypot(v[0],v[1],v[2]);
+      return {x:v[0]/len,y:v[1]/len,z:v[2]/len};
+    });
+    let faces = [
+      [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],
+      [1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+      [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],
+      [4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]
+    ];
+    const cache = {};
+    function midpoint(a,b){
+      const key = a<b ? a+'_'+b : b+'_'+a;
+      if(cache[key]!==undefined) return cache[key];
+      const va=verts[a], vb=verts[b];
+      const mx=(va.x+vb.x)/2, my=(va.y+vb.y)/2, mz=(va.z+vb.z)/2;
+      const len = Math.hypot(mx,my,mz);
+      verts.push({x:mx/len,y:my/len,z:mz/len});
+      const idx = verts.length-1;
+      cache[key]=idx;
+      return idx;
+    }
+    for(let s=0;s<subdiv;s++){
+      const nf=[];
+      for(const f of faces){
+        const [a,b,c]=f;
+        const ab=midpoint(a,b), bc=midpoint(b,c), ca=midpoint(c,a);
+        nf.push([a,ab,ca],[b,bc,ab],[c,ca,bc],[ab,bc,ca]);
       }
-      target[prop] = value;
-      return true;
+      faces=nf;
     }
-  });
-}
 
-sphereProg = setupUniforms(sphereProg, ['uModel','uView','uProj','uTime','uRadius','uCenter','uPulse','uRotationSpeed','uViewPos','uIntensity','uRingPhase','uStateType','uCoreColor1','uCoreColor2','uRingColor']);
-particleProg = setupUniforms(particleProg, ['uView','uProj','uTime','uRadius','uColor1','uColor2']);
+    const centroids = faces.map(([a,b,c])=>{
+      const va=verts[a], vb=verts[b], vc=verts[c];
+      const mx=(va.x+vb.x+vc.x)/3, my=(va.y+vb.y+vc.y)/3, mz=(va.z+vb.z+vc.z)/3;
+      const len = Math.hypot(mx,my,mz);
+      return {x:mx/len, y:my/len, z:mz/len};
+    });
 
-gl.enable(gl.DEPTH_TEST);
-gl.enable(gl.BLEND);
-gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-requestAnimationFrame(renderLoop);
-setInterval(updateClock, 1000);
-updateClock();
-
-window.setMondayState = function(state, label, captionText, level) {
-  console.log("setMondayState called:", state);
-  applyState(state, false);
-  stateLabel = label || state;
-  caption = captionText || '';
-  audioLevel = level || 0;
-  stateLabelEl.textContent = stateLabel;
-  captionEl.textContent = caption;
-  stateLabelEl.classList.add('visible');
-  captionEl.classList.add('visible');
-  if (state === 'SPEAKING' && level > 0) {
-    targetPulseIntensity = 1.0 + level * 1.5;
-  }
-};
-
-window.setJarvisState = function(state, label, reply) {
-  const map = { idle: 'PASSIVE', listening: 'LISTENING', thinking: 'THINKING', speaking: 'SPEAKING', error: 'ERROR', offline: 'PASSIVE', understanding: 'UNDERSTANDING', working: 'WORKING', done: 'DONE', waiting: 'WAKE' };
-  window.setMondayState(map[state] || 'PASSIVE', label || state, reply || '', 0);
-};
-
-window.setClockVisible = function(visible) {
-  clockEnabled = visible;
-  if (visible) { clockEl.classList.remove('hidden-by-config'); clockEl.classList.add('visible'); }
-  else { clockEl.classList.add('hidden-by-config'); clockEl.classList.remove('visible'); }
-};
-
-window.setRadiusFactor = function(factor) { radiusFactor = factor; };
-
-console.log("Checking QWebChannel...");
-if (typeof QWebChannel !== 'undefined') {
-  console.log("QWebChannel available, connecting...");
-  console.log("qt.webChannelTransport:", qt.webChannelTransport);
-  new QWebChannel(qt.webChannelTransport, function(channel) {
-    console.log("QWebChannel connected");
-    window.qt = channel.objects.bridge;
-    if (window.qt && window.qt.stateChanged) {
-      window.qt.stateChanged.connect(function(payload) {
-        console.log("Orb received state:", payload);
-        window.setMondayState(payload.state, payload.label, payload.caption, payload.audio_level);
+    const edgeFaces = {};
+    faces.forEach((f,fi)=>{
+      const [a,b,c]=f;
+      [[a,b],[b,c],[c,a]].forEach(([x,y])=>{
+        const key = x<y ? x+'_'+y : y+'_'+x;
+        (edgeFaces[key] = edgeFaces[key]||[]).push(fi);
       });
-    } else {
-      console.log("Bridge or stateChanged not found:", window.qt);
+    });
+
+    const facesAtVertex = Array.from({length:verts.length}, ()=>[]);
+    faces.forEach((f,fi)=>{ f.forEach(v=>facesAtVertex[v].push(fi)); });
+
+    function vEdges(fi, v){
+      const f = faces[fi];
+      const others = f.filter(x=>x!==v);
+      return [[v,others[0]].sort((p,q)=>p-q), [v,others[1]].sort((p,q)=>p-q)];
     }
-  });
-} else {
-  console.log("QWebChannel NOT available");
-}
+    function edgeKey(e){ return e[0]+'_'+e[1]; }
+    function edgesEqual(e1,e2){ return e1[0]===e2[0] && e1[1]===e2[1]; }
+
+    const cells = [];
+    for(let v=0; v<verts.length; v++){
+      const fv = facesAtVertex[v];
+      if(fv.length < 3) continue;
+      const ordered = [fv[0]];
+      let current = fv[0];
+      let edges = vEdges(current, v);
+      let travEdge = edges[0];
+      for(let step=0; step<fv.length-1; step++){
+        const onEdge = edgeFaces[edgeKey(travEdge)];
+        const next = onEdge[0]===current ? onEdge[1] : onEdge[0];
+        if(next===undefined) break;
+        ordered.push(next);
+        const nEdges = vEdges(next, v);
+        travEdge = edgesEqual(nEdges[0],travEdge) ? nEdges[1] : nEdges[0];
+        current = next;
+      }
+      cells.push(ordered);
+    }
+    return {centroids, cells};
+  }
+  const geo = buildGeodesicSphere(2);
+
+  const sparklePts = geo.centroids.map((c,i)=>({
+    ...c,
+    isBig: (i % 7 === 0),
+    tw: Math.random()*Math.PI*2,
+    tws: 0.5 + Math.random()*1.3
+  }));
+
+  function rotateY(p, ang){
+    const c=Math.cos(ang), s=Math.sin(ang);
+    return { x: p.x*c + p.z*s, y: p.y, z: -p.x*s + p.z*c };
+  }
+  function rotateX(p, ang){
+    const c=Math.cos(ang), s=Math.sin(ang);
+    return { x: p.x, y: p.y*c - p.z*s, z: p.y*s + p.z*c };
+  }
+
+  function radius(){
+    return Math.min(W,H) * 0.155 * radiusFactor;
+  }
+
+  const projCentroids = new Array(geo.centroids.length);
+  let spin = 0;
+
+  // State configuration mapping
+  const STATE_CONFIG = {
+    PASSIVE:       { color: 'idle',   rotSpeed: 0.30, pulseAmp: 0.018, pulseFreq: 1.1 },
+    WAKE:          { color: 'active', rotSpeed: 0.62, pulseAmp: 0.045, pulseFreq: 3.2 },
+    LISTENING:     { color: 'active', rotSpeed: 0.70, pulseAmp: 0.055, pulseFreq: 3.5 },
+    UNDERSTANDING: { color: 'active', rotSpeed: 0.78, pulseAmp: 0.050, pulseFreq: 3.0 },
+    THINKING:      { color: 'active', rotSpeed: 0.85, pulseAmp: 0.060, pulseFreq: 4.0 },
+    WORKING:       { color: 'active', rotSpeed: 0.95, pulseAmp: 0.065, pulseFreq: 4.5 },
+    SPEAKING:      { color: 'active', rotSpeed: 0.75, pulseAmp: 0.070, pulseFreq: 5.0 },
+    DONE:          { color: 'active', rotSpeed: 0.50, pulseAmp: 0.035, pulseFreq: 2.5 },
+    ERROR:         { color: 'idle',   rotSpeed: 0.40, pulseAmp: 0.025, pulseFreq: 1.5 },
+  };
+
+  let currentConfig = STATE_CONFIG.PASSIVE;
+  let targetConfig = STATE_CONFIG.PASSIVE;
+  let configTransition = 0;
+  let configTransitionDuration = 0.6;
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    const col = COLORS[currentConfig.color];
+    const baseR = radius();
+    const pulse = 1 + Math.sin(t*currentConfig.pulseFreq)*currentConfig.pulseAmp;
+    const sphereR = baseR * pulse;
+
+    // ---- soft bloom behind everything ----
+    const bloomR = sphereR * (currentConfig.color==='active'?7.5:6.2);
+    const bloom = ctx.createRadialGradient(cx,cy,sphereR*0.2,cx,cy,bloomR);
+    bloom.addColorStop(0, `rgba(${col.ring},0.24)`);
+    bloom.addColorStop(0.35, `rgba(${col.ring},0.09)`);
+    bloom.addColorStop(1, `rgba(${col.ring},0)`);
+    ctx.fillStyle = bloom;
+    ctx.beginPath(); ctx.arc(cx,cy,bloomR,0,Math.PI*2); ctx.fill();
+
+    // ---- concentric orbit rings ----
+    const ringCount = 4;
+    for(let i=0;i<ringCount;i++){
+      const rr = sphereR * (2.2 + i*0.55);
+      const rot = t * (0.05 + i*0.015) * (i%2===0?1:-1);
+      const alpha = 0.10 - i*0.016;
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(${col.ring},${Math.max(alpha,0.02)})`;
+      ctx.lineWidth = 1;
+      const segs = 120;
+      for(let s=0;s<=segs;s++){
+        const ang = rot + (s/segs)*Math.PI*2;
+        const wobble = Math.sin(ang*6 + t*2)*rr*0.008;
+        const x = cx + Math.cos(ang)*(rr+wobble);
+        const y = cy + Math.sin(ang)*(rr+wobble)*0.92;
+        if(s===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+
+    // ---- outer dust particles ----
+    for(const p of particles){
+      p.a += p.speed * 0.012 * (currentConfig.color==='active'?1.8:1);
+      const rr = (sphereR*1.9 + p.r*0.55*pulse) * (currentConfig.color==='active'?1.06:1);
+      const x = cx + Math.cos(p.a)*rr;
+      const y = cy + Math.sin(p.a)*rr*Math.cos(p.tilt)*0.5;
+      const flick = 0.3 + Math.abs(Math.sin(t*2+p.phase))*0.7;
+      ctx.save();
+      ctx.shadowColor = `rgba(${col.particle},0.9)`;
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${col.particle},${flick})`;
+      ctx.arc(x,y,p.size,0,Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ---- geodesic sphere: continuous one-direction spin ----
+    spin += 0.016 * currentConfig.rotSpeed;
+    const tiltFixed = 0.28;
+    const persp = 3.2;
+
+    for(let i=0;i<geo.centroids.length;i++){
+      const p = geo.centroids[i];
+      let r1 = rotateY(p, spin);
+      let r2 = rotateX(r1, tiltFixed);
+      const scale = persp / (persp - r2.z);
+      projCentroids[i] = {
+        x: cx + r2.x * sphereR * scale,
+        y: cy + r2.y * sphereR * scale,
+        z: r2.z
+      };
+    }
+
+    for(const cell of geo.cells){
+      let zAvg = 0;
+      for(const fi of cell) zAvg += projCentroids[fi].z;
+      zAvg /= cell.length;
+      if(zAvg < -0.45) continue;
+
+      const facing = Math.max(0, zAvg);
+      const rim = 1 - Math.min(1,Math.abs(zAvg));
+      const fillA = 0.015 + facing*0.05;
+      const edgeA = Math.min(0.85, 0.05 + facing*0.34 + Math.pow(rim,5)*0.4);
+
+      ctx.beginPath();
+      cell.forEach((fi,idx)=>{
+        const p = projCentroids[fi];
+        if(idx===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = `rgba(${col.ring},${fillA})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(${col.ring},${edgeA})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    for(let i=0;i<sparklePts.length;i++){
+      const p = projCentroids[i];
+      if(!p || p.z < 0.15) continue;
+      const depth = (p.z-0.15)/0.85;
+      const s = sparklePts[i];
+      const tw = 0.5 + Math.sin(t*s.tws + s.tw)*0.5;
+      const baseSize = s.isBig ? 2.2 : 0.9;
+      const sz = baseSize * (0.5 + depth*0.9);
+      const alpha = (0.25 + depth*0.65) * tw;
+      ctx.save();
+      ctx.shadowColor = `rgba(${col.particle},0.9)`;
+      ctx.shadowBlur = 3 + sz*2;
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${col.particle},${Math.min(alpha,1)})`;
+      ctx.arc(p.x,p.y,sz,0,Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ---- inner core glow ----
+    const coreR = sphereR * 0.34;
+    const core = ctx.createRadialGradient(
+      cx - coreR*0.25, cy - coreR*0.3, coreR*0.05,
+      cx, cy, coreR*2.5
+    );
+    core.addColorStop(0, col.coreHi);
+    core.addColorStop(0.26, col.coreMid);
+    core.addColorStop(0.58, `rgba(${col.ring},0.6)`);
+    core.addColorStop(1, `rgba(${col.ring},0)`);
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(cx,cy,coreR*2.5,0,Math.PI*2); ctx.fill();
+
+    const hot = ctx.createRadialGradient(cx,cy,0,cx,cy,coreR*0.85);
+    hot.addColorStop(0, col.coreHi);
+    hot.addColorStop(0.5, col.coreMid);
+    hot.addColorStop(1, `rgba(${col.ring},0)`);
+    ctx.fillStyle = hot;
+    ctx.beginPath(); ctx.arc(cx,cy,coreR*0.85,0,Math.PI*2); ctx.fill();
+
+    t += 0.016;
+
+    // Config transition easing
+    if (configTransition < 1) {
+      configTransition = Math.min(1, configTransition + 0.016 / configTransitionDuration);
+      const c = configTransition;
+      const inv = 1 - c;
+      // Interpolate config values
+      currentConfig = {
+        color: c >= 0.5 ? targetConfig.color : currentConfig.color,
+        rotSpeed: currentConfig.rotSpeed * inv + targetConfig.rotSpeed * c,
+        pulseAmp: currentConfig.pulseAmp * inv + targetConfig.pulseAmp * c,
+        pulseFreq: currentConfig.pulseFreq * inv + targetConfig.pulseFreq * c,
+      };
+    }
+
+    requestAnimationFrame(draw);
+  }
+  draw();
+
+  // ---- state control ----
+  function setJarvisState(newState, label, reply){
+    state = (newState === 'active') ? 'active' : 'idle';
+    statusEl.textContent = label || (state==='active' ? 'Listening' : 'Idle');
+    statusEl.classList.toggle('active', state==='active');
+    orbWrap.classList.toggle('active', state==='active');
+    const text = reply !== undefined ? reply : (state === 'active' ? 'Listening…' : '');
+    caption.textContent = text;
+    caption.classList.toggle('show', !!text);
+  }
+  window.setJarvisState = setJarvisState;
+
+  // New unified state API
+  function setMondayState(newState, label, captionText, level){
+    const cfg = STATE_CONFIG[newState];
+    if (!cfg) {
+      console.warn('Unknown state:', newState);
+      return;
+    }
+    targetConfig = cfg;
+    configTransition = 0;
+
+    statusEl.textContent = label || newState;
+    statusEl.classList.toggle('active', cfg.color === 'active');
+    orbWrap.classList.toggle('active', cfg.color === 'active');
+
+    if (captionText) {
+      caption.textContent = captionText;
+      caption.classList.add('show');
+    } else {
+      caption.classList.remove('show');
+    }
+
+    // Audio level could drive pulse intensity for SPEAKING
+    if (level !== undefined && level > 0 && newState === 'SPEAKING') {
+      targetConfig = { ...targetConfig, pulseAmp: 0.045 + level * 0.08 };
+    }
+  }
+  window.setMondayState = setMondayState;
+
+  function setClockVisible(visible) {
+    clockEl.classList.toggle('show', visible);
+  }
+  window.setClockVisible = setClockVisible;
+
+  function setRadiusFactor(factor) {
+    radiusFactor = Math.max(0.1, Math.min(3.0, factor));
+  }
+  window.setRadiusFactor = setRadiusFactor;
+
+  // Clock (hidden by default)
+  function tickClock(){
+    const now = new Date();
+    const h = now.getHours()%12 || 12;
+    const m = String(now.getMinutes()).padStart(2,'0');
+    const s = String(now.getSeconds()).padStart(2,'0');
+    const ap = now.getHours()>=12?'PM':'AM';
+    clockEl.textContent = `${h}:${m}:${s} ${ap}`;
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  setJarvisState('idle','Idle');
 })();
-</script>
-<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<script>
-console.log("Checking QWebChannel...");
-if (typeof QWebChannel !== 'undefined') {
-  console.log("QWebChannel available, connecting...");
-  console.log("qt.webChannelTransport:", qt.webChannelTransport);
-  new QWebChannel(qt.webChannelTransport, function(channel) {
-    console.log("QWebChannel connected");
-    window.qt = channel.objects.bridge;
-    if (window.qt && window.qt.stateChanged) {
-      window.qt.stateChanged.connect(function(payload) {
-        console.log("Orb received state:", payload);
-        window.setMondayState(payload.state, payload.label, payload.caption, payload.audio_level);
-      });
-    } else {
-      console.log("Bridge or stateChanged not found:", window.qt);
-    }
-  });
-} else {
-  console.log("QWebChannel NOT available");
-}
-</script>
-<script>
-const mat4 = {
-  create: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
-  identity: (out) => { out[0]=1; out[1]=0; out[2]=0; out[3]=0; out[4]=0; out[5]=1; out[6]=0; out[7]=0; out[8]=0; out[9]=0; out[10]=1; out[11]=0; out[12]=0; out[13]=0; out[14]=0; out[15]=1; return out; },
-  perspective: (out, fovy, aspect, near, far) => {
-    const f = 1.0 / Math.tan(fovy / 2);
-    out[0] = f / aspect; out[1] = 0; out[2] = 0; out[3] = 0;
-    out[4] = 0; out[5] = f; out[6] = 0; out[7] = 0;
-    out[8] = 0; out[9] = 0; out[11] = -1;
-    out[10] = (far + near) / (near - far);
-    out[12] = 0; out[13] = 0;
-    out[14] = (2 * far * near) / (near - far);
-    out[15] = 0;
-    return out;
-  },
-  lookAt: (out, eye, center, up) => {
-    let x0, x1, x2, y0, y1, y2, z0, z1, z2, len;
-    const eyex = eye[0], eyey = eye[1], eyez = eye[2];
-    const upx = up[0], upy = up[1], upz = up[2];
-    const centerx = center[0], centery = center[1], centerz = center[2];
-    if (Math.abs(eyex - centerx) < 1e-6 && Math.abs(eyey - centery) < 1e-6 && Math.abs(eyez - centerz) < 1e-6) { return mat4.identity(out); }
-    z0 = eyex - centerx; z1 = eyey - centery; z2 = eyez - centerz;
-    len = 1 / Math.hypot(z0, z1, z2); z0 *= len; z1 *= len; z2 *= len;
-    x0 = upy * z2 - upz * z1; x1 = upz * z0 - upx * z2; x2 = upx * z1 - upy * z0;
-    len = Math.hypot(x0, x1, x2); if (!len) { return null; }
-    len = 1 / len; x0 *= len; x1 *= len; x2 *= len;
-    y0 = z1 * x2 - z2 * x1; y1 = z2 * x0 - z0 * x2; y2 = z0 * x1 - z1 * x0;
-    len = Math.hypot(y0, y1, y2); if (!len) { return null; }
-    len = 1 / len; y0 *= len; y1 *= len; y2 *= len;
-    out[0] = x0; out[1] = y0; out[2] = z0; out[3] = 0;
-    out[4] = x1; out[5] = y1; out[6] = z1; out[7] = 0;
-    out[8] = x2; out[9] = y2; out[10] = z2; out[11] = 0;
-    out[12] = -(x0*eyex + x1*eyey + x2*eyez);
-    out[13] = -(y0*eyex + y1*eyey + y2*eyez);
-    out[14] = -(z0*eyex + z1*eyey + z2*eyez);
-    out[15] = 1;
-    return out;
-  },
-  rotateY: (out, a, rad) => {
-    const s = Math.sin(rad), c = Math.cos(rad);
-    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
-    const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
-    out[0] = c * a00 - s * a20;
-    out[1] = c * a01 - s * a21;
-    out[2] = c * a02 - s * a22;
-    out[3] = c * a03 - s * a23;
-    out[8] = c * a20 + s * a00;
-    out[9] = c * a21 + s * a01;
-    out[10] = c * a22 + s * a02;
-    out[11] = c * a23 + s * a03;
-    if (a !== out) { out[4] = a[4]; out[5] = a[5]; out[6] = a[6]; out[7] = a[7]; out[12] = a[12]; out[13] = a[13]; out[14] = a[14]; out[15] = a[15]; }
-    return out;
-  },
-  multiply: (out, a, b) => {
-    const a00=a[0],a01=a[1],a02=a[2],a03=a[3];
-    const a10=a[4],a11=a[5],a12=a[6],a13=a[7];
-    const a20=a[8],a21=a[9],a22=a[10],a23=a[11];
-    const a30=a[12],a31=a[13],a32=a[14],a33=a[15];
-    let b0=b[0],b1=b[1],b2=b[2],b3=b[3];
-    out[0]=b0*a00+b1*a10+b2*a20+b3*a30;
-    out[1]=b0*a01+b1*a11+b2*a21+b3*a31;
-    out[2]=b0*a02+b1*a12+b2*a22+b3*a32;
-    out[3]=b0*a03+b1*a13+b2*a23+b3*a33;
-    b0=b[4];b1=b[5];b2=b[6];b3=b[7];
-    out[4]=b0*a00+b1*a10+b2*a20+b3*a30;
-    out[5]=b0*a01+b1*a11+b2*a21+b3*a31;
-    out[6]=b0*a02+b1*a12+b2*a22+b3*a32;
-    out[7]=b0*a03+b1*a13+b2*a23+b3*a33;
-    b0=b[8];b1=b[9];b2=b[10];b3=b[11];
-    out[8]=b0*a00+b1*a10+b2*a20+b3*a30;
-    out[9]=b0*a01+b1*a11+b2*a21+b3*a31;
-    out[10]=b0*a02+b1*a12+b2*a22+b3*a32;
-    out[11]=b0*a03+b1*a13+b2*a23+b3*a33;
-    b0=b[12];b1=b[13];b2=b[14];b3=b[15];
-    out[12]=b0*a00+b1*a10+b2*a20+b3*a30;
-    out[13]=b0*a01+b1*a11+b2*a21+b3*a31;
-    out[14]=b0*a02+b1*a12+b2*a22+b3*a32;
-    out[15]=b0*a03+b1*a13+b2*a23+b3*a33;
-    return out;
-  }
-};
 </script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 </body>
