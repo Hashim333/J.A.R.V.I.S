@@ -124,6 +124,9 @@ class ConversationOwner:
         # Whether the mic-unavailable error is currently published (so the
         # recovery loop publishes it once instead of spamming history).
         self._mic_error_published = False
+        # State-change watchdog: track last conversation state change.
+        self._last_state_change = time.monotonic()
+        self._state_watchdog_timeout = 20.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -199,9 +202,17 @@ class ConversationOwner:
             timeout=_CONVERSATION_WATCHDOG_TIMEOUT,
             on_stall=self._on_conversation_stall,
         )
+        # State-change watchdog: if conversation state doesn't change for 20s
+        # outside LISTENING, dump thread stacks and recover to listening.
+        self._watchdog_manager.add(
+            "state_change",
+            timeout=self._state_watchdog_timeout,
+            on_stall=self._on_state_change_stall,
+        )
 
         logger.info("Conversation owner ready")
         consecutive_failed_listens = 0
+        _last_known_state = self._conversation_manager.state
 
         try:
             while True:
@@ -211,6 +222,13 @@ class ConversationOwner:
                 try:
                     self._watchdog_manager.kick("backend_loop")
                     self._watchdog_manager.kick("conversation")
+                    
+                    # Track conversation state changes for the state-change watchdog
+                    current_state = self._conversation_manager.state
+                    if current_state != _last_known_state:
+                        _last_known_state = current_state
+                        self._last_state_change = time.monotonic()
+                        self._watchdog_manager.kick("state_change")
 
                     # ── Check for expired confirmation ──
                     if (
@@ -486,7 +504,6 @@ class ConversationOwner:
                                     # silent background — never speak "I'm still
                                     # listening."; subtitle only, keep listening.
                                     bridge.show_subtitle("I'm still listening.")
-                                    self._wait_for_speech_end(timeout=10.0)
                                     continue
 
                                 # PART 13: silence / noise / empty / garbage never starts
@@ -535,12 +552,13 @@ class ConversationOwner:
                                         handled = True
                                         break
                                     logger.info(
-                                        "WAKE_CAPTURE low confidence (%.3f) — asking to repeat",
+                                        "WAKE_CAPTURE low confidence (%.3f) - asking to repeat",
                                         result.confidence,
                                     )
                                     bridge.show_subtitle(
                                         "Sorry sir, could you repeat that?"
                                     )
+                                    self._speak_with_retry("Sorry sir, could you repeat that?")
                                     self._wait_for_speech_end(timeout=10.0)
                                     continue
 
@@ -765,6 +783,7 @@ class ConversationOwner:
                                 bridge.show_subtitle(
                                     "Sorry sir, could you repeat that?"
                                 )
+                                self._speak_with_retry("Sorry sir, could you repeat that?")
                                 self._wait_for_speech_end(timeout=10.0)
                                 continue
                             logger.info(
@@ -773,6 +792,7 @@ class ConversationOwner:
                             bridge.show_subtitle(
                                 "I didn't catch that. Please try again."
                             )
+                            self._speak_with_retry("I didn't catch that. Please try again.")
                             self._wait_for_speech_end(timeout=10.0)
 
                     time.sleep(_BACKEND_LOOP_SLEEP)
@@ -1130,6 +1150,20 @@ class ConversationOwner:
 
         total_ms = (time.monotonic() - task_started) * 1000.0
         data = getattr(response, "data", {}) or {}
+        
+        # Per-turn latency breakdown
+        stt_ms = speech_recognition_ms if speech_recognition_ms is not None else 0.0
+        # TTS first-byte latency would need to be tracked from turn_trace marks
+        # For now, log the key stages we have
+        logger.info(
+            "LATENCY SUMMARY turn=%s: total=%.0f ms stt=%.0f ms tts_first_byte=see_TTS_STREAM_START intent=%.0f ms exec=%.0f ms",
+            getattr(self._duplex_session, "capture_generation", None),
+            total_ms,
+            stt_ms,
+            brain_ms,  # intent+execution
+            int((time.monotonic() - task_started) * 1000.0 - brain_ms),  # remainder
+        )
+        
         logger.info(
             "COMMAND COMPLETE: command=%r speech_confidence=%s "
             "success=%s status=%s task_result=%s intent=%s "
@@ -1398,6 +1432,63 @@ class ConversationOwner:
         if not stripped:
             return None
         return stripped
+
+    def _on_state_change_stall(self, name: str) -> None:
+        """Watchdog callback: conversation state hasn't changed for 20s outside LISTENING.
+        
+        Dumps thread stacks and recovers to listening state.
+        """
+        import faulthandler
+        import io
+        import sys
+        
+        current_state = self._conversation_manager.state
+        # Only act if we're stuck outside LISTENING state
+        if current_state == ConversationState.LISTENING:
+            logger.debug("State-change watchdog: in LISTENING, skipping recovery")
+            # Re-arm the watchdog since we're in a valid listening state
+            self._watchdog_manager.kick("state_change")
+            return
+        
+        logger.critical(
+            "State-change watchdog: conversation stuck in %s for %.1fs — "
+            "dumping thread stacks and recovering to listening",
+            current_state.value if hasattr(current_state, 'value') else str(current_state),
+            self._state_watchdog_timeout,
+        )
+        
+        # Dump thread stacks to log
+        try:
+            buf = io.StringIO()
+            faulthandler.dump_traceback(buf)
+            stack_dump = buf.getvalue()
+            logger.critical("THREAD STACKS:\n%s", stack_dump)
+        except Exception as exc:
+            logger.error("Failed to dump thread stacks: %s", exc)
+        
+        # Recover: reset capture state, unmute mic, return to idle
+        try:
+            reset = getattr(self._duplex_session, "reset_capture_state", None)
+            if callable(reset):
+                reset()
+        except Exception as exc:
+            logger.error("State-change recovery: reset_capture_state failed: %s", exc)
+        
+        try:
+            self._microphone_stream.unmute()
+        except Exception:
+            pass
+        
+        try:
+            self._conversation_manager.return_to_idle("state-change watchdog recovery")
+            self._bridge.emit_passive("Conversation recovered from stall")
+            self._bridge.show_subtitle("Conversation recovered.")
+        except Exception as exc:
+            logger.error("State-change recovery: return_to_idle failed: %s", exc)
+        
+        # Re-arm the watchdog for the new state
+        self._last_state_change = time.monotonic()
+        self._watchdog_manager.kick("state_change")
 
     @staticmethod
     def _sanitize_voice_response(text: str) -> str:

@@ -8,8 +8,14 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer, QUrl, Qt, QObject, Signal, Slot
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 from pathlib import Path
+
+class DebugPage(QWebEnginePage):
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        level_name = {0: "Info", 1: "Warning", 2: "Error"}.get(level, "Debug")
+        print(f'JS Console [{level_name}] {sourceID}:{lineNumber}: {message}')
+        super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
 
 app = QApplication(sys.argv)
 app.setQuitOnLastWindowClosed(False)
@@ -17,9 +23,12 @@ app.setQuitOnLastWindowClosed(False)
 view = QWebEngineView()
 view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 view.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-view.page().setBackgroundColor(Qt.GlobalColor.transparent)
 
-settings = view.page().settings()
+page = DebugPage(view)
+page.setBackgroundColor(Qt.GlobalColor.transparent)
+view.setPage(page)
+
+settings = page.settings()
 settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
 settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
 settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
@@ -32,16 +41,12 @@ class Bridge(QObject):
 bridge = Bridge()
 channel = QWebChannel()
 channel.registerObject('bridge', bridge)
-view.page().setWebChannel(channel)
+page.setWebChannel(channel)
 
 orb_path = Path('ui/monday_orb.html').resolve()
 print('Loading:', orb_path)
 
-def js_console(level, msg, line, src):
-    print(f'JS[{level}] {src}:{line} {msg}')
-view.page().javaScriptConsoleMessage = js_console
-
-view.loadFinished.connect(lambda ok: print(f'loadFinished: {ok}'))
+page.loadFinished.connect(lambda ok: print(f'loadFinished: {ok}'))
 view.setUrl(QUrl.fromLocalFile(str(orb_path)))
 view.resize(480, 480)
 view.show()
@@ -51,5 +56,5 @@ def check_qt():
     view.page().runJavaScript('console.log("typeof QWebChannel:", typeof QWebChannel); console.log("typeof qt:", typeof qt); console.log("qt.webChannelTransport:", qt && qt.webChannelTransport)', lambda r: print('Result:', r))
 
 QTimer.singleShot(2000, check_qt)
-QTimer.singleShot(4000, lambda: app.quit())
+QTimer.singleShot(6000, lambda: app.quit())
 app.exec()

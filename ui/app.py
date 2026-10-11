@@ -3,19 +3,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, QUrl, QPoint, QRect, QSize
-from PySide6.QtGui import QAction, QIcon, QPainter, QPixmap, QColor, QCursor, QScreen
+from PySide6.QtGui import QAction, QIcon, QPainter, QPixmap, QColor, QScreen, QRadialGradient, QBrush, QPen
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMenu, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QSystemTrayIcon, QWidget
 
-from ui.bridge import Bridge
-from ui.window_manager import WindowManager
+from ui.bridge import Bridge, UIState, DragHandler
 
 logger = logging.getLogger(__name__)
 ACTIVATION_SERVER_NAME = "monday-ui-rebuild"
@@ -54,10 +54,6 @@ class OrbWindow(QMainWindow):
         self._request_quit = request_quit
         self._bridge = bridge
         self._mode = WindowMode.POPUP
-        self._drag_pos: QPoint | None = None
-        self._drag_start_pos: QPoint | None = None
-        self._is_dragging = False
-        self._click_pos: QPoint | None = None
         self._controls_widget: QWidget | None = None
         self._controls_visible = False
 
@@ -84,6 +80,12 @@ class OrbWindow(QMainWindow):
         settings.setAttribute(settings.WebAttribute.Accelerated2dCanvasEnabled, True)
         settings.setAttribute(settings.WebAttribute.WebGLEnabled, False)
 
+        # Set up QWebChannel for JS-Python communication (drag handling)
+        self._web_channel = QWebChannel(self.view.page())
+        self._drag_handler = DragHandler(self)
+        self._web_channel.registerObject("dragHandler", self._drag_handler)
+        self.view.page().setWebChannel(self._web_channel)
+
         # Connect bridge state changes to orb JS
         bridge.stateChanged.connect(self._on_state_changed)
 
@@ -98,8 +100,9 @@ class OrbWindow(QMainWindow):
         # Load persisted config
         self._load_config()
 
-        # Apply initial mode
-        self._apply_mode(self._mode)
+        # Apply initial mode (never start in MINI)
+        initial_mode = self._mode if self._mode in (WindowMode.POPUP, WindowMode.EXPANDED) else WindowMode.POPUP
+        self._apply_mode(initial_mode)
 
         # Create hover controls
         self._create_controls()
@@ -107,7 +110,7 @@ class OrbWindow(QMainWindow):
     def _on_state_changed(self, payload: dict) -> None:
         """Forward bridge state changes to orb JS."""
         # Use json.dumps for proper JS serialization (None -> null, strings escaped)
-        js = f'window.setMondayState({json.dumps(payload.get("state", ""))}, {json.dumps(payload.get("label", ""))}, {json.dumps(payload.get("caption", ""))}, {payload.get("audio_level", 0.0)})'
+        js = f'window.setMondayState({json.dumps(payload.get("state", ""))}, {json.dumps(payload.get("label", ""))}, {json.dumps(payload.get("caption", ""))}, {json.dumps(payload.get("audio_level", 0.0))})'
         self.view.page().runJavaScript(js)
 
     def _on_load_finished(self, ok: bool) -> None:
@@ -158,12 +161,6 @@ class OrbWindow(QMainWindow):
             self._set_radius_factor(1.0)
             self._show_controls(True)
             self._set_rounded_corners(False)
-        elif mode == WindowMode.MINI:
-            self.resize(self.MINI_SIZE)
-            self._set_mini_flags()
-            self._set_radius_factor(1.5)  # Orb fills most of mini window
-            self._show_controls(False)
-            self._set_rounded_corners(True)
         else:
             logger.warning("Unknown window mode: %s", mode)
             return
@@ -188,15 +185,14 @@ class OrbWindow(QMainWindow):
         )
         self.show()
 
-    def _set_mini_flags(self) -> None:
-        # Mini mode: always on top, no taskbar entry, click-through for orb area
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool |
-            Qt.WindowType.WindowTransparentForInput  # Allow click-through for orb
-        )
-        self.show()
+    def hide_to_mini(self) -> None:
+        """Hide this window; the mini orb will be shown by the app."""
+        self.hide()
+        self._save_config()
+
+    def show_popup(self) -> None:
+        """Show as POPUP mode."""
+        self._apply_mode(WindowMode.POPUP)
 
     def _set_radius_factor(self, factor: float) -> None:
         """Send radius factor to JS."""
@@ -282,7 +278,7 @@ class OrbWindow(QMainWindow):
             self._controls_widget.move(x, y)
 
     def _on_minimize(self) -> None:
-        self._apply_mode(WindowMode.MINI)
+        self.hide_to_mini()
 
     def _on_maximize_restore(self) -> None:
         if self._mode == WindowMode.EXPANDED:
@@ -292,47 +288,23 @@ class OrbWindow(QMainWindow):
 
     def _on_close(self) -> None:
         # Close hides to MINI, doesn't quit
-        self._apply_mode(WindowMode.MINI)
+        self.hide_to_mini()
 
     # ========== Drag Handling ==========
+    # Dragging is handled via QWebChannel -> DragHandler.start_drag() -> startSystemMove()
+    # These mouse events only track clicks for controls area detection
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            # In MINI mode, allow dragging from anywhere
-            # In POPUP/EXPANDED, only drag from empty area (not controls)
-            if self._mode == WindowMode.MINI:
-                self._drag_start_pos = event.globalPosition().toPoint()
-                self._drag_pos = self.pos()
-                self._is_dragging = True
-                self._click_pos = event.position().toPoint()
-            else:
-                # Check if click is in controls area
-                if self._controls_widget and self._controls_widget.geometry().contains(event.position().toPoint()):
-                    return
-                self._drag_start_pos = event.globalPosition().toPoint()
-                self._drag_pos = self.pos()
-                self._is_dragging = True
-                self._click_pos = event.position().toPoint()
+            # Check if click is in controls area - if so, let it through for button handling
+            if self._controls_widget and self._controls_widget.geometry().contains(event.position().toPoint()):
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if self._is_dragging and self._drag_start_pos is not None:
-            delta = event.globalPosition().toPoint() - self._drag_start_pos
-            new_pos = self._drag_pos + delta
-            # Clamp to screen bounds
-            new_pos = self._clamp_to_screen(new_pos)
-            self.move(new_pos)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            was_dragging = self._is_dragging
-            self._is_dragging = False
-            self._drag_start_pos = None
-            self._drag_pos = None
-            # In MINI mode, click (not drag) restores POPUP
-            if self._mode == WindowMode.MINI and not was_dragging:
-                self._apply_mode(WindowMode.POPUP)
         super().mouseReleaseEvent(event)
 
     def _clamp_to_screen(self, pos: QPoint) -> QPoint:
@@ -367,9 +339,8 @@ class OrbWindow(QMainWindow):
         super().resizeEvent(event)
 
     def moveEvent(self, event) -> None:
-        # Save position when window moves (user drag or programmatic)
-        if not self._is_dragging:  # Don't save during drag to reduce I/O
-            self._save_config()
+        # Save position when window moves (native drag or programmatic)
+        self._save_config()
         super().moveEvent(event)
 
     # ========== Config Persistence ==========
@@ -421,6 +392,280 @@ class OrbWindow(QMainWindow):
         self._request_quit()
 
 
+class MiniOrbWindow(QWidget):
+    """Native mini orb window - 64x64 frameless, always-on-top, draggable.
+    
+    Paints a round orb with radial gradient core and soft glow layers.
+    Amber for PASSIVE, blue for active states. Slow pulse at ~30fps.
+    Click (movement < 4px) restores POPUP window. Drag moves window.
+    """
+    
+    MINI_SIZE = 64
+    CLICK_THRESHOLD = 4  # pixels
+    
+    def __init__(self, bridge: Bridge, popup_window: 'OrbWindow', request_quit) -> None:
+        super().__init__()
+        self._bridge = bridge
+        self._popup_window = popup_window
+        self._request_quit = request_quit
+        
+        self._drag_start_pos: QPoint | None = None
+        self._drag_start_window_pos: QPoint | None = None
+        self._is_dragging = False
+        self._click_pos: QPoint | None = None
+        
+        self._pulse_phase = 0.0
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(33)  # ~30fps
+        self._pulse_timer.timeout.connect(self._on_pulse_tick)
+        
+        self.setFixedSize(self.MINI_SIZE, self.MINI_SIZE)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setMouseTracking(True)
+        
+        # Connect to bridge state changes
+        bridge.stateChanged.connect(self._on_state_changed)
+        self._current_state = UIState.PASSIVE.value
+        self._audio_level = 0.0
+        
+        # Load saved position
+        self._load_position()
+    
+    def _on_state_changed(self, payload: dict) -> None:
+        """Handle bridge state changes."""
+        state = payload.get("state", UIState.PASSIVE.value)
+        audio_level = payload.get("audio_level", 0.0) or 0.0
+        self._current_state = state
+        self._audio_level = float(audio_level)
+        self.update()  # Trigger repaint
+    
+    def _get_orb_color(self) -> QColor:
+        """Get orb color based on state: amber for PASSIVE, blue for others."""
+        if self._current_state == UIState.PASSIVE.value:
+            return QColor("#ff7b00")  # Amber
+        return QColor("#00d4ff")  # Blue
+    
+    def _on_pulse_tick(self) -> None:
+        """Update pulse animation phase."""
+        self._pulse_phase += 0.05
+        if self._pulse_phase > 2 * math.pi:
+            self._pulse_phase -= 2 * math.pi
+        self.update()
+    
+    def showEvent(self, event) -> None:
+        """Start pulse timer when shown."""
+        super().showEvent(event)
+        self._pulse_timer.start()
+        self.raise_()
+        self.activateWindow()
+        # Grab debug screenshot on first show
+        if not hasattr(self, '_debug_grabbed'):
+            self._debug_grabbed = True
+            QTimer.singleShot(100, self._grab_debug_screenshot)
+    
+    def _grab_debug_screenshot(self) -> None:
+        pixmap = self.grab()
+        if not pixmap.isNull():
+            debug_dir = Path(__file__).parent / "dev_tests" / "screenshots"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            path = debug_dir / "mini_orb_debug.png"
+            pixmap.save(str(path))
+            logger.info("Saved mini orb debug screenshot to %s (size: %dx%d)", path, pixmap.width(), pixmap.height())
+        else:
+            logger.warning("Mini orb grab returned null pixmap")
+    
+    def hideEvent(self, event) -> None:
+        """Stop pulse timer when hidden."""
+        super().hideEvent(event)
+        self._pulse_timer.stop()
+    
+    def paintEvent(self, event) -> None:
+        """Paint the mini orb with radial gradient core and glow layers."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        center = self.rect().center()
+        radius = self.MINI_SIZE // 2 - 2
+        
+        orb_color = self._get_orb_color()
+        
+        # Pulse factor: 1.0 to 1.15 for subtle breathing
+        pulse_factor = 1.0 + 0.15 * (0.5 + 0.5 * math.sin(self._pulse_phase))
+        # Audio reactivity: add subtle scale based on audio level
+        audio_factor = 1.0 + min(self._audio_level * 0.3, 0.3)
+        current_radius = radius * pulse_factor * audio_factor
+        
+        # Draw glow layers (outer to inner)
+        # Layer 1: Outer soft glow
+        glow_radius = current_radius + 12
+        gradient1 = QRadialGradient(center, glow_radius)
+        gradient1.setColorAt(0, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 40))
+        gradient1.setColorAt(0.5, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 15))
+        gradient1.setColorAt(1, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 0))
+        painter.setBrush(QBrush(gradient1))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(center, glow_radius, glow_radius)
+        
+        # Layer 2: Middle glow
+        glow_radius2 = current_radius + 6
+        gradient2 = QRadialGradient(center, glow_radius2)
+        gradient2.setColorAt(0, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 80))
+        gradient2.setColorAt(0.6, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 30))
+        gradient2.setColorAt(1, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 0))
+        painter.setBrush(QBrush(gradient2))
+        painter.drawEllipse(center, glow_radius2, glow_radius2)
+        
+        # Layer 3: Inner glow / core highlight
+        glow_radius3 = current_radius + 2
+        gradient3 = QRadialGradient(center, glow_radius3)
+        gradient3.setColorAt(0, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 180))
+        gradient3.setColorAt(0.7, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 60))
+        gradient3.setColorAt(1, QColor(orb_color.red(), orb_color.green(), orb_color.blue(), 0))
+        painter.setBrush(QBrush(gradient3))
+        painter.drawEllipse(center, glow_radius3, glow_radius3)
+        
+        # Core orb: radial gradient for 3D sphere look
+        core_gradient = QRadialGradient(center, current_radius)
+        # Highlight at top-left
+        highlight_offset = current_radius * 0.3
+        core_gradient.setCenter(center.x() - highlight_offset, center.y() - highlight_offset)
+        core_gradient.setFocalPoint(center.x() - highlight_offset, center.y() - highlight_offset)
+        
+        lighter = orb_color.lighter(140)
+        darker = orb_color.darker(160)
+        core_gradient.setColorAt(0, lighter)
+        core_gradient.setColorAt(0.4, orb_color)
+        core_gradient.setColorAt(1, darker)
+        
+        painter.setBrush(QBrush(core_gradient))
+        painter.drawEllipse(center, current_radius, current_radius)
+        
+        # Subtle specular highlight
+        highlight_radius = current_radius * 0.25
+        highlight_gradient = QRadialGradient(
+            center.x() - highlight_offset, center.y() - highlight_offset,
+            highlight_radius
+        )
+        highlight_gradient.setColorAt(0, QColor(255, 255, 255, 100))
+        highlight_gradient.setColorAt(1, QColor(255, 255, 255, 0))
+        painter.setBrush(QBrush(highlight_gradient))
+        painter.drawEllipse(
+            center.x() - highlight_offset - highlight_radius // 2,
+            center.y() - highlight_offset - highlight_radius // 2,
+            highlight_radius, highlight_radius
+        )
+        
+        painter.end()
+    
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.globalPosition().toPoint()
+            self._drag_start_window_pos = self.pos()
+            self._click_pos = event.position().toPoint()
+            self._is_dragging = False
+            # Start native system drag
+            handle = self.windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event) -> None:
+        # During native drag (startSystemMove), mouseMoveEvent may not fire
+        # We track dragging state here as a fallback
+        if self._drag_start_pos is not None:
+            delta = event.globalPosition().toPoint() - self._drag_start_pos
+            distance = math.hypot(delta.x(), delta.y())
+            if distance > self.CLICK_THRESHOLD:
+                self._is_dragging = True
+        super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Determine if it was a drag by comparing window position
+            # (since mouseMoveEvent may not fire during native drag)
+            was_drag = False
+            if self._drag_start_window_pos is not None:
+                delta = self.pos() - self._drag_start_window_pos
+                distance = math.hypot(delta.x(), delta.y())
+                was_drag = distance > self.CLICK_THRESHOLD
+            
+            self._is_dragging = False
+            self._drag_start_pos = None
+            self._drag_start_window_pos = None
+            self._click_pos = None
+            
+            if was_drag:
+                # Was a drag - clamp and save position
+                self._clamp_and_save_position()
+            else:
+                # Was a click - restore POPUP
+                self.hide()
+                self._popup_window.showNormal()
+                self._popup_window.raise_()
+                self._popup_window.activateWindow()
+                self._popup_window._apply_mode(WindowMode.POPUP)
+        super().mouseReleaseEvent(event)
+    
+    def _clamp_and_save_position(self) -> None:
+        """Clamp position to screen bounds and save."""
+        pos = self.pos()
+        clamped = self._clamp_to_screen(pos)
+        if clamped != pos:
+            self.move(clamped)
+        self._save_position()
+    
+    def _clamp_to_screen(self, pos: QPoint) -> QPoint:
+        """Clamp window position to visible screen area."""
+        screen = QApplication.screenAt(pos) or QApplication.primaryScreen()
+        if not screen:
+            return pos
+        geo = screen.availableGeometry()
+        clamped_x = max(geo.left(), min(pos.x(), geo.right() - self.width()))
+        clamped_y = max(geo.top(), min(pos.y(), geo.bottom() - self.height()))
+        return QPoint(clamped_x, clamped_y)
+    
+    def _load_position(self) -> None:
+        """Load saved mini orb position from config."""
+        config_path = get_config_path()
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                pos = config.get("mini_position")
+                if pos:
+                    self.move(pos[0], pos[1])
+                    self._clamp_to_screen(self.pos())
+            except Exception as e:
+                logger.warning("Failed to load mini orb position: %s", e)
+    
+    def _save_position(self) -> None:
+        """Save mini orb position to config."""
+        config_path = get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            config = {}
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            config["mini_position"] = [self.x(), self.y()]
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f)
+        except Exception as e:
+            logger.warning("Failed to save mini orb position: %s", e)
+    
+    def moveEvent(self, event) -> None:
+        """Save position when window moves (not during drag)."""
+        if not self._is_dragging:
+            self._save_position()
+        super().moveEvent(event)
+
+
 class JarvisApp:
     """Own the Qt application, placeholder window, tray, and quit path."""
 
@@ -433,25 +678,51 @@ class JarvisApp:
         self._app_icon = QIcon(self._make_tray_pixmap(256))
         self.app.setWindowIcon(self._app_icon)
         self.bridge = Bridge()
-        self.wm = WindowManager(self.bridge)
         self.tray: QSystemTrayIcon | None = None
         self._tray_icon: QPixmap | None = None
         self.window = OrbWindow(self.bridge, self.bridge.quit_app)
         self.window.setWindowIcon(self._app_icon)
-        self.wm.set_window(self.window)
+        self.mini_orb = MiniOrbWindow(self.bridge, self.window, self.bridge.quit_app)
+        
+        # Connect bridge window actions directly
+        self.bridge.showRequested.connect(self.show_popup, Qt.ConnectionType.QueuedConnection)
+        self.bridge.hideRequested.connect(self.hide_to_mini, Qt.ConnectionType.QueuedConnection)
         self.bridge.quitRequested.connect(
             self._quit, Qt.ConnectionType.QueuedConnection,
         )
         self._start_activation_server()
         tray_ready = self._setup_tray()
         if start_minimized and tray_ready:
-            self.wm.hide_window()
+            self.hide_to_mini()
         else:
-            self.wm.show_window()
+            self.show_popup()
         self._idle_resource_timer = QTimer(self.app)
         self._idle_resource_timer.setInterval(5 * 60 * 1000)
         self._idle_resource_timer.timeout.connect(self._sample_idle_resources)
         self._idle_resource_timer.start()
+
+    def show_popup(self) -> None:
+        """Show the popup window, hide mini orb."""
+        self.mini_orb.hide()
+        self.window.showNormal()
+        self.window.raise_()
+        self.window.activateWindow()
+        self.window._apply_mode(WindowMode.POPUP)
+
+    def show_mini(self) -> None:
+        """Show the mini orb, hide popup window."""
+        self.window.hide()
+        self.mini_orb.show()
+        self.mini_orb.raise_()
+        self.mini_orb.activateWindow()
+
+    def hide_to_mini(self) -> None:
+        """Hide popup to mini orb."""
+        self.window.hide()
+        self.mini_orb.show()
+        self.mini_orb.raise_()
+        self.mini_orb.activateWindow()
+
     def _setup_tray(self) -> bool:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             logger.info("System tray not available")
@@ -462,13 +733,13 @@ class JarvisApp:
         self.tray.setToolTip("MONDAY")
         menu = QMenu()
 
-        show_action = QAction("Show MONDAY", menu)
-        show_action.triggered.connect(self.wm.show_window)
-        menu.addAction(show_action)
+        show_popup_action = QAction("Show popup", menu)
+        show_popup_action.triggered.connect(self.show_popup)
+        menu.addAction(show_popup_action)
 
-        hide_action = QAction("Hide MONDAY", menu)
-        hide_action.triggered.connect(self.wm.hide_window)
-        menu.addAction(hide_action)
+        show_mini_action = QAction("Show mini orb", menu)
+        show_mini_action.triggered.connect(self.show_mini)
+        menu.addAction(show_mini_action)
 
         autostart_action = QAction("Launch at login", menu)
         autostart_action.setCheckable(True)
@@ -581,7 +852,7 @@ class JarvisApp:
             QSystemTrayIcon.ActivationReason.DoubleClick,
             QSystemTrayIcon.ActivationReason.Trigger,
         ):
-            self.wm.show_window()
+            self.show_popup()
 
     def run(self) -> int:
         logger.info("JARVIS UI: Qt event loop starting")

@@ -214,9 +214,19 @@ def main() -> None:
     # barge-in VADs and streaming STT.
     duplex_session = DuplexVoiceSession(sample_rate=16000)
 
-    # Warm the shared Faster-Whisper model on a background thread so the first
-    # capture is never stalled by the one-time model download/load.
-    preload_model()
+    # Warm the shared Faster-Whisper model and Silero VAD on background threads.
+    # Wait for both to complete before starting capture so the first utterance
+    # is never stalled by model loading. Use offline mode (local cache only)
+    # when models are already cached.
+    warmup_start = time.monotonic()
+    whisper_thread = preload_model(wait=False, local_files_only=True)
+    from voice.silero_vad import preload_silero_vad
+    silero_thread = preload_silero_vad(wait=False, onnx=True)
+    # Wait for both to complete
+    whisper_thread.join(timeout=600.0)
+    silero_thread.join(timeout=60.0)
+    warmup_elapsed = time.monotonic() - warmup_start
+    logger.info("Voice warm-up complete in %.1f s", warmup_elapsed)
 
     def _on_barge_in() -> None:
         """User interrupted JARVIS's speech — stop TTS and get ready to hear them."""

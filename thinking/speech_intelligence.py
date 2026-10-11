@@ -375,6 +375,26 @@ class InstalledAppMatcher:
             logger.warning("InstalledAppMatcher: resolve failed: %s", exc)
             return None
 
+    def get_exact_match(self, name: str) -> str | None:
+        """Return canonical name if *name* exactly matches (case-insensitive)
+        an installed app's canonical name, else None. Does NOT do fuzzy matching."""
+        self.scan()
+        target = name.strip().casefold()
+        if not target:
+            return None
+        if self._injected_apps is not None:
+            for app in self._injected_apps:
+                if app.casefold() == target:
+                    return app
+            return None
+        registry = self._ensure_registry()
+        if registry is None:
+            return None
+        for info in registry.list_applications():
+            if info.canonical_name.casefold() == target:
+                return info.canonical_name
+        return None
+
 
 class SpeechIntelligenceLayer:
     """The Speech Intelligence Layer (FIX-002).
@@ -637,7 +657,21 @@ class SpeechIntelligenceLayer:
                 candidates=(canonical,),
             )
 
-        # 2. Near-ties between the top installed-app matches -> ask which one.
+        # 2. Exact case-insensitive match against installed app canonical names wins.
+        #    If the user said "Notepad" and "Notepad" exists as an installed app,
+        #    we should NOT correct to "Notepad++". Only correct when there is
+        #    no exact match.
+        exact_match = self._app_matcher.get_exact_match(app_token)
+        if exact_match:
+            return self._decide(
+                SpeechAction.EXECUTE,
+                text=text,
+                original=text,
+                transcript=transcript,
+                reason="exact_match",
+            )
+
+        # 3. Near-ties between the top installed-app matches -> ask which one.
         matches = self._app_matcher.search(app_token, threshold=CORRECT_SCORE_THRESHOLD)
         if len(matches) >= 2:
             best_score, second_score = matches[0][1], matches[1][1]

@@ -42,13 +42,14 @@ class TestPlaybackCallbacks(unittest.TestCase):
 
         self.player.on_playback_started = on_start
         data = b"\x00\x01" * 500
+        stop_event = threading.Event()
         with patch.object(self.player, "_close_stream"):
             self.player._audio_data = data
             self.player._sample_rate = 22050
             self.player._sample_width = 2
             self.player._channels = 1
             self.player._ensure_pyaudio()
-            self.player._play_worker()
+            self.player._play_worker(stop_event)
             self.assertTrue(started.is_set())
 
     def test_finished_callback_fires(self) -> None:
@@ -59,13 +60,14 @@ class TestPlaybackCallbacks(unittest.TestCase):
 
         self.player.on_playback_finished = on_finish
         data = b"\x00\x01" * 500
+        stop_event = threading.Event()
         with patch.object(self.player, "_close_stream"):
             self.player._audio_data = data
             self.player._sample_rate = 22050
             self.player._sample_width = 2
             self.player._channels = 1
             self.player._ensure_pyaudio()
-            self.player._play_worker()
+            self.player._play_worker(stop_event)
             self.assertTrue(finished.is_set())
 
     def test_started_before_finished(self) -> None:
@@ -80,18 +82,18 @@ class TestPlaybackCallbacks(unittest.TestCase):
         self.player.on_playback_started = on_start
         self.player.on_playback_finished = on_finish
         data = b"\x00\x01" * 500
+        stop_event = threading.Event()
         with patch.object(self.player, "_close_stream"):
             self.player._audio_data = data
             self.player._sample_rate = 22050
             self.player._sample_width = 2
             self.player._channels = 1
             self.player._ensure_pyaudio()
-            self.player._play_worker()
+            self.player._play_worker(stop_event)
             self.assertEqual(order, ["start", "finish"])
 
     def test_finished_has_cooldown_on_normal_exit(self) -> None:
-        """on_playback_finished is delayed by ~200ms cooldown on natural completion."""
-        start = time.monotonic()
+        """on_playback_finished fires after playback completes (no artificial cooldown)."""
         finished = threading.Event()
 
         def on_finish() -> None:
@@ -99,17 +101,16 @@ class TestPlaybackCallbacks(unittest.TestCase):
 
         self.player.on_playback_finished = on_finish
         data = b"\x00\x01" * 500
+        stop_event = threading.Event()
         with patch.object(self.player, "_close_stream"):
             self.player._audio_data = data
             self.player._sample_rate = 22050
             self.player._sample_width = 2
             self.player._channels = 1
             self.player._ensure_pyaudio()
-            self.player._play_worker()
+            self.player._play_worker(stop_event)
 
-        elapsed = (time.monotonic() - start) * 1000
-        # Cooldown should be at least 180ms (allowing small timing variance)
-        self.assertGreaterEqual(elapsed, 180)
+        self.assertTrue(finished.is_set())
 
     def test_no_cooldown_on_interrupted(self) -> None:
         """When stop() is called, cooldown is skipped."""
@@ -120,15 +121,16 @@ class TestPlaybackCallbacks(unittest.TestCase):
             finished.set()
 
         self.player.on_playback_finished = on_finish
-        self.player._stop_event.set()
         data = b"\x00\x01" * 5000
+        stop_event = threading.Event()
+        stop_event.set()  # Simulate interruption
         with patch.object(self.player, "_close_stream"):
             self.player._audio_data = data
             self.player._sample_rate = 22050
             self.player._sample_width = 2
             self.player._channels = 1
             self.player._ensure_pyaudio()
-            self.player._play_worker()
+            self.player._play_worker(stop_event)
 
         elapsed = (time.monotonic() - start) * 1000
         # No cooldown, should be fast (< 50ms)

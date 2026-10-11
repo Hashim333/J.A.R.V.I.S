@@ -19,6 +19,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from typing import Any, Callable
@@ -34,6 +35,11 @@ _DEFAULT_SAMPLE_RATE = 22050
 _DEFAULT_SAMPLE_WIDTH = 2
 _DEFAULT_CHANNELS = 1
 _PA_FORMAT = pyaudio.paInt16  # 16-bit PCM
+
+# Jitter buffer settings
+_JITTER_BUFFER_MS = 400  # Buffer 400ms before starting playback
+_MAX_JITTER_BUFFER_MS = 2000  # Max buffer to prevent unbounded growth
+_SILENCE_CHUNK_CACHE = {}  # Cache silence chunks by (sample_rate, sample_width, channels, chunk_size)
 
 
 class VoicePlayer:
@@ -214,6 +220,23 @@ class VoicePlayer:
             except Exception as exc:
                 logger.warning("playback_finished callback failed: %s", exc)
 
+    def _get_silence_chunk(self, chunk_size: int) -> bytes:
+        """Get or create a cached silence chunk."""
+        key = (self._sample_rate, self._sample_width, self._channels, chunk_size)
+        if key not in _SILENCE_CHUNK_CACHE:
+            _SILENCE_CHUNK_CACHE[key] = b"\x00" * (chunk_size * self._sample_width * self._channels)
+        return _SILENCE_CHUNK_CACHE[key]
+
+    def _bytes_to_ms(self, byte_count: int) -> float:
+        """Convert byte count to milliseconds at current format."""
+        if self._sample_rate <= 0:
+            return 0.0
+        return (byte_count / (self._sample_rate * self._sample_width * self._channels)) * 1000.0
+
+    # ------------------------------------------------------------------
+    # Internal workers
+    # ------------------------------------------------------------------
+
     def _play_stream_worker(self, chunks, stop_event: threading.Event) -> None:
         gen = self._generation
         stream = None
@@ -224,7 +247,7 @@ class VoicePlayer:
                 channels=self._channels,
                 rate=self._sample_rate,
                 output=True,
-                frames_per_buffer=_CHUNK_SIZE,
+                frames_per_buffer=_CHUNK_SIZE * 4,  # Larger output blocksize for stability
             )
         except Exception as exc:
             logger.error("VoicePlayer: failed to open audio stream: %s", exc)
@@ -233,15 +256,22 @@ class VoicePlayer:
         with self._lock:
             self._stream = stream
             self._stream_gen = gen
+
+        # Jitter buffer: queue incoming chunks, start playback after ~400ms buffered
+        jitter_queue: queue.Queue[bytes] = queue.Queue()
+        jitter_bytes = 0
+        jitter_target_bytes = int(self._sample_rate * self._sample_width * self._channels * (_JITTER_BUFFER_MS / 1000.0))
+        jitter_max_bytes = int(self._sample_rate * self._sample_width * self._channels * (_MAX_JITTER_BUFFER_MS / 1000.0))
+        playback_started = False
+
         offset = 0
         error: str | None = None
+        underrun_count = 0
+        last_write_time = None
         try:
-            if self.on_playback_started is not None:
-                try:
-                    self.on_playback_started()
-                except Exception as exc:
-                    logger.warning("playback_started callback failed: %s", exc)
-            try:
+            # Start pump thread to fill jitter buffer
+            def _pump():
+                nonlocal jitter_bytes
                 for piece in chunks:
                     if stop_event.is_set() or not piece:
                         continue
@@ -251,15 +281,106 @@ class VoicePlayer:
                             break
                         if self._pause_event.is_set():
                             self._pause_event.wait(timeout=0.1)
+                        sub = piece[i:i + _CHUNK_SIZE]
+                        try:
+                            jitter_queue.put(sub, timeout=0.1)
+                            jitter_bytes += len(sub)
+                            # Cap jitter buffer to prevent unbounded growth
+                            if jitter_bytes > jitter_max_bytes:
+                                # Drain excess
+                                while jitter_bytes > jitter_target_bytes:
+                                    try:
+                                        excess = jitter_queue.get_nowait()
+                                        jitter_bytes -= len(excess)
+                                    except queue.Empty:
+                                        break
+                        except queue.Full:
+                            continue
+                # Signal end of stream
+                jitter_queue.put(b"", timeout=1.0)  # Empty bytes = EOS
+
+            pump_thread = threading.Thread(target=_pump, name="jitter-pump", daemon=True)
+            pump_thread.start()
+
+            # Wait for jitter buffer to fill to target
+            while not playback_started and not stop_event.is_set():
+                try:
+                    piece = jitter_queue.get(timeout=0.1)
+                    if piece == b"":  # EOS before playback started
+                        playback_started = True
+                        break
+                    jitter_bytes += len(piece)
+                    if jitter_bytes >= jitter_target_bytes:
+                        playback_started = True
+                        # Put it back for the playback loop
+                        jitter_queue.put(piece, timeout=0.1)
+                        jitter_bytes -= len(piece)
+                        break
+                except queue.Empty:
+                    continue
+
+            if self.on_playback_started is not None:
+                try:
+                    self.on_playback_started()
+                except Exception as exc:
+                    logger.warning("playback_started callback failed: %s", exc)
+
+            try:
+                while not stop_event.is_set():
+                    try:
+                        piece = jitter_queue.get(timeout=0.05)
+                    except queue.Empty:
+                        # Jitter buffer empty - write silence to keep stream alive
+                        if playback_started:
+                            silence = self._get_silence_chunk(_CHUNK_SIZE)
+                            try:
+                                stream.write(silence)
+                                if self.on_chunk_written is not None:
+                                    try:
+                                        self.on_chunk_written(silence, self._sample_rate)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            underrun_count += 1
+                            if underrun_count % 10 == 1:  # Log every 10th underrun
+                                logger.warning(
+                                    "VoicePlayer: buffer underrun, writing silence (count=%d)",
+                                    underrun_count
+                                )
+                        continue
+
+                    if piece == b"":  # EOS
+                        break
+
+                    # Write in _CHUNK_SIZE slices so stop() stays responsive.
+                    for i in range(0, len(piece), _CHUNK_SIZE):
+                        if stop_event.is_set():
+                            break
+                        if self._pause_event.is_set():
+                            self._pause_event.wait(timeout=0.1)
                             continue
                         sub = piece[i:i + _CHUNK_SIZE]
                         try:
+                            now = time.monotonic()
+                            if last_write_time is not None:
+                                gap_ms = (now - last_write_time) * 1000.0
+                                expected_ms = (_CHUNK_SIZE / (self._sample_rate * self._sample_width * self._channels)) * 1000.0
+                                if gap_ms > expected_ms * 3.0:  # >3x expected = likely underrun
+                                    underrun_count += 1
+                                    if underrun_count % 10 == 1:
+                                        logger.warning(
+                                            "VoicePlayer: buffer underrun detected (gap=%.1f ms, expected~%.1f ms, count=%d)",
+                                            gap_ms, expected_ms, underrun_count
+                                        )
                             stream.write(sub)
+                            last_write_time = time.monotonic()
                         except Exception as exc:
                             logger.error("VoicePlayer: stream write error: %s", exc)
                             error = f"write failed: {exc}"
                             break
                         offset += len(sub)
+                        jitter_bytes -= len(sub)
                         turn_mark("AUDIO_BYTES_WRITTEN", bytes=offset)
                         if self.on_chunk_written is not None:
                             try:
@@ -269,19 +390,26 @@ class VoicePlayer:
                     if error is not None:
                         break
             except Exception as exc:
-                # FIX 1: a failing chunk source (e.g. closed HTTP response)
-                # must surface as a playback error, never silent 0.0 sec.
                 logger.error("VoicePlayer: chunk source failed: %s", exc)
                 error = f"source failed: {exc}"
         finally:
+            pump_thread.join(timeout=0.5)
             self._close_owned_stream(gen)
             seconds = offset / (self._sample_rate * self._sample_width * self._channels)
-            logger.info(
-                "VoicePlayer: streaming finished (played %.1f sec%s%s)",
-                seconds,
-                " [interrupted]" if stop_event.is_set() else "",
-                f" [error: {error}]" if error else "",
-            )
+            if underrun_count:
+                logger.warning(
+                    "VoicePlayer: streaming finished with %d buffer underrun(s) (played %.1f sec%s%s)",
+                    underrun_count, seconds,
+                    " [interrupted]" if stop_event.is_set() else "",
+                    f" [error: {error}]" if error else "",
+                )
+            else:
+                logger.info(
+                    "VoicePlayer: streaming finished (played %.1f sec%s%s)",
+                    seconds,
+                    " [interrupted]" if stop_event.is_set() else "",
+                    f" [error: {error}]" if error else "",
+                )
             self._finish_generation(gen, offset, error, stop_event)
             turn_mark(
                 "TTS_PLAYBACK_COMPLETE",
@@ -360,6 +488,8 @@ class VoicePlayer:
         offset = 0
         total = len(data)
         error: str | None = None
+        underrun_count = 0
+        last_write_time = None
 
         try:
             # Fire playback-started callback — mic mute happens here
@@ -380,7 +510,18 @@ class VoicePlayer:
                     break
 
                 try:
+                    now = time.monotonic()
+                    if last_write_time is not None:
+                        gap_ms = (now - last_write_time) * 1000.0
+                        expected_ms = (_CHUNK_SIZE / (self._sample_rate * self._sample_width * self._channels)) * 1000.0
+                        if gap_ms > expected_ms * 3.0:  # >3x expected = likely underrun
+                            underrun_count += 1
+                            logger.warning(
+                                "VoicePlayer: buffer underrun detected (gap=%.1f ms, expected~%.1f ms, count=%d)",
+                                gap_ms, expected_ms, underrun_count
+                            )
                     stream.write(chunk)
+                    last_write_time = time.monotonic()
                 except Exception as exc:
                     logger.error("VoicePlayer: stream write error: %s", exc)
                     error = f"write failed: {exc}"
@@ -399,12 +540,20 @@ class VoicePlayer:
             self._close_owned_stream(gen)
             elapsed = total / (self._sample_rate * self._sample_width * self._channels)
             played = offset / (self._sample_rate * self._sample_width * self._channels)
-            logger.info(
-                "VoicePlayer: finished (played %.1f/%.1f sec%s%s)",
-                played, elapsed,
-                " [interrupted]" if stop_event.is_set() else "",
-                f" [error: {error}]" if error else "",
-            )
+            if underrun_count:
+                logger.warning(
+                    "VoicePlayer: finished with %d buffer underrun(s) (played %.1f/%.1f sec%s%s)",
+                    underrun_count, played, elapsed,
+                    " [interrupted]" if stop_event.is_set() else "",
+                    f" [error: {error}]" if error else "",
+                )
+            else:
+                logger.info(
+                    "VoicePlayer: finished (played %.1f/%.1f sec%s%s)",
+                    played, elapsed,
+                    " [interrupted]" if stop_event.is_set() else "",
+                    f" [error: {error}]" if error else "",
+                )
             # Cooldown then fire playback-finished callback — mic unmute.
             # Generation-guarded so a stale worker cannot unmute/complete
             # newer audio (FIX 3).

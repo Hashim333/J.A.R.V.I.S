@@ -4,6 +4,8 @@ import logging
 import time
 from typing import Any
 
+import psutil
+
 from context_manager.app_detector import AppDetector
 from context_manager.browser_detector import BrowserDetector
 from context_manager.clarification_engine import ClarificationType
@@ -117,21 +119,83 @@ class TaskVerifier:
         )
 
 
-def wait_for_window(app_name: str, process_name: str, timeout: float = 3.0) -> bool:
+def wait_for_window(app_name: str, process_name: str, timeout: float = 4.0) -> bool:
+    """Wait for a visible top-level window or process matching the app.
+    
+    Polls every 250ms for up to timeout seconds. Matches case-insensitively
+    by process name OR window title. Handles Windows 11 packaged apps where
+    the stub process exits and the real process has a different name.
+    """
+    import ctypes
+    from ctypes import wintypes
+    
     deadline = time.monotonic() + timeout
-    import pygetwindow as gw
+    app_lower = app_name.lower()
+    proc_lower = process_name.lower().replace(".exe", "")
+    
+    # EnumWindows callback
+    enum_windows = ctypes.windll.user32.EnumWindows
+    enum_windows_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    get_window_text = ctypes.windll.user32.GetWindowTextW
+    get_window_text_length = ctypes.windll.user32.GetWindowTextLengthW
+    is_window_visible = ctypes.windll.user32.IsWindowVisible
+    get_window_thread_process_id = ctypes.windll.user32.GetWindowThreadProcessId
+    
+    def check_windows() -> bool:
+        """Check for matching visible top-level windows via EnumWindows."""
+        found = False
+        
+        @enum_windows_proc
+        def callback(hwnd: wintypes.HWND, lparam: wintypes.LPARAM) -> bool:
+            nonlocal found
+            if not is_window_visible(hwnd):
+                return True
+            length = get_window_text_length(hwnd)
+            if length == 0:
+                return True
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            get_window_text(hwnd, buffer, length + 1)
+            title = buffer.value.lower()
+            if app_lower in title or proc_lower in title:
+                found = True
+                return False  # Stop enumeration
+            return True
+        
+        enum_windows(callback, 0)
+        return found
+    
     while time.monotonic() < deadline:
+        # Check process existence first (faster)
         try:
-            for window in gw.getAllWindows():
-                title = window.title.strip().lower()
-                if not title or not window.visible:
+            for proc in psutil.process_iter(["name", "pid"]):
+                try:
+                    pname = proc.info.get("name", "").lower()
+                    if proc_lower in pname or app_lower in pname:
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-                if app_name.lower() in title or process_name.lower().replace(".exe", "") in title:
-                    return True
         except Exception:
             pass
-        time.sleep(0.3)
-    return False
+        
+        # Check visible windows via EnumWindows
+        if check_windows():
+            return True
+        
+        time.sleep(0.25)
+    
+    # Final check
+    try:
+        for proc in psutil.process_iter(["name", "pid"]):
+            try:
+                pname = proc.info.get("name", "").lower()
+                if proc_lower in pname or app_lower in pname:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        pass
+    
+    return check_windows()
 
 
 def _is_chrome(process_name: str) -> bool:

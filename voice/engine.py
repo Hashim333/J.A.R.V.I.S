@@ -212,8 +212,11 @@ class VoiceEngine:
         Otherwise the legacy VAD/mic-consumer path is used.
         """
         if self._duplex_session is not None:
+            # Only log on the first arm (arm_barge_in is idempotent)
+            was_armed = self._duplex_session._barge_in_armed
             self._duplex_session.arm_barge_in()
-            logger.info("VoiceEngine: barge-in monitoring started (full-duplex session)")
+            if not was_armed:
+                logger.info("VoiceEngine: barge-in monitoring started (full-duplex session)")
             return
         if self._barge_in_active:
             return

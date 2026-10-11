@@ -129,7 +129,16 @@ _shared_model: Any = None
 _model_lock = threading.Lock()
 
 
-def _get_shared_model():
+def _model_cached(model_size: str) -> bool:
+    """Check if the model is cached locally."""
+    import os
+    from pathlib import Path
+    cache_dir = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    model_dir = cache_dir / f"models--Systran--faster-whisper-{model_size}"
+    return model_dir.exists() and any(model_dir.iterdir())
+
+
+def _get_shared_model(local_files_only: bool = False):
     """Load the shared Faster-Whisper model once (thread-safe).
 
     Configurable via ``JARVIS_WHISPER_MODEL`` (default ``small``),
@@ -141,16 +150,25 @@ def _get_shared_model():
             if _shared_model is None:
                 from faster_whisper import WhisperModel
 
+                model_size = _model_size()
+                # Use offline mode if model is cached
+                if not local_files_only:
+                    local_files_only = _model_cached(model_size)
+                    if local_files_only:
+                        os.environ["HF_HUB_OFFLINE"] = "1"
+                        logger.info("Whisper: model cached locally, using HF_HUB_OFFLINE=1")
+                
                 _shared_model = WhisperModel(
-                    _model_size(),
+                    model_size,
                     device="cpu",
                     compute_type="int8",
                     cpu_threads=_cpu_threads(),
+                    local_files_only=local_files_only,
                 )
     return _shared_model
 
 
-def preload_model(wait: bool = False) -> bool:
+def preload_model(wait: bool = False, local_files_only: bool = False) -> threading.Thread | bool:
     """Warm the shared Whisper model so the first capture never stalls.
 
     The one-time model download/load can take tens of seconds; by default it
@@ -159,17 +177,19 @@ def preload_model(wait: bool = False) -> bool:
     lock (the preload is almost always complete by the time a user speaks).
 
     Args:
-        wait: When True, block until the model is loaded (or fails).
+        wait: When True, block until the model is loaded (or fails) and return bool.
+        local_files_only: When True, use HF_HUB_OFFLINE=1 and local_files_only=True
+            to load from cache only (no network).
 
     Returns:
-        True when the model is available (or the preload was scheduled),
-        False when the model could not be loaded.  Never raises.
+        If wait=False: the preload thread (can be joined later).
+        If wait=True: True when the model is available, False on failure.
     """
     outcome: list[bool] = []
 
     def _load() -> None:
         try:
-            model = _get_shared_model()
+            model = _get_shared_model(local_files_only=local_files_only)
             logger.info("Whisper model preloaded (%s)", getattr(model, "model", "shared"))
             outcome.append(True)
         except Exception as exc:  # noqa: BLE001
@@ -181,7 +201,7 @@ def preload_model(wait: bool = False) -> bool:
     if wait:
         thread.join(timeout=600.0)
         return bool(outcome and outcome[0])
-    return True
+    return thread
 
 
 class WhisperRecognizer:

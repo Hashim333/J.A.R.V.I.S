@@ -37,6 +37,28 @@ class UIState(Enum):
         return {s.value for s in cls}
 
 
+class DragHandler(QObject):
+    """Handles window drag requests from the web view via QWebChannel."""
+
+    def __init__(self, window: QObject | None = None, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._window = window
+
+    def set_window(self, window: QObject) -> None:
+        self._window = window
+
+    @Slot()
+    def start_drag(self) -> None:
+        """Start native system drag for frameless window."""
+        if self._window is not None:
+            # Use Qt 6's startSystemMove for native window dragging
+            handle = self._window.windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+            else:
+                logger.warning("DragHandler: windowHandle() is None")
+
+
 class Bridge(QObject):
     """Single channel for backend state updates and window actions.
 

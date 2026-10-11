@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>JARVIS</title>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
   :root{
     --idle: #ff8000;
@@ -84,6 +85,25 @@
   }
   body.mode-mini canvas { border-radius: 50%; }
   body.mode-expanded #stage { border-radius: 0; }
+
+  /* Drag region - covers full window, allows clicks to pass through to controls */
+  #dragRegion {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 10;
+    cursor: grab;
+    -webkit-app-region: drag;
+  }
+  #dragRegion:active { cursor: grabbing; }
+  /* Disable drag on Qt overlay controls area (top-right ~100x40px) */
+  body.mode-popup #dragRegion::after,
+  body.mode-expanded #dragRegion::after {
+    content: "";
+    position: absolute;
+    top: 0; right: 0;
+    width: 110px; height: 40px;
+    -webkit-app-region: no-drag;
+  }
 </style>
 </head>
 <body>
@@ -95,6 +115,9 @@
   <div class="status" id="status">Idle</div>
   <div class="orb-wrap" id="orbWrap"></div>
   <div class="caption" id="caption"></div>
+  
+  <!-- Drag region for frameless window - covers entire window except where Qt controls overlay -->
+  <div id="dragRegion"></div>
 </div>
 
 <script>
@@ -511,8 +534,23 @@ console.log('HTML script started');
   setInterval(tickClock, 1000);
 
   setJarvisState('idle','Idle');
+
+  // Initialize QWebChannel for drag handling
+  new QWebChannel(qt.webChannelTransport, function(channel) {
+    window.dragHandler = channel.objects.dragHandler;
+    console.log('bridge connected');
+  });
+
+  // Fallback drag handler for when QWebChannel isn't ready
+  const dragRegion = document.getElementById('dragRegion');
+  if (dragRegion) {
+    dragRegion.addEventListener('mousedown', function(e) {
+      if (window.dragHandler && window.dragHandler.start_drag) {
+        window.dragHandler.start_drag();
+      }
+    });
+  }
 })();
 </script>
-<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 </body>
 </html>

@@ -16,3 +16,5 @@ screenshots/
 .jarvis_backend.pid
 
 .jarvis_backend.pid
+
+*.bak*

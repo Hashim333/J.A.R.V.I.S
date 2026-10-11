@@ -80,7 +80,8 @@ class WakeWordService(BaseService):
         self._command_audio = None
         if self._session is not None:
             self._session.reset_wake()
-            self._session.start_wake_detection()
+            # Cooldown to let residual TTS echo drain before wake detector re-arms
+            self._session.start_wake_detection(rearm_cooldown_seconds=0.5)
 
     def start(self) -> None:
         """No-op under VOICE-PIPELINE-004 (direct listening, no wake word).

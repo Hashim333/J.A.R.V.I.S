@@ -264,18 +264,21 @@ class DuplexVoiceSession:
             onset_frames=3,
         )
         # Barge-in VAD (echo-cancelled signal, so JARVIS cannot trigger it).
-        # VOICE-FIX: 200 ms minimum + 5-frame onset so residual TTS echo /
+        # VOICE-FIX: 300 ms minimum + 5-frame onset so residual TTS echo /
         # clicks cannot interrupt; real user speech (300 ms+) still fires
-        # instantly.
+        # instantly. Ignore first 400 ms of playback via grace period.
         self._barge_in_vad = barge_in_vad or SileroVAD(
             on_speech_started=self._on_barge_in_onset,
             on_speech_ended=lambda: None,
             sample_rate=sample_rate,
             silence_hangover_ms=300.0,
-            min_speech_ms=200.0,
+            min_speech_ms=300.0,
             onset_frames=5,
         )
         self._barge_in_armed = False
+        # Ignore barge-in for the first 400 ms of playback to let echo
+        # canceller settle and avoid false triggers from TTS onset.
+        self._barge_in_grace_until: float = 0.0
 
         # Last noise floor applied to the VADs (throttled adaptation) so a
         # steady background (fan / AC / TV) cannot trigger speech onset.
@@ -366,7 +369,11 @@ class DuplexVoiceSession:
         # decode per speech segment can clip the very audio being recorded).
         # Barge-in during speech is handled by the barge-in VAD, not the wake
         # detector, so nothing is lost by the suspension.
-        if self._wake_armed and not self._in_capture and self._wake_detector is not None:
+        # Also suspend while TTS is playing (barge-in armed): the echo canceller
+        # may not perfectly cancel JARVIS's own voice, and residual TTS can
+        # trigger false wake-word detections (e.g. "Wake word detected via
+        # force-flush" when Vosk hears a phoneme fragment in the TTS tail).
+        if self._wake_armed and not self._in_capture and not self._barge_in_armed and self._wake_detector is not None:
             try:
                 # FIX-NO-WAKE-ECHO: the wake detector is not fed during the
                 # re-arm cooldown so the residual tail of JARVIS's own speech
@@ -612,14 +619,36 @@ class DuplexVoiceSession:
             return
         self._barge_in_armed = True
         self._barge_in_vad.reset()
+        # Ignore barge-in for the first 400 ms of playback to let echo
+        # canceller settle and avoid false triggers from TTS onset.
+        self._barge_in_grace_until = time.monotonic() + 0.4
+        # Stop wake detection while TTS plays: residual echo / TTS phonemes
+        # can trigger false wake-word detections (e.g. "Wake word detected
+        # via force-flush") on the echo-cancelled signal.
+        self.stop_wake_detection()
 
     def disarm_barge_in(self) -> None:
         self._barge_in_armed = False
         self._barge_in_vad.reset()
+        self._barge_in_grace_until = 0.0
 
     def _on_barge_in_onset(self) -> None:
         """Real (echo-cancelled) user speech while JARVIS is speaking."""
         if not self._barge_in_armed:
+            return
+        # Ignore barge-in during grace period (first 400 ms of playback)
+        if time.monotonic() < self._barge_in_grace_until:
+            logger.debug("Barge-in onset ignored (grace period)")
+            return
+        # Require echo canceller to be ready (delay locked and positive ERLE)
+        ec = self._echo_canceller
+        if not getattr(ec, "delay_locked", False) or getattr(ec, "erle_db", 0.0) <= 0.0:
+            logger.debug(
+                "Barge-in onset ignored (echo canceller not ready: "
+                "delay_locked=%s erle=%.1f dB)",
+                getattr(ec, "delay_locked", False),
+                getattr(ec, "erle_db", 0.0),
+            )
             return
         self._trigger_barge_in()
 

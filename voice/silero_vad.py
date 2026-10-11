@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import collections
 import logging
+import os
 import threading
 import time
 from typing import Callable
@@ -34,6 +35,56 @@ from typing import Callable
 from voice.vad import VAD
 
 logger = logging.getLogger(__name__)
+
+# Module-level preload state
+_silero_preload_thread: threading.Thread | None = None
+_silero_preload_done = threading.Event()
+_silero_preload_result: bool = False
+
+
+def preload_silero_vad(wait: bool = False, onnx: bool = True) -> threading.Thread | bool:
+    """Warm the Silero VAD model so the first VAD use is not delayed.
+
+    Args:
+        wait: When True, block until the model is loaded (or fails) and return bool.
+        onnx: Whether to load the ONNX variant.
+
+    Returns:
+        If wait=False: the preload thread (can be joined later).
+        If wait=True: True when the model is available, False on failure.
+    """
+    global _silero_preload_thread, _silero_preload_result
+
+    def _load() -> None:
+        global _silero_preload_result
+        try:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            from silero_vad import load_silero_vad
+
+            _ = load_silero_vad(onnx=onnx)
+            logger.info("Silero VAD model preloaded")
+            _silero_preload_result = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Silero VAD preload failed (%s) — will use WebRTC fallback", exc)
+            _silero_preload_result = False
+        finally:
+            _silero_preload_done.set()
+
+    if _silero_preload_thread is not None and _silero_preload_thread.is_alive():
+        if wait:
+            _silero_preload_done.wait(timeout=60.0)
+            return _silero_preload_result
+        return _silero_preload_thread
+
+    _silero_preload_done.clear()
+    _silero_preload_thread = threading.Thread(
+        target=_load, name="silero-vad-preload", daemon=True
+    )
+    _silero_preload_thread.start()
+    if wait:
+        _silero_preload_thread.join(timeout=60.0)
+        return _silero_preload_result
+    return _silero_preload_thread
 
 # Silero consumes exactly 512 samples (32 ms @ 16 kHz) per frame.
 _SILERO_FRAME_SAMPLES = 512

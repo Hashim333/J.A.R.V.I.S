@@ -14,6 +14,9 @@ Supports:
   - Stop / pause / resume via VoicePlayer
   - Retry on transient failure
   - Comprehensive logging
+  - requests.Session with keep-alive for connection reuse
+  - 4096-byte chunk reads for smoother streaming
+  - Per-utterance logging: bytes received, seconds written, why stream ended
 """
 
 from __future__ import annotations
@@ -23,10 +26,9 @@ import logging
 import queue
 import threading
 import time
-import urllib.error
-import urllib.request
-from socket import timeout as SocketTimeout
 from typing import Any
+
+import requests
 
 from config.settings import settings
 from monitoring.turn_trace import mark as turn_mark
@@ -39,13 +41,10 @@ ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 _REQUEST_TIMEOUT = 30
 _MAX_RETRIES = 1
 
-# Streaming pump bounds (FIX 1).  The pump thread moves HTTP chunks into a
-# bounded queue so playback starts after the first chunk while memory stays
-# capped (~32 x 32 KiB ~= 1 MiB, ~23 s of audio) — still streaming, never a
-# full-audio buffer.
-_PUMP_QUEUE_SIZE = 32
-_PUMP_CHUNK_BYTES = 32768
-_FIRST_BYTE_TIMEOUT = 10.0
+# Streaming pump bounds.  Read in 4096-byte chunks for smoother flow.
+_PUMP_QUEUE_SIZE = 64
+_PUMP_CHUNK_BYTES = 4096
+_FIRST_BYTE_TIMEOUT = 15.0
 
 # Sentinel pushed when the pump finishes or fails (never yielded downstream).
 _PUMP_DONE = object()
@@ -61,12 +60,21 @@ _PCM_FORMATS: dict[str, tuple[int, int]] = {
 _DEFAULT_OUTPUT_FORMAT = "pcm_22050"
 _DEFAULT_PLAYBACK_FORMAT = (22050, 2, 1)  # sample_rate, sample_width, channels
 
+# Default playback format constants for logging
+SAMPLE_RATE, CHANNELS = _PCM_FORMATS.get(_DEFAULT_OUTPUT_FORMAT, (22050, 1))
+SAMPLE_WIDTH = 2
+BYTES_PER_SEC = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS
+
 
 class ElevenLabsProvider(VoiceProvider):
     """Speak through ElevenLabs using configuration-provided credentials.
 
     Audio is played through a shared VoicePlayer instance.
+    Uses requests.Session with keep-alive for connection reuse.
     """
+
+    _session: requests.Session | None = None
+    _session_lock = threading.Lock()
 
     def __init__(
         self,
@@ -113,7 +121,7 @@ class ElevenLabsProvider(VoiceProvider):
         self._player = player or VoicePlayer()
         self._stats: dict[str, Any] = {}
         # Active streaming download (response, stop-event), if any.  Owned
-        # by the pump thread; cancelled from stop() on barge-in (FIX 1).
+        # by the pump thread; cancelled from stop() on barge-in.
         self._active_stream: tuple[Any, threading.Event] | None = None
 
         # Speech speed multiplier (1.0 = normal, 1.2 = 20% faster, max supported by ElevenLabs).
@@ -128,6 +136,9 @@ class ElevenLabsProvider(VoiceProvider):
         # Validate configuration
         self._validate_config()
 
+        # Initialize shared session
+        self._ensure_session()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -137,6 +148,7 @@ class ElevenLabsProvider(VoiceProvider):
 
         Returns True when the API request was accepted. Audio plays
         asynchronously on the VoicePlayer's background thread.
+        Uses requests.Session with keep-alive for connection reuse.
         """
         if not isinstance(text, str) or not text.strip():
             return False
@@ -151,7 +163,7 @@ class ElevenLabsProvider(VoiceProvider):
             return False
 
         payload = text.strip()
-        request = self._build_request(payload)
+        url, headers, body, params = self._build_request_data(payload)
         last_error: Exception | None = None
 
         for attempt in range(1 + _MAX_RETRIES):
@@ -163,14 +175,20 @@ class ElevenLabsProvider(VoiceProvider):
             )
 
             start = time.monotonic()
+            session = self._ensure_session()
+            response = None
             try:
-                response = urllib.request.urlopen(request, timeout=self._timeout)
-                status = response.status
+                response = session.post(
+                    url,
+                    data=body,
+                    headers=headers,
+                    params=params,
+                    timeout=self._timeout,
+                    stream=True,
+                )
+                status = response.status_code
                 content_type = response.headers.get("Content-Type", "")
-                # VOICE-FIX: streaming responses are owned by the pump until
-                # playback consumption ends.  Do not use a surrounding
-                # context manager here: it would close the response as soon
-                # as _play_pcm_stream returns, before the player reads it.
+
                 is_pcm_stream = self._output_format in _PCM_FORMATS or any(
                     fmt in content_type for fmt in (
                         "audio/pcm", "audio/L16", "audio/l16",
@@ -179,32 +197,27 @@ class ElevenLabsProvider(VoiceProvider):
                 )
                 if is_pcm_stream:
                     return self._play_pcm_stream(response, start, content_type)
-                try:
-                    audio_data = response.read()
-                finally:
-                    response.close()
-            except urllib.error.HTTPError as exc:
+
+                # Non-streaming: read all content
+                audio_data = response.content
+            except requests.exceptions.HTTPError as exc:
                 elapsed = (time.monotonic() - start) * 1000
                 try:
-                    body = exc.read().decode("utf-8", errors="replace")
+                    body_text = exc.response.text if exc.response else "<no response>"
                 except Exception:
-                    body = "<unreadable>"
+                    body_text = "<unreadable>"
+                code = exc.response.status_code if exc.response else 0
                 logger.warning(
                     "ElevenLabs: HTTP %d (attempt %d, %.0f ms): %s | body: %s",
-                    exc.code, attempt + 1, elapsed, exc, body,
+                    code, attempt + 1, elapsed, exc, body_text[:200],
                 )
                 last_error = exc
-                # FIX-QUOTA-NO-RETRY: 401 (invalid/quota key) and 429 (quota
-                # exceeded) are NOT transient — retrying only stacks silent
-                # dead seconds onto every spoken line.  Fail immediately so
-                # the VoiceManager fallback chain (Piper -> system) takes over
-                # without delay.
-                if exc.code in (401, 429):
+                if code in (401, 429):
                     self._quota_blocked = True
                     logger.warning(
                         "ElevenLabs: HTTP %d is a permanent quota/auth error — "
                         "not retrying, switching provider (elapsed %.0f ms)",
-                        exc.code, elapsed,
+                        code, elapsed,
                     )
                     return False
                 if attempt < _MAX_RETRIES:
@@ -212,8 +225,7 @@ class ElevenLabsProvider(VoiceProvider):
                     time.sleep(0.5)
                 continue
             except (
-                urllib.error.URLError,
-                SocketTimeout,
+                requests.exceptions.RequestException,
                 TimeoutError,
                 OSError,
             ) as exc:
@@ -227,6 +239,12 @@ class ElevenLabsProvider(VoiceProvider):
                     logger.info("ElevenLabs: retrying...")
                     time.sleep(0.5)
                 continue
+            finally:
+                if response is not None and not is_pcm_stream:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
 
             elapsed = (time.monotonic() - start) * 1000
             self._stats["last_request_ms"] = elapsed
@@ -287,13 +305,11 @@ class ElevenLabsProvider(VoiceProvider):
     def _play_pcm_stream(self, response, start: float, content_type: str) -> bool:
         """Play a PCM HTTP response incrementally as chunks arrive.
 
-        FIX 1: the old code handed the player worker a lazy generator over
-        the live HTTP response and returned immediately — the ``with``
-        block then closed the response before the first read, so playback
-        died with 0 bytes consumed while success was reported.  Now a pump
-        thread owns the response lifetime (it closes it only after EOF /
-        error / cancellation), playback starts after the first real chunk,
-        and ``False`` is returned when no audio was ever consumed.
+        Uses 4096-byte reads for smoother streaming. A pump thread owns the
+        response lifetime (closes it only after EOF / error / cancellation).
+        Playback starts after the first real chunk. Returns False when no
+        audio was ever consumed. Logs per-utterance: bytes received, seconds
+        written, why the stream ended, any swallowed exception.
         """
         sample_rate, channels = _PCM_FORMATS.get(
             self._output_format, (22050, 1)
@@ -301,17 +317,18 @@ class ElevenLabsProvider(VoiceProvider):
         chunks: queue.Queue = queue.Queue(maxsize=_PUMP_QUEUE_SIZE)
         pump_error: list[str] = []
         pump_stop = threading.Event()
+        bytes_received = 0
 
         def _pump() -> None:
+            nonlocal bytes_received
             try:
-                while not pump_stop.is_set():
-                    try:
-                        piece = response.read(_PUMP_CHUNK_BYTES)
-                    except Exception as exc:
-                        pump_error.append(f"read failed: {exc}")
+                # Use iter_content with 4096-byte chunks for smooth streaming
+                for piece in response.iter_content(chunk_size=_PUMP_CHUNK_BYTES):
+                    if pump_stop.is_set():
                         break
                     if not piece:
-                        break
+                        continue
+                    bytes_received += len(piece)
                     # Bounded put with stop checks so cancellation never wedges.
                     while not pump_stop.is_set():
                         try:
@@ -319,12 +336,13 @@ class ElevenLabsProvider(VoiceProvider):
                             break
                         except queue.Full:
                             continue
+            except Exception as exc:
+                pump_error.append(f"read failed: {exc}")
+                logger.error("ElevenLabs: pump thread error: %s", exc)
             finally:
                 try:
                     chunks.put(_PUMP_DONE, timeout=1.0)
                 except queue.Full:
-                    # Consumer gone (cancelled) — drop the sentinel; the
-                    # generator below also terminates on pump_stop.
                     pass
                 try:
                     response.close()
@@ -333,15 +351,12 @@ class ElevenLabsProvider(VoiceProvider):
 
         # Track the active stream so stop() can cancel a download whose
         # playback was interrupted (barge-in must not leak sockets/threads).
-        # Cleared below when this stream drains normally; only cleared if
-        # still ours so a newer utterance is never disturbed (FIX 3).
         active_token = (response, pump_stop)
         self._active_stream = active_token
         pump = threading.Thread(target=_pump, name="elevenlabs-pump", daemon=True)
         pump.start()
         try:
             # Gate success on real audio: wait (bounded) for the first chunk.
-            # This is what makes "streaming started" an honest statement.
             first: Any = None
             deadline = time.monotonic() + _FIRST_BYTE_TIMEOUT
             while True:
@@ -366,6 +381,7 @@ class ElevenLabsProvider(VoiceProvider):
                 pump_stop.set()
                 if self._active_stream is active_token:
                     self._active_stream = None
+                self._log_stream_end(bytes_received, 0.0, "no_first_chunk", pump_error[0] if pump_error else None)
                 return False
 
             first_at = time.monotonic()
@@ -400,7 +416,7 @@ class ElevenLabsProvider(VoiceProvider):
                         yield piece
                 finally:
                     # Drained (or abandoned): release our tracking slot only
-                    # if a newer utterance hasn't claimed it (FIX 3).
+                    # if a newer utterance hasn't claimed it.
                     if self._active_stream is active_token:
                         self._active_stream = None
 
@@ -421,7 +437,18 @@ class ElevenLabsProvider(VoiceProvider):
             pump_stop.set()
             if self._active_stream is active_token:
                 self._active_stream = None
+            self._log_stream_end(bytes_received, 0.0, "setup_failed", str(exc))
             return False
+
+    def _log_stream_end(self, bytes_received: int, seconds_played: float, reason: str, error: str | None = None) -> None:
+        """Log per-utterance stream end diagnostics."""
+        audio_seconds = bytes_received / BYTES_PER_SEC if BYTES_PER_SEC else 0.0
+        logger.info(
+            "ElevenLabs: stream ended — bytes_received=%d audio_seconds=%.3f "
+            "played_seconds=%.3f reason=%s%s",
+            bytes_received, audio_seconds, seconds_played, reason,
+            f" error={error}" if error else "",
+        )
 
     def stop(self) -> None:
         """Stop playback immediately, including any in-flight download."""
@@ -464,12 +491,36 @@ class ElevenLabsProvider(VoiceProvider):
         """Return diagnostic statistics."""
         return dict(self._stats)
 
+    @classmethod
+    def _ensure_session(cls) -> requests.Session:
+        """Get or create the shared requests.Session with keep-alive."""
+        with cls._session_lock:
+            if cls._session is None:
+                cls._session = requests.Session()
+                # Mount adapter with connection pooling
+                adapter = requests.adapters.HTTPAdapter(
+                    pool_connections=2,
+                    pool_maxsize=4,
+                    max_retries=0,  # We handle retries ourselves
+                )
+                cls._session.mount("https://", adapter)
+                cls._session.mount("http://", adapter)
+            return cls._session
+
+    @classmethod
+    def close_session(cls) -> None:
+        """Close the shared session (call at shutdown)."""
+        with cls._session_lock:
+            if cls._session is not None:
+                cls._session.close()
+                cls._session = None
+
     # ------------------------------------------------------------------
     # Internal: request building
     # ------------------------------------------------------------------
 
-    def _build_request(self, text: str) -> urllib.request.Request:
-        """Build a streaming HTTP request with PCM output format."""
+    def _build_request_data(self, text: str) -> tuple[str, dict, bytes]:
+        """Build URL, headers, and body for the request."""
         body_fields: dict[str, Any] = {
             "text": text,
             "model_id": self._model,
@@ -501,16 +552,14 @@ class ElevenLabsProvider(VoiceProvider):
             else "audio/mpeg"
         )
 
-        return urllib.request.Request(
-            f"{url}?output_format={self._output_format}",
-            data=body,
-            headers={
-                "Accept": accept,
-                "Content-Type": "application/json",
-                "xi-api-key": self._api_key or "",
-            },
-            method="POST",
-        )
+        headers = {
+            "Accept": accept,
+            "Content-Type": "application/json",
+            "xi-api-key": self._api_key or "",
+        }
+
+        params = {"output_format": self._output_format}
+        return url, headers, body, params
 
     # ------------------------------------------------------------------
     # Internal: MP3 playback
