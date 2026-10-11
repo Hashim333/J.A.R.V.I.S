@@ -25,8 +25,10 @@ from __future__ import annotations
 import logging
 import queue
 import re
+import sys
 import threading
 import time
+import traceback
 
 from brain.intent_normalizer import Intent, normalize as normalize_intent
 from monitoring.instrumentation import Timer
@@ -212,6 +214,7 @@ class ConversationOwner:
 
         logger.info("Conversation owner ready")
         consecutive_failed_listens = 0
+        conversation_repeat_rounds = 0
         _last_known_state = self._conversation_manager.state
 
         try:
@@ -455,6 +458,7 @@ class ConversationOwner:
                                         self._conversation_manager.transition_to_active(
                                             "command complete"
                                         )
+                                    conversation_repeat_rounds = 0
                                     _stage_exit(
                                         "backend.wake_command", wake_start, status="OK"
                                     )
@@ -727,6 +731,7 @@ class ConversationOwner:
                                 self._conversation_manager.transition_to_active(
                                     "command complete"
                                 )
+                            conversation_repeat_rounds = 0
                         else:
                             reason = result.reason or ""
                             text = (result.text or "").strip()
@@ -776,6 +781,19 @@ class ConversationOwner:
                             # so restart the silence window and ask them to repeat once.
                             self._conversation_manager.reset_activity()
                             if reason == "low confidence":
+                                conversation_repeat_rounds += 1
+                                if conversation_repeat_rounds >= _MAX_WAKE_REPEAT_ROUNDS:
+                                    logger.info(
+                                        "Conversation low confidence repeated %d "
+                                        "rounds — returning to idle",
+                                        conversation_repeat_rounds,
+                                    )
+                                    bridge.show_subtitle("Ready when you are.")
+                                    self._conversation_manager.return_to_idle(
+                                        "repeat limit"
+                                    )
+                                    conversation_repeat_rounds = 0
+                                    continue
                                 logger.info(
                                     "Conversation low confidence (%.3f) — asking to repeat",
                                     result.confidence,
@@ -783,7 +801,9 @@ class ConversationOwner:
                                 bridge.show_subtitle(
                                     "Sorry sir, could you repeat that?"
                                 )
-                                self._speak_with_retry("Sorry sir, could you repeat that?")
+                                spoken = self._speak_with_retry("Sorry sir, could you repeat that?")
+                                if not spoken:
+                                    logger.warning("TTS failed for repeat prompt; re-arming capture anyway")
                                 self._wait_for_speech_end(timeout=10.0)
                                 continue
                             logger.info(
@@ -792,7 +812,9 @@ class ConversationOwner:
                             bridge.show_subtitle(
                                 "I didn't catch that. Please try again."
                             )
-                            self._speak_with_retry("I didn't catch that. Please try again.")
+                            spoken = self._speak_with_retry("I didn't catch that. Please try again.")
+                            if not spoken:
+                                logger.warning("TTS failed for repeat prompt; re-arming capture anyway")
                             self._wait_for_speech_end(timeout=10.0)
 
                     time.sleep(_BACKEND_LOOP_SLEEP)
@@ -1434,61 +1456,148 @@ class ConversationOwner:
         return stripped
 
     def _on_state_change_stall(self, name: str) -> None:
-        """Watchdog callback: conversation state hasn't changed for 20s outside LISTENING.
-        
-        Dumps thread stacks and recovers to listening state.
+        """Watchdog callback: conversation state hasn't changed for the per-state limit.
+
+        Dumps thread stacks (with thread names) and recovers based on state:
+        - SPEAKING > 30s: interrupt TTS, return to listening
+        - THINKING/WORKING > 60s: cancel task, return to listening
+        - LISTENING with no active capture > 20s: restart capture
+        - WAITING_CONFIRMATION: exempt (waits for user)
+        - Other states > 20s: return to idle
         """
-        import faulthandler
-        import io
-        import sys
-        
         current_state = self._conversation_manager.state
-        # Only act if we're stuck outside LISTENING state
-        if current_state == ConversationState.LISTENING:
-            logger.debug("State-change watchdog: in LISTENING, skipping recovery")
-            # Re-arm the watchdog since we're in a valid listening state
+        elapsed = time.monotonic() - self._last_state_change
+
+        # Per-state timeout limits
+        if current_state == ConversationState.WAITING_CONFIRMATION:
+            logger.debug(
+                "State-change watchdog: WAITING_CONFIRMATION exempt from timeout "
+                "(elapsed=%.1fs)", elapsed
+            )
             self._watchdog_manager.kick("state_change")
             return
-        
+
+        if current_state == ConversationState.SPEAKING:
+            limit = 30.0
+        elif current_state in (ConversationState.THINKING, ConversationState.EXECUTING):
+            limit = 60.0
+        elif current_state == ConversationState.LISTENING:
+            limit = 20.0
+        else:
+            limit = self._state_watchdog_timeout  # 20.0 default
+
+        if elapsed < limit:
+            # Not actually stalled yet - re-arm and return
+            self._watchdog_manager.kick("state_change")
+            return
+
         logger.critical(
-            "State-change watchdog: conversation stuck in %s for %.1fs — "
-            "dumping thread stacks and recovering to listening",
+            "State-change watchdog: conversation stuck in %s for %.1fs (limit=%.1fs) — "
+            "dumping thread stacks and recovering",
             current_state.value if hasattr(current_state, 'value') else str(current_state),
-            self._state_watchdog_timeout,
+            elapsed, limit,
         )
-        
-        # Dump thread stacks to log
+
+        # Dump thread stacks with thread names
         try:
-            buf = io.StringIO()
-            faulthandler.dump_traceback(buf)
-            stack_dump = buf.getvalue()
-            logger.critical("THREAD STACKS:\n%s", stack_dump)
+            frames = sys._current_frames()
+            lines = ["THREAD STACKS:"]
+            for thread_id, frame in frames.items():
+                # Find thread name
+                thread_name = "unknown"
+                for t in threading.enumerate():
+                    if t.ident == thread_id:
+                        thread_name = t.name
+                        break
+                lines.append(f"\n--- Thread {thread_id} ({thread_name}) ---")
+                lines.extend(traceback.format_stack(frame))
+            stack_dump = "\n".join(lines)
+            logger.critical("%s", stack_dump)
         except Exception as exc:
             logger.error("Failed to dump thread stacks: %s", exc)
-        
-        # Recover: reset capture state, unmute mic, return to idle
+
+        # State-specific recovery
+        recovery_ok = False
+        if current_state == ConversationState.SPEAKING:
+            # Interrupt TTS and return to listening
+            try:
+                self._voice_engine.interrupt(reason="state-watchdog speaking timeout")
+                self._voice_engine.stop_barge_in()
+                recovery_ok = True
+                logger.info("Recovery: interrupted TTS in SPEAKING state")
+            except Exception as exc:
+                logger.warning("Recovery: failed to interrupt TTS: %s", exc)
+
+        elif current_state in (ConversationState.THINKING, ConversationState.EXECUTING):
+            # Cancel active task and return to listening
+            try:
+                self._task_manager.cancel_active(reason="state-watchdog thinking timeout")
+                self._brain.cancel_current()
+                self._duplex_session.cancel_capture()
+                recovery_ok = True
+                logger.info("Recovery: cancelled task in %s state", current_state)
+            except Exception as exc:
+                logger.warning("Recovery: failed to cancel task: %s", exc)
+
+        elif current_state == ConversationState.LISTENING:
+            # Check if there's an active capture; if not, restart capture
+            try:
+                capture_active = self._duplex_session.is_capture_active
+            except Exception as exc:
+                logger.error("Recovery: failed to check capture state: %s", exc)
+                capture_active = False
+
+            if capture_active:
+                # Capture is running but stuck - cancel and let loop restart
+                try:
+                    self._duplex_session.cancel_capture()
+                    logger.info("Recovery: cancelled stuck capture in LISTENING state")
+                except Exception as exc:
+                    logger.warning("Recovery: failed to cancel stuck capture: %s", exc)
+            else:
+                # No active capture - ensure listening path is ready and re-arm
+                logger.info("Recovery: LISTENING with no active capture, re-arming capture path")
+                try:
+                    ready = self._ensure_listening_ready()
+                    if ready:
+                        logger.info("Recovery: listening path ready, loop will restart capture")
+                        recovery_ok = True
+                    else:
+                        logger.warning("Recovery: listening path not ready after _ensure_listening_ready")
+                except Exception as exc:
+                    logger.warning("Recovery: _ensure_listening_ready failed: %s", exc)
+
+        else:
+            # Other states (IDLE, etc.) - return to idle
+            try:
+                self._conversation_manager.return_to_idle("state-change watchdog recovery")
+                self._bridge.emit_passive("Conversation recovered from stall")
+                self._bridge.show_subtitle("Conversation recovered.")
+                recovery_ok = True
+                logger.info("Recovery: returned to idle from %s state", current_state)
+            except Exception as exc:
+                logger.warning("Recovery: return_to_idle failed: %s", exc)
+
+        # Common cleanup
         try:
             reset = getattr(self._duplex_session, "reset_capture_state", None)
             if callable(reset):
                 reset()
+                logger.debug("Recovery: reset_capture_state called")
         except Exception as exc:
-            logger.error("State-change recovery: reset_capture_state failed: %s", exc)
-        
+            logger.warning("Recovery: reset_capture_state failed: %s", exc)
+
         try:
             self._microphone_stream.unmute()
-        except Exception:
-            pass
-        
-        try:
-            self._conversation_manager.return_to_idle("state-change watchdog recovery")
-            self._bridge.emit_passive("Conversation recovered from stall")
-            self._bridge.show_subtitle("Conversation recovered.")
         except Exception as exc:
-            logger.error("State-change recovery: return_to_idle failed: %s", exc)
-        
+            logger.warning("Recovery: microphone_stream.unmute failed: %s", exc)
+
         # Re-arm the watchdog for the new state
         self._last_state_change = time.monotonic()
         self._watchdog_manager.kick("state_change")
+
+        if not recovery_ok:
+            logger.warning("Recovery: no recovery action succeeded for state %s", current_state)
 
     @staticmethod
     def _sanitize_voice_response(text: str) -> str:
