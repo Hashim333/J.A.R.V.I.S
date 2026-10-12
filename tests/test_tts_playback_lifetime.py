@@ -40,6 +40,19 @@ class FakeResponse:
             return b""
         return self._chunks.pop(0)
 
+    def iter_content(self, chunk_size=1, decode_unicode=False):
+        """Model ``requests.Response.iter_content`` on top of ``read``.
+
+        The provider streams through ``iter_content`` (the requests API), so
+        a double exposing only ``read`` made the pump fail with an
+        AttributeError before a single chunk was delivered.
+        """
+        while True:
+            piece = self.read(chunk_size)
+            if not piece:
+                return
+            yield piece
+
     def close(self):
         self.closed = True
 

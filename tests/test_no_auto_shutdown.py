@@ -25,6 +25,7 @@ import time
 import unittest
 from unittest.mock import MagicMock
 
+from fake_bridge import FakeBridge
 from models.response import Response
 from models.task_result import TaskResult
 from services.conversation_manager import ConversationManager
@@ -45,8 +46,29 @@ def _capture(text="", confidence=0.0, accepted=False, reason="no_speech"):
     )
 
 
+def _fail_first_emit_listening(bridge: FakeBridge) -> None:
+    """Make the first LISTENING publication raise.
+
+    This injects the failure class the recovery path exists for: an exception
+    escaping the loop body (not one raised by a command, which is contained by
+    ``_run_command_safe``).  The owner must recover in-loop and keep running.
+    """
+    original = bridge.emit_listening
+    state = {"calls": 0}
+
+    def _flaky(caption="Listening...", *args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("bridge boom")
+        return original(caption, *args, **kwargs)
+
+    bridge.emit_listening = _flaky
+
+
 def _make_owner(*, brain_process=None, voice_enabled=False):
-    bridge = MagicMock()
+    # Bridge-faithful double (see tests/fake_bridge.py) so owner state
+    # publications are observable exactly as the Qt UI would see them.
+    bridge = FakeBridge()
     brain = MagicMock()
     if brain_process is not None:
         brain.process = MagicMock(side_effect=brain_process)
@@ -159,13 +181,8 @@ class TestFailureNeverShutsDown(unittest.TestCase):
         self.assertFalse(env["shutdown_event"].is_set(), "auto-shutdown fired")
         if expected_idle:
             self.assertTrue(
-                _wait_until(
-                    lambda: any(
-                        c.args[0] == "idle"
-                        for c in env["bridge"].set_core_state.call_args_list
-                    )
-                ),
-                "owner never returned to idle",
+                _wait_until(lambda: env["bridge"].saw("idle")),
+                "owner never published the ready (idle) state",
             )
         self.assertTrue(_shutdown(env, thread))
 
@@ -217,21 +234,19 @@ class TestFailureNeverShutsDown(unittest.TestCase):
         self._assert_survives(env, thread)
 
     def test_runtime_exception_recovers_and_keeps_running(self) -> None:
+        """An exception escaping the loop body must be recovered in-loop."""
         env = _make_owner(brain_process=lambda *a, **k: Response(
             success=True, message="Done.", task_result=TaskResult.SUCCESS,
         ))
-        env["bridge"].set_backend_heartbeat.side_effect = RuntimeError("boom")
+        _fail_first_emit_listening(env["bridge"])
         thread = _start(env)
         time.sleep(0.6)
         self._assert_survives(env, thread)
-        # Recovery path restored a usable idle state.
+        # The recovery path published the recoverable-error state, and the
+        # loop kept running (later passes still publish LISTENING).
         self.assertTrue(
-            _wait_until(
-                lambda: any(
-                    c.args[0] == "idle"
-                    for c in env["bridge"].set_core_state.call_args_list
-                )
-            )
+            _wait_until(lambda: env["bridge"].saw("error")),
+            "recovery never published a recoverable-error state",
         )
         self.assertTrue(_shutdown(env, thread))
 

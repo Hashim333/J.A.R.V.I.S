@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import traceback
+from typing import Any
 
 from brain.intent_normalizer import Intent, normalize as normalize_intent
 from monitoring.instrumentation import Timer
@@ -63,6 +64,12 @@ _MAX_WAKE_REPEAT_ROUNDS = 3
 # SHORT time and then returns to wake/idle — it never sits silent for the
 # full 30 s.  (The speech-end wait is owned by the capture VAD, not here.)
 _WAKE_LISTEN_TIMEOUT_SECONDS = 10.0
+# While a capture is in flight the conversation loop is blocked inside
+# ``capture_command`` and cannot kick the liveness watchdogs itself.  A single
+# utterance can legitimately occupy that thread for a minute or more (a 15 s
+# max utterance followed by several full transcription passes), so an
+# in-flight capture must be reported as progress rather than a stall.
+_CAPTURE_HEARTBEAT_SECONDS = 1.0
 
 _WAKE_PHRASE = "monday"
 _WAKE_PATTERN = re.compile(rf'\b{re.escape(_WAKE_PHRASE)}\b', re.IGNORECASE)
@@ -379,7 +386,7 @@ class ConversationOwner:
                                 logger.debug("TURN LISTENING READY (capture pass)")
                                 try:
                                     with Timer("capture_command"):
-                                        result = self._duplex_session.capture_command(
+                                        result = self._capture_with_heartbeat(
                                             timeout=_WAKE_LISTEN_TIMEOUT_SECONDS,
                                             on_partial=lambda text: bridge.show_subtitle(text),
                                         )
@@ -392,6 +399,8 @@ class ConversationOwner:
                                     )
                                 # Safety: never leave the mic muted after capture.
                                 self._microphone_stream.unmute()
+                                # A completed capture is pipeline progress.
+                                self._note_activity()
                                 logger.debug("TURN MIC REARMED (post-capture)")
 
                                 if result.success and result.text:
@@ -536,6 +545,22 @@ class ConversationOwner:
                                     # Requirement #6: never execute a low-confidence
                                     # command.  One concise repeat-ask, then we return
                                     # to idle — never an endless loop (PART 13).
+                                    if not self._wake_word_enabled:
+                                        # Direct listening keeps the microphone
+                                        # open permanently, so low-confidence
+                                        # fragments arrive from ordinary
+                                        # background noise.  Speaking a repeat nag
+                                        # (and blocking on the 10 s TTS wait)
+                                        # would make JARVIS talk to itself —
+                                        # subtitle only, exactly like the
+                                        # no-speech branch above.
+                                        logger.info(
+                                            "WAKE_CAPTURE low confidence (%.3f) — "
+                                            "direct listening, subtitle only",
+                                            result.confidence,
+                                        )
+                                        bridge.show_subtitle("Ready when you are.")
+                                        continue
                                     repeat_rounds += 1
                                     if repeat_rounds >= _MAX_WAKE_REPEAT_ROUNDS:
                                         logger.info(
@@ -659,7 +684,7 @@ class ConversationOwner:
                         active_start = _stage_entry("backend.conversation_listen")
                         try:
                             with Timer("capture_command"):
-                                result = self._duplex_session.capture_command(
+                                result = self._capture_with_heartbeat(
                                     timeout=listen_to,
                                     on_partial=lambda text: bridge.show_subtitle(text),
                                 )
@@ -673,6 +698,8 @@ class ConversationOwner:
                             time.sleep(0.5)
                             continue
                         self._microphone_stream.unmute()
+                        # A completed capture is pipeline progress.
+                        self._note_activity()
                         logger.debug("TURN MIC REARMED (conversation post-capture)")
                         _stage_exit(
                             "backend.conversation_listen", active_start, status="OK"
@@ -1361,16 +1388,50 @@ class ConversationOwner:
         """
         callbacks = [
             self._brain.cancel_current,
-            self._voice_engine.cancel_all,
             self._voice_engine.stop_barge_in,
             self._wake_word_service.reset_for_wake,
             self._microphone_stream.unmute,
         ]
+
+        # TTS teardown is registered GUARDED.  ``Task._finalize`` runs cleanup
+        # callbacks for every terminal state — including SUCCESS — and
+        # ``cancel_all()`` stops playback *and* clears the queue.  On a normal
+        # reply that raced the audio device: the log showed playback finishing
+        # at 13.476 s and ``cancel_all()`` arriving at 13.542 s, while the
+        # device still held buffered audio, so the last syllable of the
+        # response was discarded.  A finished turn must not be cancelled; a
+        # failed / superseded / timed-out turn must be.
+        def _tts_cleanup() -> None:
+            self._cancel_speech_unless_completed(task)
+
+        callbacks.append(_tts_cleanup)
         duplex_session = getattr(self._voice_engine, "_duplex_session", None)
         if duplex_session is not None:
             callbacks.append(duplex_session.cancel_capture)
         for callback in callbacks:
             self._task_manager.register_cleanup(task, callback)
+
+    def _cancel_speech_unless_completed(self, task) -> None:
+        """Tear down TTS unless the task finished normally.
+
+        Normal completion lets the player drain and close the stream on its
+        own (see ``VoicePlayer._play_stream_worker``); cancelling there cut
+        the tail off the reply and cleared unrelated queued speech.
+        """
+        status = getattr(task, "status", None)
+        value = getattr(status, "value", status)
+        cancel_event = getattr(task, "cancel_event", None)
+        completed = value == "SUCCESS" and not (
+            cancel_event is not None and cancel_event.is_set()
+        )
+        if completed:
+            logger.debug(
+                "TTS cancel skipped — task %s completed normally; playback "
+                "drains naturally",
+                getattr(task, "task_id", "?"),
+            )
+            return
+        self._voice_engine.cancel_all()
 
     def _finalize_task(self, task, response) -> None:
         """Mark the task SUCCESS/FAILED once its command has been answered."""
@@ -1455,6 +1516,77 @@ class ConversationOwner:
             return None
         return stripped
 
+    def _capture_with_heartbeat(
+        self,
+        *,
+        timeout: float,
+        on_partial: Any,
+    ) -> CaptureResult:
+        """Run one capture while keeping the liveness watchdogs fed.
+
+        ``capture_command`` blocks this thread for its whole listen + VAD +
+        transcription-retry budget, during which the loop cannot kick the
+        ``backend_loop`` / ``state_change`` watchdogs itself — so a healthy
+        utterance that took a while to transcribe used to publish
+        ``ERROR [Backend Stalled] | Core Offline`` to the user.  The capture is
+        bounded by its own hard limits (max utterance, finalize deadline), so
+        an in-flight capture is progress: a small heartbeat thread reports it
+        as such, while a loop wedged anywhere else still trips the watchdog.
+        """
+        stop = threading.Event()
+
+        def _beat() -> None:
+            while not stop.wait(_CAPTURE_HEARTBEAT_SECONDS):
+                self._note_activity()
+                try:
+                    self._watchdog_manager.kick("backend_loop")
+                    self._watchdog_manager.kick("conversation")
+                except Exception:
+                    pass
+
+        heartbeat = threading.Thread(
+            target=_beat, name="capture-heartbeat", daemon=True,
+        )
+        heartbeat.start()
+        try:
+            return self._duplex_session.capture_command(
+                timeout=timeout, on_partial=on_partial,
+            )
+        finally:
+            stop.set()
+            self._note_activity()
+
+    def _note_activity(self) -> None:
+        """Record pipeline progress for the state-change watchdog.
+
+        Direct listening cycles captures inside its own ``while not handled``
+        loop, so the outer loop's state-change check — the thing that normally
+        refreshes ``_last_state_change`` — is never reached while listening
+        continues.  A completed capture is progress and must reset the clock,
+        otherwise the watchdog fires in the instant between one capture
+        ending and the next beginning.
+        """
+        self._last_state_change = time.monotonic()
+        try:
+            self._watchdog_manager.kick("state_change")
+        except Exception:
+            pass
+
+    def _capture_is_active(self) -> bool:
+        """True while the duplex session has a capture turn armed.
+
+        The duplex session exposes this so the owner can distinguish a real
+        LISTENING (capture armed) from a state that was merely published.
+        """
+        duplex = self._duplex_session
+        checker = getattr(duplex, "is_capture_active", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+
     def _on_state_change_stall(self, name: str) -> None:
         """Watchdog callback: conversation state hasn't changed for the per-state limit.
 
@@ -1482,6 +1614,18 @@ class ConversationOwner:
         elif current_state in (ConversationState.THINKING, ConversationState.EXECUTING):
             limit = 60.0
         elif current_state == ConversationState.LISTENING:
+            # VOICE-PIPELINE-004 keeps LISTENING deliberately stable ("one
+            # stable listening/ready state — never bouncing idle <-> listening
+            # between captures"), so a LISTENING state that is making progress
+            # must not be treated as a stall.  An armed capture IS progress:
+            # ``capture_command`` blocks for its idle timeout and then cycles.
+            # Without this check the watchdog fired CRITICAL, dumped every
+            # thread stack, and spuriously restarted the capture every ~20 s
+            # during perfectly normal idle listening.
+            if self._capture_is_active():
+                self._last_state_change = time.monotonic()
+                self._watchdog_manager.kick("state_change")
+                return
             limit = 20.0
         else:
             limit = self._state_watchdog_timeout  # 20.0 default

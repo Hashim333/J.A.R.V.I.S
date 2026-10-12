@@ -33,6 +33,20 @@ class PassthroughDSP:
         pass
 
 
+class ReadyEchoCanceller(PassthroughDSP):
+    """Passthrough DSP that also reports a converged echo canceller.
+
+    Barge-in deliberately requires a locked delay and positive ERLE so
+    JARVIS's own speaker output cannot self-interrupt
+    (``DuplexVoiceSession._on_barge_in_onset``).  A double without that state
+    could never fire, so the barge-in tests must use this one.
+    """
+
+    def __init__(self) -> None:
+        self.delay_locked = True
+        self.erle_db = 15.0
+
+
 class FakeTranscriber:
     def __init__(self, final: FinalTranscript) -> None:
         self._final = final
@@ -116,13 +130,14 @@ def _make_session(
     on_partial=None,
     on_wake_word=None,
     on_barge_in=None,
+    echo_canceller=None,
 ) -> tuple[DuplexVoiceSession, FakeTranscriber]:
     transcriber = FakeTranscriber(
         final or FinalTranscript("open notepad", 0.9, True, duration_ms=1200.0)
     )
     session = DuplexVoiceSession(
         sample_rate=16000,
-        echo_canceller=PassthroughDSP(),  # type: ignore[arg-type]
+        echo_canceller=echo_canceller or PassthroughDSP(),  # type: ignore[arg-type]
         noise_suppressor=PassthroughDSP(),  # type: ignore[arg-type]
         transcriber=transcriber,  # type: ignore[arg-type]
         on_partial=on_partial,
@@ -274,26 +289,68 @@ class TestDuplexPreroll(unittest.TestCase):
 
 
 class TestDuplexBargeIn(unittest.TestCase):
+    @staticmethod
+    def _armed_ready_session(on_barge_in) -> DuplexVoiceSession:
+        """A session that is armed, past the grace window, and AEC-ready.
+
+        ``arm_barge_in`` ignores onsets for 400 ms so TTS onset cannot
+        self-interrupt.  These tests assert the onset *decision*, so the
+        window is cleared explicitly rather than slept through.
+        """
+        session, _ = _make_session(
+            on_barge_in=on_barge_in, echo_canceller=ReadyEchoCanceller(),
+        )
+        session.arm_barge_in()
+        session._barge_in_grace_until = 0.0
+        return session
+
     def test_onset_while_speaking_triggers_interrupt(self) -> None:
         fired: list[str] = []
-        session, _ = _make_session(on_barge_in=lambda: fired.append("barge"))
-        session.arm_barge_in()
+        session = self._armed_ready_session(lambda: fired.append("barge"))
 
         session._on_barge_in_onset()
 
         self.assertEqual(fired, ["barge"])
 
-    def test_onset_while_disarmed_does_not_fire(self) -> None:
+    def test_onset_during_grace_period_does_not_fire(self) -> None:
+        """The first 400 ms of playback must not self-interrupt."""
+        fired: list[str] = []
+        session, _ = _make_session(
+            on_barge_in=lambda: fired.append("barge"),
+            echo_canceller=ReadyEchoCanceller(),
+        )
+        session.arm_barge_in()  # grace window deliberately left open
+
+        session._on_barge_in_onset()
+
+        self.assertEqual(fired, [])
+
+    def test_onset_without_converged_echo_canceller_does_not_fire(self) -> None:
+        """Without a locked delay / positive ERLE, JARVIS's own TTS would be
+        mistaken for the user and self-interrupt."""
         fired: list[str] = []
         session, _ = _make_session(on_barge_in=lambda: fired.append("barge"))
+        session.arm_barge_in()
+        session._barge_in_grace_until = 0.0  # PassthroughDSP is not AEC-ready
+
+        session._on_barge_in_onset()
+
+        self.assertEqual(fired, [])
+
+    def test_onset_while_disarmed_does_not_fire(self) -> None:
+        fired: list[str] = []
+        session, _ = _make_session(
+            on_barge_in=lambda: fired.append("barge"),
+            echo_canceller=ReadyEchoCanceller(),
+        )
+
         session._on_barge_in_onset()
 
         self.assertEqual(fired, [])
 
     def test_disarm_stops_barge_in(self) -> None:
         fired: list[str] = []
-        session, _ = _make_session(on_barge_in=lambda: fired.append("barge"))
-        session.arm_barge_in()
+        session = self._armed_ready_session(lambda: fired.append("barge"))
         session.disarm_barge_in()
 
         session._on_barge_in_onset()

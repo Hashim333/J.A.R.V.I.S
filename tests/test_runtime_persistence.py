@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from fake_bridge import FakeBridge
 from models.response import Response
 from models.task_result import TaskResult
 from services.conversation_manager import ConversationManager, ConversationState
@@ -36,8 +37,29 @@ def _capture(text="", confidence=0.0, accepted=False, reason="no_speech"):
     )
 
 
+def _fail_first_emit_listening(bridge: FakeBridge) -> None:
+    """Make the first LISTENING publication raise.
+
+    Injects an exception escaping the loop body — the failure class the
+    in-loop recovery exists for.  ``_run_command_safe`` already contains
+    exceptions raised by a command, so this is the correct injection point.
+    """
+    original = bridge.emit_listening
+    state = {"calls": 0}
+
+    def _flaky(caption="Listening...", *args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("bridge boom")
+        return original(caption, *args, **kwargs)
+
+    bridge.emit_listening = _flaky
+
+
 def _make_owner(*, brain_process=None, voice_enabled=False):
-    bridge = MagicMock()
+    # Bridge-faithful double (see tests/fake_bridge.py) so owner state
+    # publications are observable exactly as the Qt UI would see them.
+    bridge = FakeBridge()
     brain = MagicMock()
     if brain_process is not None:
         brain.process = MagicMock(side_effect=brain_process)
@@ -127,11 +149,7 @@ class TestRuntimePersistence(unittest.TestCase):
         self.assertFalse(env["shutdown_event"].is_set())
         # It returned to the ready/idle state rather than exiting.
         self.assertTrue(
-            _wait_until(
-                lambda: any(
-                    c.args[0] == "idle" for c in env["bridge"].set_core_state.call_args_list
-                )
-            ),
+            _wait_until(lambda: env["bridge"].saw("idle")),
             "owner never returned to idle after STT timeout",
         )
         self.assertTrue(_shutdown(env, thread))
@@ -155,22 +173,22 @@ class TestRuntimePersistence(unittest.TestCase):
         env = _make_owner(brain_process=lambda *a, **k: Response(
             success=True, message="Done.", task_result=TaskResult.SUCCESS,
         ))
-        env["bridge"].set_backend_heartbeat.side_effect = RuntimeError("heartbeat boom")
+        _fail_first_emit_listening(env["bridge"])
         thread = _start(env)
         time.sleep(0.5)
         self.assertTrue(thread.is_alive(), "loop died on loop-body exception")
         self.assertFalse(env["shutdown_event"].is_set())
-        # Recovery path restored a usable (idle) state.
+        # Recovery published the recoverable-error state and restored a
+        # usable (ready) state.
         self.assertTrue(
-            _wait_until(
-                lambda: any(
-                    c.args[0] == "idle" for c in env["bridge"].set_core_state.call_args_list
-                )
-            ),
+            _wait_until(lambda: env["bridge"].saw("error")),
+            "no error publication after loop-body exception",
+        )
+        self.assertTrue(
+            _wait_until(lambda: env["bridge"].saw("idle")),
             "no idle recovery after loop-body exception",
         )
-        # Rigging fails once, then commands still work.
-        env["bridge"].set_backend_heartbeat.side_effect = None
+        # The fault was injected exactly once; commands work again.
         env["q"].put("open chrome")
         self.assertTrue(
             _wait_until(

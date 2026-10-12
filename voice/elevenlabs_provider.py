@@ -41,6 +41,11 @@ ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 _REQUEST_TIMEOUT = 30
 _MAX_RETRIES = 1
 
+# FIX-QUOTA-NO-RETRY: permanent (non-retryable) HTTP statuses.  Retrying them
+# only stacks silent dead seconds onto every spoken line before the fallback
+# chain takes over.
+_QUOTA_ERROR_CODES = frozenset({401, 429})
+
 # Streaming pump bounds.  Read in 4096-byte chunks for smoother flow.
 _PUMP_QUEUE_SIZE = 64
 _PUMP_CHUNK_BYTES = 4096
@@ -143,6 +148,22 @@ class ElevenLabsProvider(VoiceProvider):
     # Public API
     # ------------------------------------------------------------------
 
+    def _note_quota_error(self, code: int) -> bool:
+        """Record a permanent quota/auth failure.
+
+        Returns True when *code* is non-retryable (401 / 429): the provider is
+        then blocked for the rest of the process so the VoiceManager falls
+        back to Piper/system immediately instead of stacking dead seconds.
+        """
+        if code not in _QUOTA_ERROR_CODES:
+            return False
+        self._quota_blocked = True
+        logger.warning(
+            "ElevenLabs: HTTP %d is a permanent quota/auth error — "
+            "not retrying, switching provider", code,
+        )
+        return True
+
     def speak(self, text: str) -> bool:
         """Synthesise text via ElevenLabs and play through VoicePlayer.
 
@@ -177,6 +198,7 @@ class ElevenLabsProvider(VoiceProvider):
             start = time.monotonic()
             session = self._ensure_session()
             response = None
+            is_pcm_stream = False
             try:
                 response = session.post(
                     url,
@@ -188,6 +210,22 @@ class ElevenLabsProvider(VoiceProvider):
                 )
                 status = response.status_code
                 content_type = response.headers.get("Content-Type", "")
+
+                # The status code decides BEFORE any streaming.  A 401/429
+                # body is JSON, not audio: handing it to the PCM player would
+                # play the error text as audible noise, report success, and
+                # skip the Piper/system fallback entirely.
+                if self._note_quota_error(status):
+                    return False
+                if status != 200:
+                    logger.error(
+                        "ElevenLabs: HTTP %d (attempt %d) — error body not played",
+                        status, attempt + 1,
+                    )
+                    last_error = RuntimeError(f"HTTP {status}")
+                    if attempt < _MAX_RETRIES:
+                        time.sleep(0.5)
+                    continue
 
                 is_pcm_stream = self._output_format in _PCM_FORMATS or any(
                     fmt in content_type for fmt in (
@@ -212,13 +250,7 @@ class ElevenLabsProvider(VoiceProvider):
                     code, attempt + 1, elapsed, exc, body_text[:200],
                 )
                 last_error = exc
-                if code in (401, 429):
-                    self._quota_blocked = True
-                    logger.warning(
-                        "ElevenLabs: HTTP %d is a permanent quota/auth error — "
-                        "not retrying, switching provider (elapsed %.0f ms)",
-                        code, elapsed,
-                    )
+                if self._note_quota_error(code):
                     return False
                 if attempt < _MAX_RETRIES:
                     logger.info("ElevenLabs: retrying...")
@@ -249,16 +281,7 @@ class ElevenLabsProvider(VoiceProvider):
             elapsed = (time.monotonic() - start) * 1000
             self._stats["last_request_ms"] = elapsed
 
-            if status != 200:
-                logger.error(
-                    "ElevenLabs: HTTP %d (attempt %d, %.0f ms)",
-                    status, attempt + 1, elapsed,
-                )
-                last_error = RuntimeError(f"HTTP {status}")
-                if attempt < _MAX_RETRIES:
-                    continue
-                return False
-
+            # Any non-200 has already returned / retried above.
             if not audio_data:
                 logger.error("ElevenLabs: empty response (attempt %d)", attempt + 1)
                 last_error = RuntimeError("empty response")

@@ -150,7 +150,14 @@ class VoiceManager:
         return True
 
     def stop(self, reason: str = "voice_manager.stop", caller: str = "unknown") -> None:
-        """Stop current speech immediately."""
+        """Stop current speech immediately.
+
+        Interruption is a normal event (barge-in, cancellation, shutdown), so
+        this never publishes an error state.  The previous version emitted
+        ``ERROR / "Interrupted"`` here, which flipped the UI to a failure for
+        a user who merely spoke over JARVIS.  Conversation state is owned by
+        ``services.conversation_owner``; this manager only stops audio.
+        """
         self._current_text = None
         self._interrupted = True
         self._log_stop_request(reason=reason, caller=caller)
@@ -159,28 +166,29 @@ class VoiceManager:
         except Exception as exc:
             logger.debug("VoiceManager: provider.stop() failed: %s", exc)
         logger.info("VoiceManager: stopped current speech reason=%s caller=%s", reason, caller)
-        # Emit INTERRUPTED state if bridge available
-        if self._bridge is not None:
-            try:
-                self._bridge.emit_error("Speech interrupted", "Interrupted")
-            except Exception as exc:
-                logger.debug("Bridge state emit failed: %s", exc)
 
-    def cancel_all(self) -> None:
+    def cancel_all(self, expected_generation: int | None = None) -> None:
         """Stop current speech and clear the entire queue.
 
-        Generation-safe: captures the current generation and only clears
-        the queue if no new speak() has been called since (i.e., the
-        generation hasn't changed). This prevents a race where an old
-        task's cleanup cancels a newer task's speech.
+        Pass *expected_generation* (a value read from :attr:`generation` when
+        the caller enqueued its speech) to make the cancellation conditional:
+        it is skipped when newer speech has been enqueued since, so an old
+        task's cleanup can never kill newer audio.  Without it the
+        cancellation is unconditional.
+
+        The previous version read the generation and compared it against
+        itself under the same lock, so that guard could never fire — the
+        documented protection did not exist.
         """
-        with self._generation_lock:
-            target_generation = self._generation
-        # Check if generation changed before proceeding
-        with self._generation_lock:
-            if self._generation != target_generation:
-                logger.debug("VoiceManager: cancel_all skipped — newer speech enqueued (gen=%d vs target=%d)",
-                             self._generation, target_generation)
+        if expected_generation is not None:
+            with self._generation_lock:
+                current_generation = self._generation
+            if current_generation != expected_generation:
+                logger.debug(
+                    "VoiceManager: cancel_all skipped — newer speech enqueued "
+                    "(gen=%d vs expected=%d)",
+                    current_generation, expected_generation,
+                )
                 return
 
         self.stop(reason="voice_manager.cancel_all", caller="voice_manager.cancel_all")
@@ -283,10 +291,23 @@ class VoiceManager:
             caller,
             threading.current_thread().name,
             reason,
-            datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+            # Timezone-aware: datetime.utcnow() is deprecated in 3.12+.
+            datetime.datetime.now(datetime.timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
             "".join(traceback.format_stack(limit=8)).rstrip(),
         )
         logger.debug("VoiceManager: stop request originated from %s (%s)", callsite, caller)
+
+    @property
+    def generation(self) -> int:
+        """Monotonic counter, bumped by every :meth:`speak`.
+
+        Read it before enqueuing speech and pass the value to
+        :meth:`cancel_all` to cancel only that utterance.
+        """
+        with self._generation_lock:
+            return self._generation
 
     @property
     def diagnostics(self) -> tuple[str, ...]:

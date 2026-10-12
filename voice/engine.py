@@ -398,6 +398,9 @@ class VoiceEngine:
             caller,
             threading.current_thread().name,
             reason,
-            datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+            # Timezone-aware: datetime.utcnow() is deprecated in 3.12+.
+            datetime.datetime.now(datetime.timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
             "".join(traceback.format_stack(limit=8)).rstrip(),
         )

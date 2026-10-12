@@ -19,6 +19,7 @@ import time
 import unittest
 from unittest.mock import MagicMock
 
+from fake_bridge import FakeBridge
 from models.response import Response
 from models.task_result import TaskResult
 from services.conversation_manager import ConversationManager, ConversationState
@@ -49,7 +50,9 @@ def _capture(text="", confidence=0.0, accepted=False, reason="no_speech"):
 
 def _make_owner(*, brain_process=None, voice_enabled=False, capture=None,
                 wake_word_enabled=None):
-    bridge = MagicMock()
+    # Bridge-faithful double: the owner publishes through emit_* (like the
+    # real ui.bridge.Bridge), so a bare MagicMock would record no state.
+    bridge = FakeBridge()
     brain = MagicMock()
     if brain_process is not None:
         brain.process = MagicMock(side_effect=brain_process)
@@ -133,7 +136,7 @@ def _shutdown(env, thread):
 
 
 def _core_states(env):
-    return [c.args[0] for c in env["bridge"].set_core_state.call_args_list]
+    return list(env["bridge"].core_states)
 
 
 def _spoken_messages(env):
@@ -379,7 +382,16 @@ class TestDirectListening(unittest.TestCase):
 
     def test_gated_mode_waits_for_wake_event(self) -> None:
         """Control: with WAKE_WORD_ENABLED=true the owner waits for the event."""
-        env = _make_owner(wake_word_enabled=True)
+        # A capture that returns instantly would let the no-speech rounds race
+        # past WAKE_DETECTED before the assertion can observe it; a real
+        # capture blocks, so this stub blocks briefly too.
+        def _blocking_capture(**_kwargs):
+            time.sleep(0.05)
+            return _capture(reason="no_speech")
+
+        env = _make_owner(
+            wake_word_enabled=True, capture=_blocking_capture,
+        )
         thread = _start(env)
         try:
             time.sleep(0.4)

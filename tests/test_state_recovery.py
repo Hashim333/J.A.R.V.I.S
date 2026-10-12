@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 
 from models.response import Response
@@ -15,6 +17,7 @@ from models.task_result import TaskResult
 from services.conversation_manager import ConversationManager, ConversationState
 from services.conversation_owner import ConversationOwner
 from tasks.task_manager import TaskManager, TaskStatus
+from voice.duplex import CaptureResult
 
 
 class _PlaceholderResult:
@@ -211,6 +214,135 @@ class TestSubtitleStateConsistency(unittest.TestCase):
 
         self.assertEqual(bridge.coreState, "listening")
         self.assertEqual(bridge._subtitle, "Listening...")
+
+
+class TestWatchdogQuietDuringCapture(unittest.TestCase):
+    """A capture in flight is progress, not a stall.
+
+    Direct listening holds LISTENING deliberately (it never bounces idle <->
+    listening between captures), and one utterance can occupy the loop thread
+    for a minute or more — a 15 s max utterance followed by several full
+    transcription passes — during which the loop cannot kick its own
+    watchdogs.  Neither may be reported to the user as a stall.
+    """
+
+    @staticmethod
+    def _owner_with_capture(capturing: bool):
+        owner, bridge, brain, tm, cm = _make_owner()
+        watchdog = MagicMock()
+        owner._watchdog_manager = watchdog
+        owner._duplex_session.is_capture_active = MagicMock(return_value=capturing)
+        cm.return_to_idle("test")
+        cm.on_listening()
+        return owner, watchdog, cm
+
+    def test_listening_with_armed_capture_is_not_treated_as_a_stall(self) -> None:
+        owner, watchdog, cm = self._owner_with_capture(capturing=True)
+        owner._last_state_change = time.monotonic() - 300.0
+
+        owner._on_state_change_stall("state_change")
+
+        # Re-armed instead of recovered: still listening, capture untouched.
+        self.assertEqual(cm.state, ConversationState.LISTENING)
+        self.assertIn("state_change", [c.args[0] for c in watchdog.kick.call_args_list])
+        owner._duplex_session.cancel_capture.assert_not_called()
+
+    def test_listening_without_a_capture_past_the_limit_still_recovers(self) -> None:
+        owner, _watchdog, _cm = self._owner_with_capture(capturing=False)
+        owner._last_state_change = time.monotonic() - 300.0
+
+        owner._on_state_change_stall("state_change")
+
+        # A genuine stall (LISTENING with nothing armed) must still recover.
+        owner._duplex_session.cancel_capture.assert_called_once()
+
+    def test_note_activity_resets_the_stall_clock(self) -> None:
+        owner, watchdog, _cm = self._owner_with_capture(capturing=True)
+        owner._last_state_change = time.monotonic() - 300.0
+
+        owner._note_activity()
+
+        self.assertLess(time.monotonic() - owner._last_state_change, 1.0)
+        self.assertIn("state_change", [c.args[0] for c in watchdog.kick.call_args_list])
+
+    def test_long_capture_keeps_the_loop_heartbeat_alive(self) -> None:
+        """A capture that outlives the backend watchdog must be fed."""
+        owner, watchdog, _cm = self._owner_with_capture(capturing=True)
+        release = threading.Event()
+
+        def slow_capture(timeout=None, on_partial=None):  # noqa: ARG002
+            release.wait(timeout=5.0)
+            return CaptureResult("", 0.0, False, reason="no_speech")
+
+        owner._duplex_session.capture_command = slow_capture
+        with mock.patch(
+            "services.conversation_owner._CAPTURE_HEARTBEAT_SECONDS", 0.05,
+        ):
+            timer = threading.Timer(0.4, release.set)
+            timer.start()
+            try:
+                result = owner._capture_with_heartbeat(
+                    timeout=1.0, on_partial=lambda _text: None,
+                )
+            finally:
+                timer.cancel()
+
+        self.assertEqual(result.reason, "no_speech")
+        kicked = [c.args[0] for c in watchdog.kick.call_args_list]
+        # The heartbeat fired repeatedly while the capture was in flight,
+        # beyond the single kick the call performs on entry.
+        self.assertGreaterEqual(kicked.count("backend_loop"), 2)
+
+
+class TestCompletionDoesNotCancelSpeech(unittest.TestCase):
+    """Normal completion must not tear down TTS.
+
+    ``Task._finalize`` runs cleanup callbacks for EVERY terminal state,
+    including SUCCESS.  The owner used to register ``voice_engine.cancel_all``
+    as one of those cleanups, so a reply that had just been delivered was
+    cancelled milliseconds later — while the audio device still held the tail
+    of the utterance — and any queued speech was cleared with it.
+    """
+
+    @staticmethod
+    def _task(owner, text: str = "can you hear me?"):
+        task = owner._task_manager.create_task(text)
+        owner._task_manager.start_task(task)
+        owner._register_task_cleanup(task)
+        return task
+
+    def test_success_does_not_cancel_speech(self) -> None:
+        owner, *_ = _make_owner()
+        task = self._task(owner)
+
+        owner._finalize_task(
+            task, Response(success=True, message="ok", task_result=TaskResult.SUCCESS)
+        )
+
+        self.assertEqual(task.status, TaskStatus.SUCCESS)
+        owner._voice_engine.cancel_all.assert_not_called()
+
+    def test_failure_still_cancels_speech(self) -> None:
+        owner, *_ = _make_owner()
+        task = self._task(owner)
+
+        owner._finalize_task(
+            task,
+            Response(success=False, message="nope", task_result=TaskResult.FAILED),
+        )
+
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        owner._voice_engine.cancel_all.assert_called_once()
+
+    def test_explicit_cancellation_still_cancels_speech(self) -> None:
+        """Barge-in / a superseded turn must still stop audio immediately."""
+        owner, *_ = _make_owner()
+        task = self._task(owner)
+
+        owner._task_manager.cancel(task, reason="superseded")
+
+        self.assertEqual(task.status, TaskStatus.CANCELLED)
+        owner._voice_engine.cancel_all.assert_called_once()
 
 
 if __name__ == "__main__":

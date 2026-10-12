@@ -10,14 +10,16 @@ commands" family of bugs:
      (a new command cancelling the previous one).
   3. Two rapid commands yield exactly one active task; the first is
      cancelled and its cancel_event set.
-  4. _present_response clears any queued speech before speaking a new
-     response (no overlapping / duplicate TTS).
+  4. Superseding a task fires its cleanup callbacks (which cancel queued
+     TTS) before the new response is spoken, and one response queues
+     exactly one utterance (no overlapping / duplicate TTS).
 
 No browser, mic, or real TTS is touched: everything is mocked.
 """
 
 from __future__ import annotations
 
+import queue
 import threading
 import unittest
 from unittest.mock import MagicMock
@@ -26,7 +28,8 @@ from brain.execution_plan import ExecutionPlan, Step
 from executor.executor import Executor
 from executor.registry import Registry
 from models.task_result import TaskResult
-from run import _present_response
+from services.conversation_manager import ConversationManager
+from services.conversation_owner import ConversationOwner
 from tasks.task_manager import TaskManager, TaskStatus
 
 
@@ -234,28 +237,99 @@ class TestRapidCommandsSingleActive(unittest.TestCase):
         self.assertEqual(response.message, "Operation cancelled.")
 
 
+def _make_owner(**overrides) -> ConversationOwner:
+    """Build a ConversationOwner whose collaborators are mocks.
+
+    ``TaskManager`` and ``ConversationManager`` stay real because the
+    invariants under test live in those two components.
+    """
+    collaborators = {
+        "conversation_manager": ConversationManager(),
+        "bridge": MagicMock(),
+        "brain": MagicMock(),
+        "task_manager": TaskManager(),
+        "response_manager": MagicMock(),
+        "voice_engine": MagicMock(),
+        "wake_word_service": MagicMock(),
+        "microphone_stream": MagicMock(),
+        "duplex_session": MagicMock(),
+        "command_queue": queue.Queue(),
+        "wake_word_detected": threading.Event(),
+        "watchdog_manager": MagicMock(),
+        "service_manager": MagicMock(),
+        "shutdown_in_progress": threading.Event(),
+        "shutdown_event": threading.Event(),
+        "wake_word_enabled": True,
+    }
+    collaborators.update(overrides)
+    return ConversationOwner(**collaborators)
+
+
 class TestDuplicateSpeechPrevention(unittest.TestCase):
-    def test_present_response_cancels_queued_speech_before_speaking(self) -> None:
+    def test_superseding_a_task_cancels_queued_speech(self) -> None:
+        """A new command must cancel the previous command's queued speech.
+
+        This is the real duplicate-speech guard: the superseded task's
+        cleanup callbacks run synchronously inside ``create_task`` — before
+        the new response is generated or spoken — so two utterances can
+        never overlap.
+        """
+        tm = TaskManager()
+        voice_engine = MagicMock()
+        owner = _make_owner(task_manager=tm, voice_engine=voice_engine)
+
+        first = tm.create_task("open chrome")
+        owner._register_task_cleanup(first)
+        tm.start_task(first)
+
+        second = tm.create_task("search cats on youtube")
+
+        self.assertTrue(first.cancel_event.is_set())
+        self.assertTrue(second.is_active)
+        voice_engine.cancel_all.assert_called_once()
+        voice_engine.stop_barge_in.assert_called_once()
+
+    def test_present_response_speaks_the_response_exactly_once(self) -> None:
+        """One response means exactly one queued utterance — never two."""
         bridge = MagicMock()
         response_manager = MagicMock()
-        response_manager.console_text.return_value = "subtitle"
         response_manager._voice_enabled = True
+        response_manager.console_text.return_value = "subtitle"
         response_manager.voice_text.return_value = "Hello, I am JARVIS."
         voice_engine = MagicMock()
+        owner = _make_owner(
+            bridge=bridge,
+            response_manager=response_manager,
+            voice_engine=voice_engine,
+        )
 
         class _Response:
             success = True
             task_result = None
 
-        _present_response(bridge, response_manager, _Response(), voice_engine)
+        owner._present_response(_Response())
 
-        # cancel_all must be invoked before speak so no stale/queued TTS
-        # overlaps (duplicate speech).
-        call_order = voice_engine.method_calls
-        cancel_idx = next(i for i, c in enumerate(call_order) if c[0] == "cancel_all")
-        speak_idx = next(i for i, c in enumerate(call_order) if c[0] == "speak")
-        self.assertLess(cancel_idx, speak_idx)
+        bridge.show_subtitle.assert_called_once_with("subtitle")
+        bridge.emit_speaking.assert_called_once()
         voice_engine.speak.assert_called_once()
+        self.assertEqual(voice_engine.speak.call_args[0][0], "Hello, I am JARVIS.")
+
+    def test_text_only_response_queues_no_speech(self) -> None:
+        """A muted response manager must never queue speech."""
+        response_manager = MagicMock()
+        response_manager._voice_enabled = False
+        voice_engine = MagicMock()
+        owner = _make_owner(
+            response_manager=response_manager, voice_engine=voice_engine,
+        )
+
+        class _Response:
+            success = True
+            task_result = None
+
+        owner._present_response(_Response())
+
+        voice_engine.speak.assert_not_called()
 
 
 if __name__ == "__main__":

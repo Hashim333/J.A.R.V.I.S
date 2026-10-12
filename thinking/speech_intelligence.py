@@ -657,12 +657,25 @@ class SpeechIntelligenceLayer:
                 candidates=(canonical,),
             )
 
-        # 2. Exact case-insensitive match against installed app canonical names wins.
-        #    If the user said "Notepad" and "Notepad" exists as an installed app,
-        #    we should NOT correct to "Notepad++". Only correct when there is
-        #    no exact match.
+        # 2. Exact case-insensitive match against installed app canonical names.
+        #    An exact match must never be *fuzzy*-corrected ("Notepad" must not
+        #    become "Notepad++"), but the canonical casing IS known, and
+        #    normalising to it is exactly what MEDIUM + installed-app
+        #    correction means — the raw transcript token used to be forwarded
+        #    unchanged, so the canonical name was thrown away.
         exact_match = self._app_matcher.get_exact_match(app_token)
         if exact_match:
+            if exact_match != app_token:
+                corrected = f"{verb} {exact_match}"
+                return self._decide(
+                    SpeechAction.CORRECT,
+                    text=corrected,
+                    corrected=corrected,
+                    original=text,
+                    transcript=transcript,
+                    reason="installed_app",
+                    candidates=(exact_match,),
+                )
             return self._decide(
                 SpeechAction.EXECUTE,
                 text=text,

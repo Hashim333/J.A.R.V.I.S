@@ -34,6 +34,44 @@ class FakeExecutor:
         return Response(success=True, message="done.", data={})
 
 
+class _FakeWorldStateService:
+    """World-state service showing a single running Chrome on ``url``."""
+
+    def __init__(self, url: str = "https://www.spotify.com/") -> None:
+        self.url = url
+
+    def current(self):
+        from intelligence.world_state import BrowserState, WorldState
+
+        return WorldState(
+            timestamp=0.0,
+            browsers={"chrome": BrowserState(
+                name="chrome", display_name="Chrome", running=True,
+                active_url=self.url,
+            )},
+        )
+
+
+class _NavigatingExecutor(FakeExecutor):
+    """FakeExecutor that also records the navigation it performed.
+
+    Verification reads the browser's live URL, so a simulated
+    ``open_website`` must be reflected in the (fake) world state before the
+    verification step can observe it.
+    """
+
+    def __init__(self, world: _FakeWorldStateService, url: str, results=None) -> None:
+        super().__init__(results)
+        self._world = world
+        self._url = url
+
+    def execute(self, plan, cancel_event=None):  # noqa: ARG002
+        result = super().execute(plan, cancel_event)
+        if result.success and getattr(plan, "intent", "") == "open_website":
+            self._world.url = self._url
+        return result
+
+
 class FakeReasoner:
     def __init__(self, plans=None, continue_plans=None) -> None:
         self._plans = list(plans or [])
@@ -68,8 +106,13 @@ class TestReasonerActPath(unittest.TestCase):
                 confidence=0.92, reasoning="wants chrome focused",
             ),
         ])
-        # Use a command the deterministic parser won't handle
-        response = _pipeline(reasoner=reasoner, executor=executor).process("please focus my chrome window")
+        # The local command dictionary (step 0c) runs before the reasoner and
+        # short-circuits anything the rule parser understands, so the phrase
+        # must be one it cannot parse (intent "unknown") for the reasoner gate
+        # to be exercised at all.
+        response = _pipeline(reasoner=reasoner, executor=executor).process(
+            "bring the browser to the front please"
+        )
 
         self.assertTrue(response.success)
         self.assertEqual(len(executor.plans), 1)
@@ -107,8 +150,8 @@ class TestReasonerActPath(unittest.TestCase):
             ),
         ])
         pipeline = _pipeline(reasoner=reasoner)
-        # Use a command the deterministic parser won't handle
-        response = pipeline.process("I want to open an application")
+        # Not rule-parseable, so the reasoner gate decides ASK.
+        response = pipeline.process("tidy up my open windows a bit")
 
         self.assertTrue(response.needs_clarification)
         self.assertEqual(response.clarification_question, "Which app should I open?")
@@ -141,26 +184,15 @@ class TestReasonerAskContinuation(unittest.TestCase):
 
 
 class TestReasonerRetry(unittest.TestCase):
-    def _retry_pipeline(self, executor, reasoner) -> PipelineEngine:
-        from intelligence.world_state import BrowserState, WorldState
-
-        class FakeWorldStateService:
-            def current(self):
-                return WorldState(
-                    timestamp=0.0,
-                    browsers={"chrome": BrowserState(
-                        name="chrome", display_name="Chrome", running=True,
-                        active_url="https://www.spotify.com/",
-                    )},
-                )
-
+    def _retry_pipeline(self, executor, reasoner, world=None) -> PipelineEngine:
         return PipelineEngine(
             parser=Parser(), planner=Planner(), executor=executor,
-            reasoner=reasoner, world_state=FakeWorldStateService(),
+            reasoner=reasoner, world_state=world or _FakeWorldStateService(),
         )
 
     def test_auto_retries_once_with_alternative(self) -> None:
-        executor = FakeExecutor([
+        world = _FakeWorldStateService("https://www.spotify.com/")
+        executor = _NavigatingExecutor(world, "https://myapp.com/", [
             Response(success=False, message="App not installed.", data={}),
             Response(success=True, message="Opened in browser.", data={}),
         ])
@@ -174,7 +206,9 @@ class TestReasonerRetry(unittest.TestCase):
                 )],
             ),
         ])
-        response = self._retry_pipeline(executor, reasoner).process("launch myapp")
+        response = self._retry_pipeline(executor, reasoner, world).process(
+            "please rearrange my workspace for me"
+        )
 
         self.assertTrue(response.success)
         self.assertEqual([p.intent for p in executor.plans], ["open_app", "open_website"])
@@ -195,7 +229,9 @@ class TestReasonerRetry(unittest.TestCase):
                 )],
             ),
         ])
-        response = self._retry_pipeline(executor, reasoner).process("launch myapp")
+        response = self._retry_pipeline(executor, reasoner).process(
+            "please rearrange my workspace for me"
+        )
 
         self.assertFalse(response.success)
         self.assertTrue(response.data.get("retry_attempted"))
@@ -214,14 +250,36 @@ class TestReasonerFallback(unittest.TestCase):
         self.assertEqual(executor.plans[0].intent, "focus_app")
 
     def test_reasoner_returns_none_falls_back(self) -> None:
+        """An unreachable reasoner must never break command handling.
+
+        The local command dictionary resolves simple commands before the
+        reasoner is consulted, so a reasoner that returns None must still
+        leave the command executed by the rule pipeline.
+        """
         executor = FakeExecutor([Response(success=True, message="done.", data={})])
         reasoner = FakeReasoner([])  # reason() returns None
-        # Use a command the deterministic parser won't handle
-        response = _pipeline(reasoner=reasoner, executor=executor).process("please focus my chrome window")
+        response = _pipeline(reasoner=reasoner, executor=executor).process("focus chrome")
 
         self.assertTrue(response.success)
         self.assertEqual(len(executor.plans), 1)
-        self.assertEqual(reasoner.reason_calls, 1)
+        self.assertEqual(executor.plans[0].intent, "focus_app")
+
+    def test_unparseable_text_reaches_the_reasoner(self) -> None:
+        """Text the rule parser cannot handle is decided by the reasoner.
+
+        This is the boundary between step 0c (local command dictionary) and
+        step 0d (reasoner gate): unparseable requests must be offered to the
+        reasoner instead of falling straight through.
+        """
+        executor = FakeExecutor()
+        reasoner = FakeReasoner([])  # reason() returns None
+        response = _pipeline(reasoner=reasoner, executor=executor).process(
+            "please rearrange my workspace for me"
+        )
+
+        self.assertEqual(reasoner.reason_calls, 1,
+                         "an unparseable request must be offered to the reasoner")
+        self.assertTrue(response.message)
 
 
 class TestWorkingMemoryWiring(unittest.TestCase):
@@ -245,4 +303,3 @@ class TestWorkingMemoryWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

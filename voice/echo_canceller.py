@@ -26,6 +26,12 @@ Implementation notes:
     factor for long-term stability.
   * Double-talk protection freezes adaptation while the user is speaking
     loudly, so we never learn to cancel the user.
+  * THREADING CONTRACT: ``set_reference`` is called from the TTS playback
+    thread, ``process`` from the microphone capture thread.  The playback
+    thread must NEVER wait for the adaptive-filter maths — blocking it stalls
+    the audio output mid-utterance (audible chopping/stutter).  The reference
+    history therefore has its own lock (``_ref_lock``) that the DSP never
+    holds, and ``process`` takes a fast snapshot before computing anything.
 """
 from __future__ import annotations
 
@@ -111,7 +117,13 @@ class EchoCanceller:
         # Reference history ring; large enough for max_delay + taps + a chunk.
         self._ref = collections.deque(maxlen=self._max_delay + self._taps + 2048)
 
+        # DSP state lock (filter / delay / ERLE).  Only the processing thread
+        # ever takes this, so it can be held for the whole NLMS update.
         self._lock = threading.Lock()
+        # Reference-history lock.  Held only for a deque append or a fast
+        # snapshot — never while computing — so the TTS playback thread that
+        # calls set_reference() can never be blocked by the DSP.
+        self._ref_lock = threading.Lock()
         self._chunks_processed = 0
         self._estimate_every = 16
         self._erle = 0.0
@@ -126,29 +138,43 @@ class EchoCanceller:
     # ------------------------------------------------------------------
 
     def set_reference(self, pcm16_chunk: bytes) -> None:
-        """Feed the exact PCM written to the speakers as the echo reference."""
+        """Feed the exact PCM written to the speakers as the echo reference.
+
+        Called from the TTS playback thread on every audio slice, so this must
+        stay cheap and must never wait for adaptive-filter work.  Decoding is
+        done before the lock and the lock only guards the deque append.
+        """
         if np is None or not pcm16_chunk:
             return
-        with self._lock:
-            try:
-                ref_float = np.frombuffer(pcm16_chunk, dtype=np.int16).astype(np.float64) / 32768.0
-                if _is_finite(ref_float):
-                    self._ref.extend(ref_float)
-                else:
-                    logger.warning("EchoCanceller: non-finite reference chunk discarded")
-            except Exception as exc:
-                logger.error("EchoCanceller: set_reference failed: %s", exc)
+        try:
+            ref_float = (
+                np.frombuffer(pcm16_chunk, dtype=np.int16).astype(np.float64)
+                / 32768.0
+            )
+            if not _is_finite(ref_float):
+                logger.warning("EchoCanceller: non-finite reference chunk discarded")
+                return
+        except Exception as exc:
+            logger.error("EchoCanceller: set_reference failed: %s", exc)
+            return
+        with self._ref_lock:
+            self._ref.extend(ref_float)
 
     def reset(self) -> None:
         """Clear the filter and reference history (e.g. before a fresh capture)."""
-        with self._lock:
-            self._filter.fill(0.0)
+        with self._ref_lock:
             self._ref.clear()
-            self._delay = self._max_delay // 2
-            self._delay_locked = False
-            self._erle = 0.0
-            self._double_talk = False
-            self._consecutive_nonfinite = 0
+        with self._lock:
+            self._reset_state_locked()
+
+    def _reset_state_locked(self) -> None:
+        """Reset adaptive-filter state. Caller must hold ``_lock``."""
+        self._filter.fill(0.0)
+        self._delay = self._max_delay // 2
+        self._delay_locked = False
+        self._erle = 0.0
+        self._double_talk = False
+        self._consecutive_nonfinite = 0
 
     # ------------------------------------------------------------------
     # Processing
@@ -159,10 +185,16 @@ class EchoCanceller:
         enough reference has been seen)."""
         if np is None:
             return mic_chunk
+        # Fast snapshot of the reference, taken without the DSP lock held so
+        # the playback thread is never blocked by this work (see the module
+        # docstring).  The snapshot is a C-level copy of at most a few
+        # thousand floats.
+        with self._ref_lock:
+            ref_snapshot = list(self._ref)
         with self._lock:
-            return self._process_locked(mic_chunk)
+            return self._process_locked(mic_chunk, ref_snapshot)
 
-    def _process_locked(self, mic_chunk: bytes) -> bytes:
+    def _process_locked(self, mic_chunk: bytes, ref: list) -> bytes:
         if not mic_chunk or len(mic_chunk) % 2 != 0:
             return mic_chunk
 
@@ -176,10 +208,10 @@ class EchoCanceller:
 
         n = len(mic)
         need = self._max_delay + self._taps + n
-        if len(self._ref) < need:
+        if len(ref) < need:
             return mic_chunk
 
-        window = np.asarray(self._ref, dtype=np.float64)[-need:]
+        window = np.asarray(ref, dtype=np.float64)[-need:]
         window = _sanitize(window)
 
         # Delay estimation / locking.
@@ -204,7 +236,10 @@ class EchoCanceller:
                     "EchoCanceller: %d consecutive non-finite chunks, resetting",
                     self._consecutive_nonfinite
                 )
-                self.reset()
+                # Reset filter/delay state only.  The reference history is
+                # live speaker audio and is deliberately left intact (and we
+                # must not take _ref_lock while holding _lock).
+                self._reset_state_locked()
             return mic_chunk  # pass-through until delay locked and ERLE > 0
 
         base = self._clamp_base(need - self._delay - n + 1, n)
@@ -270,20 +305,37 @@ class EchoCanceller:
 
     def _estimate_delay(self, mic, window, n: int, need: int) -> None:
         """Cross-correlate the mic chunk against the reference to find the
-        current speaker->mic lag (samples)."""
-        mic_norm = float(np.dot(mic, mic)) + self._eps
-        best_lag = self._delay
-        best_score = -1.0
-        for lag in range(0, self._max_delay + 1):
-            start = need - lag - n
-            if start < 0:
-                break
-            seg = window[start:start + n]
-            denom = np.sqrt(float(np.dot(seg, seg)) * mic_norm) + self._eps
-            score = float(np.dot(seg, mic)) / denom
-            if score > best_score:
-                best_score = score
-                best_lag = lag
+        current speaker->mic lag (samples).
+
+        Vectorised: the per-lag Python loop it replaces made ~2560 numpy calls
+        per chunk, which saturated the capture thread.  ``np.correlate`` plus a
+        cumulative-sum window energy computes the identical normalised
+        correlation scores in a handful of C-level calls.
+        """
+        starts = need - n - np.arange(0, self._max_delay + 1)
+        valid = starts >= 0
+        if not np.any(valid):
+            return
+
+        dots = np.correlate(window, mic, mode="valid")
+        cumulative = np.concatenate(([0.0], np.cumsum(window * window)))
+        energies = cumulative[n:] - cumulative[:-n]
+
+        usable = min(len(dots), len(energies))
+        starts = starts[starts < usable]
+        if starts.size == 0:
+            return
+
+        # Window length may exceed the available history only at the very
+        # first chunks; slice consistently on both arrays.
+        seg_dots = dots[starts]
+        seg_energy = np.maximum(energies[starts], 0.0)
+
+        denom = np.sqrt(seg_energy * mic_norm_value(mic)) + self._eps
+        scores = seg_dots / denom
+        best_index = int(np.argmax(scores))
+        best_score = float(scores[best_index])
+        best_lag = int(need - n - starts[best_index])
 
         if best_score < self._lock_score:
             return
@@ -324,4 +376,11 @@ class EchoCanceller:
 
     @property
     def is_ready(self) -> bool:
-        return len(self._ref) >= self._max_delay + self._taps + 64
+        with self._ref_lock:
+            return len(self._ref) >= self._max_delay + self._taps + 64
+
+
+def mic_norm_value(mic) -> float:
+    """Squared norm of the mic chunk, with the epsilon floor used by the
+    delay estimator."""
+    return float(np.dot(mic, mic)) + 1e-9

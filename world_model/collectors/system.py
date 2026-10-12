@@ -14,6 +14,7 @@ All I/O runs on a background thread — never on the UI thread.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import time
 from typing import Any
@@ -156,46 +157,96 @@ class SystemCollector(BaseCollector):
 
     @staticmethod
     def _read_clipboard() -> str:
-        """Read plain text from the Windows clipboard.
+        """Read plain text from the Windows clipboard ("" when unavailable)."""
+        return read_clipboard_text()
 
-        Uses memmove to safely copy clipboard data into a Python buffer
-        before decoding — avoids access violations from racing clipboard
-        writers.
-        """
-        try:
-            import ctypes
-            from ctypes import wintypes
 
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
+# ── Clipboard helpers ───────────────────────────────────────────────
+#
+# Declared once at module level so the Win32 signatures are applied a single
+# time instead of on every poll.
 
-            # Set proper 64-bit pointer return types
-            user32.GetClipboardData.restype = wintypes.HANDLE
-            kernel32.GlobalSize.restype = ctypes.c_size_t
-            kernel32.GlobalLock.restype = wintypes.HANDLE
+_CF_UNICODETEXT = 13
+_CLIPBOARD_OPEN_RETRIES = 3
+_CLIPBOARD_RETRY_SECONDS = 0.05
+_clipboard_api: tuple[Any, Any] | None = None
 
-            if not user32.OpenClipboard(None):
-                return ""
-            try:
-                handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
-                if not handle:
-                    return ""
-                size = kernel32.GlobalSize(handle)
-                if size <= 1:
-                    return ""
-                locked = kernel32.GlobalLock(handle)
-                if not locked:
-                    return ""
-                try:
-                    buf = (ctypes.c_char * size)()
-                    ctypes.memmove(buf, locked, size)
-                    raw = bytes(buf)
-                    # CF_UNICODETEXT is UTF-16-LE, strip null terminator
-                    text = raw.decode("utf-16-le", errors="replace")
-                    return text.strip("\0")
-                finally:
-                    kernel32.GlobalUnlock(handle)
-            finally:
-                user32.CloseClipboard()
-        except Exception:
+
+def _get_clipboard_api() -> tuple[Any, Any] | None:
+    """Return ``(user32, kernel32)`` with explicit Win32 signatures.
+
+    The signatures are the fix, not decoration: ctypes defaults an untyped
+    integer argument to C ``int``, so a 64-bit HGLOBAL was truncated to 32
+    bits.  ``GlobalSize`` / ``GlobalLock`` then dereferenced a wild pointer
+    and the following ``memmove`` faulted the process (observed as a Windows
+    fatal exception / access violation).
+    """
+    global _clipboard_api
+    if _clipboard_api is not None:
+        return _clipboard_api
+    try:
+        from ctypes import WinDLL, c_size_t
+        from ctypes import wintypes
+
+        user32 = WinDLL("user32", use_last_error=True)
+        kernel32 = WinDLL("kernel32", use_last_error=True)
+
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.CloseClipboard.argtypes = []
+        user32.CloseClipboard.restype = wintypes.BOOL
+        user32.GetClipboardData.argtypes = [wintypes.UINT]
+        user32.GetClipboardData.restype = wintypes.HANDLE
+
+        kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalSize.restype = c_size_t
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalLock.restype = wintypes.LPVOID
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+    except Exception as exc:
+        logger.warning("Clipboard API unavailable: %s", exc)
+        return None
+    _clipboard_api = (user32, kernel32)
+    return _clipboard_api
+
+
+def _open_clipboard(user32: Any) -> bool:
+    """Open the clipboard, retrying briefly while another process holds it."""
+    for _ in range(_CLIPBOARD_OPEN_RETRIES):
+        if user32.OpenClipboard(None):
+            return True
+        time.sleep(_CLIPBOARD_RETRY_SECONDS)
+    return False
+
+
+def read_clipboard_text() -> str:
+    """Read CF_UNICODETEXT, returning "" when the clipboard holds no text."""
+    api = _get_clipboard_api()
+    if api is None:
+        return ""
+    user32, kernel32 = api
+    if not _open_clipboard(user32):
+        return ""
+    try:
+        handle = user32.GetClipboardData(_CF_UNICODETEXT)
+        if not handle:
             return ""
+        size = int(kernel32.GlobalSize(handle))
+        if size < 2:
+            return ""
+        locked = kernel32.GlobalLock(handle)
+        if not locked:
+            return ""
+        try:
+            buffer = (ctypes.c_char * size)()
+            ctypes.memmove(buffer, locked, size)
+            # CF_UNICODETEXT is UTF-16-LE terminated by one NUL code unit.
+            return bytes(buffer).decode("utf-16-le", errors="replace").rstrip("\x00")
+        finally:
+            kernel32.GlobalUnlock(handle)
+    except Exception as exc:
+        logger.debug("Clipboard read failed: %s", exc)
+        return ""
+    finally:
+        user32.CloseClipboard()
